@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import base64
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -16,6 +17,32 @@ class Document:
     path: str
     text: str
     data: Any | None
+    scope: str = "."
+    digest: str = ""
+
+
+IGNORED_DIRS = {".git", ".github", ".idea", ".pytest_cache", ".venv", "__pycache__", "docs", "documentation", "node_modules", "tests"}
+IGNORED_STEMS = {"readme", "writeup", "solution", "solutions", "solver", "solve", "exploit"}
+IGNORED_SUFFIXES = {".md", ".markdown", ".rst", ".ipynb", ".pdf"}
+NON_BOUNDARY_DIRS = {"app", "archive", "attachments", "dist", "private", "public", "release", "server", "service", "src"}
+
+
+def _ignored(name: str) -> bool:
+    normalized = name.replace("\\", "/")
+    parts = [part.casefold() for part in normalized.split("/")]
+    path = Path(normalized)
+    return (
+        any(part in IGNORED_DIRS for part in parts[:-1])
+        or path.suffix.casefold() in IGNORED_SUFFIXES
+        or path.stem.casefold() in IGNORED_STEMS
+    )
+
+
+def _scope(relative_name: str, fallback: str = ".") -> str:
+    parts = [part for part in relative_name.replace("\\", "/").split("/") if part]
+    if len(parts) < 2 or parts[0].casefold() in NON_BOUNDARY_DIRS:
+        return fallback
+    return parts[0].casefold()
 
 
 def collect_documents(targets: Iterable[str]) -> list[Document]:
@@ -23,9 +50,10 @@ def collect_documents(targets: Iterable[str]) -> list[Document]:
     for raw in targets:
         target = Path(raw).resolve()
         if target.is_dir():
-            files.extend((target, p) for p in target.rglob("*") if p.is_file())
+            files.extend((target, p) for p in target.rglob("*") if p.is_file() and not _ignored(p.relative_to(target).as_posix()))
         elif target.is_file():
-            files.append((target.parent, target))
+            if not _ignored(target.name):
+                files.append((target.parent, target))
     documents: list[Document] = []
     for root, path in sorted(files, key=lambda pair: pair[1].as_posix().casefold()):
         try:
@@ -34,10 +62,12 @@ def collect_documents(targets: Iterable[str]) -> list[Document]:
             continue
         suffixes = "".join(path.suffixes).casefold()
         if path.suffix.casefold() == ".zip":
-            documents.extend(_zip_documents(raw, path.relative_to(root).as_posix()))
+            relative = path.relative_to(root).as_posix()
+            documents.extend(_zip_documents(raw, relative, _scope(relative, Path(relative).stem.casefold())))
             continue
         if suffixes.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz")):
-            documents.extend(_tar_documents(path, path.relative_to(root).as_posix()))
+            relative = path.relative_to(root).as_posix()
+            documents.extend(_tar_documents(path, relative, _scope(relative, Path(relative).name.casefold().split(".tar", 1)[0])))
             continue
         if b"\0" in raw[:4096]:
             continue
@@ -48,12 +78,16 @@ def collect_documents(targets: Iterable[str]) -> list[Document]:
                 data = json.loads(text)
             except json.JSONDecodeError:
                 pass
-        documents.append(Document(path.relative_to(root).as_posix(), text, data))
-    return documents
+        relative = path.relative_to(root).as_posix()
+        documents.append(Document(relative, text, data, _scope(relative), hashlib.sha256(raw).hexdigest()))
+    unique: dict[str, Document] = {}
+    for document in sorted(documents, key=lambda item: ("!/" in item.path, item.path.casefold())):
+        unique.setdefault(document.digest, document)
+    return list(unique.values())
 
 
-def _document_from_bytes(name: str, raw: bytes) -> Document | None:
-    if len(raw) > 8 * 1024 * 1024 or b"\0" in raw[:4096]:
+def _document_from_bytes(name: str, raw: bytes, scope: str) -> Document | None:
+    if _ignored(name.split("!/", 1)[-1]) or len(raw) > 8 * 1024 * 1024 or b"\0" in raw[:4096]:
         return None
     text = raw.decode("utf-8", errors="replace")
     data = None
@@ -62,10 +96,10 @@ def _document_from_bytes(name: str, raw: bytes) -> Document | None:
             data = json.loads(text)
         except json.JSONDecodeError:
             pass
-    return Document(name, text, data)
+    return Document(name, text, data, scope, hashlib.sha256(raw).hexdigest())
 
 
-def _zip_documents(raw: bytes, archive_name: str) -> list[Document]:
+def _zip_documents(raw: bytes, archive_name: str, scope: str) -> list[Document]:
     import io
     result: list[Document] = []
     try:
@@ -74,7 +108,7 @@ def _zip_documents(raw: bytes, archive_name: str) -> list[Document]:
             for member in members:
                 if member.file_size > 8 * 1024 * 1024:
                     continue
-                doc = _document_from_bytes(f"{archive_name}!/{member.filename}", archive.read(member))
+                doc = _document_from_bytes(f"{archive_name}!/{member.filename}", archive.read(member), scope)
                 if doc:
                     result.append(doc)
     except (OSError, ValueError, zipfile.BadZipFile):
@@ -82,7 +116,7 @@ def _zip_documents(raw: bytes, archive_name: str) -> list[Document]:
     return result
 
 
-def _tar_documents(path: Path, archive_name: str) -> list[Document]:
+def _tar_documents(path: Path, archive_name: str, scope: str) -> list[Document]:
     result: list[Document] = []
     try:
         with tarfile.open(path, "r:*") as archive:
@@ -92,7 +126,7 @@ def _tar_documents(path: Path, archive_name: str) -> list[Document]:
                     continue
                 handle = archive.extractfile(member)
                 if handle:
-                    doc = _document_from_bytes(f"{archive_name}!/{member.name}", handle.read())
+                    doc = _document_from_bytes(f"{archive_name}!/{member.name}", handle.read(), scope)
                     if doc:
                         result.append(doc)
     except (OSError, ValueError, tarfile.TarError):

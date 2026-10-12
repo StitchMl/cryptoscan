@@ -23,9 +23,9 @@ def _records(documents: list[Document]) -> list[dict[str, Any]]:
     for doc in documents:
         if doc.data is not None:
             for pointer, obj in flatten_objects(doc.data):
-                records.append({"location": f"{doc.path}:{pointer}", "object": obj})
+                records.append({"location": f"{doc.path}:{pointer}", "object": obj, "scope": doc.scope})
         for assigned in scalar_records(doc.text):
-            records.append({"location": f"{doc.path}:assignments", "object": assigned})
+            records.append({"location": f"{doc.path}:assignments", "object": assigned, "scope": doc.scope})
     return records
 
 
@@ -137,7 +137,7 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
     # RSA pairwise shared factors.
     for left_index, left in enumerate(rsa):
         for right in rsa[left_index + 1 :]:
-            if left["n"] == right["n"]:
+            if left["scope"] != right["scope"] or left["n"] == right["n"]:
                 continue
             factor = math.gcd(left["n"], right["n"])
             if 1 < factor < min(left["n"], right["n"]):
@@ -203,11 +203,11 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                     "Generate independent primes with a CSPRNG and enforce an adequate distance between p and q."
                 ))
 
-    by_modulus: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    by_modulus: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     for item in rsa:
         if item["e"] is not None and item["c"] is not None:
-            by_modulus[item["n"]].append(item)
-    for n, group in sorted(by_modulus.items()):
+            by_modulus[(item["scope"], item["n"])].append(item)
+    for (_, n), group in sorted(by_modulus.items()):
         for i, left in enumerate(group):
             for right in group[i + 1 :]:
                 g, a, b = extended_gcd(left["e"], right["e"])
@@ -236,6 +236,8 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
         for j in range(i + 1, len(e3)):
             for k in range(j + 1, len(e3)):
                 group = [e3[i], e3[j], e3[k]]
+                if len({item["scope"] for item in group}) != 1:
+                    continue
                 if any(math.gcd(group[a]["n"], group[b]["n"]) != 1 for a in range(3) for b in range(a + 1, 3)):
                     continue
                 combined, product = crt((item["c"], item["n"]) for item in group)
@@ -265,10 +267,10 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
         q = parse_int(_pick(obj, "q", "order", "curve_order", "n_order"))
         if all(value is not None for value in (r, s, z, q)) and q > 2 and 0 < r < q and 0 < s < q:
             signatures.append({**record, "r": r, "s": s, "z": z, "q": q})
-    by_signature: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
+    by_signature: dict[tuple[str, int, int], list[dict[str, Any]]] = defaultdict(list)
     for item in signatures:
-        by_signature[(item["q"], item["r"])].append(item)
-    for (q, r), group in sorted(by_signature.items()):
+        by_signature[(item["scope"], item["q"], item["r"])].append(item)
+    for (_, q, r), group in sorted(by_signature.items()):
         for i, left in enumerate(group):
             for right in group[i + 1:]:
                 if left["s"] == right["s"] or left["z"] == right["z"]:
@@ -345,6 +347,8 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
     stream_records = [item for item in byte_records if any(token in item["field"].casefold() for token in ("xor", "stream", "otp"))]
     for i, left in enumerate(stream_records[:512]):
         for right in stream_records[i + 1:512]:
+            if left["scope"] != right["scope"]:
+                continue
             if left["bytes"] == right["bytes"]:
                 continue
             length = min(len(left["bytes"]), len(right["bytes"]))
@@ -363,7 +367,7 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                 ))
 
     # Explicit nonce reuse in structured records.
-    nonce_groups: dict[tuple[str, bytes], list[dict[str, Any]]] = defaultdict(list)
+    nonce_groups: dict[tuple[str, str, bytes], list[dict[str, Any]]] = defaultdict(list)
     for record in records:
         obj = record["object"]
         nonce = parse_bytes(_pick(obj, "nonce", "iv"))
@@ -372,8 +376,8 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
         explicit_key_id = _pick(obj, "key_id", "kid", "keyid")
         key_id = str(explicit_key_id or "unknown-key")
         if nonce and cipher and any(token in mode for token in ("ctr", "gcm", "chacha")):
-            nonce_groups[(key_id, nonce)].append({**record, "nonce": nonce, "cipher": cipher, "mode": mode})
-    for (key_id, nonce), group in sorted(nonce_groups.items(), key=lambda item: (item[0][0], item[0][1])):
+            nonce_groups[(record["scope"], key_id, nonce)].append({**record, "nonce": nonce, "cipher": cipher, "mode": mode})
+    for (_, key_id, nonce), group in sorted(nonce_groups.items(), key=lambda item: (item[0][0], item[0][1], item[0][2])):
         if len(group) < 2:
             continue
         for i, left in enumerate(group):
@@ -446,6 +450,8 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                     excerpt,
                     re.IGNORECASE,
                 ):
+                    continue
+                if rule == "HASH-WEAK" and re.search(r"(?:secret|key)\s*\+", excerpt, re.IGNORECASE):
                     continue
                 findings.append(Finding(
                     rule, title, severity, "medium", f"{doc.path}:{line}",

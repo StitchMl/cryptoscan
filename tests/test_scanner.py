@@ -137,3 +137,44 @@ def test_repeating_key_xor_recovery(tmp_path):
     findings = scan(collect_documents([str(path)]))
     repeated = next(item for item in findings if item.rule == "XOR-REPEATING-KEY")
     assert bytes.fromhex(repeated.solver["result_hex"]) == plain
+
+
+def test_support_files_are_ignored_by_default(tmp_path):
+    (tmp_path / "README.md").write_text("digest = md5(flag)\n", encoding="utf-8")
+    (tmp_path / "solver.py").write_text("key = b'hardcoded-secret'\n", encoding="utf-8")
+    (tmp_path / "writeup.ipynb").write_text('{"cells": [{"source": ["AES.MODE_ECB"]}]}', encoding="utf-8")
+    assert collect_documents([str(tmp_path)]) == []
+
+
+def test_shared_prime_does_not_cross_challenge_boundaries(tmp_path):
+    shared = 1009
+    first = tmp_path / "challenge_one"
+    second = tmp_path / "challenge_two"
+    first.mkdir()
+    second.mkdir()
+    (first / "public.json").write_text(json.dumps({"n": shared * 1013, "e": 65537, "c": 7}), encoding="utf-8")
+    (second / "public.json").write_text(json.dumps({"n": shared * 1019, "e": 65537, "c": 9}), encoding="utf-8")
+    rules = {finding.rule for finding in scan(collect_documents([str(tmp_path)]))}
+    assert "RSA-SHARED-PRIME" not in rules
+
+
+def test_duplicate_release_server_and_archive_artifacts_are_deduplicated(tmp_path):
+    payload = json.dumps({"n": 1009 * 1013, "e": 65537, "c": 7})
+    (tmp_path / "release").mkdir()
+    (tmp_path / "server").mkdir()
+    (tmp_path / "release" / "public.json").write_text(payload, encoding="utf-8")
+    (tmp_path / "server" / "public.json").write_text(payload, encoding="utf-8")
+    with zipfile.ZipFile(tmp_path / "challenge.zip", "w") as archive:
+        archive.writestr("public.json", payload)
+    documents = collect_documents([str(tmp_path)])
+    assert len(documents) == 1
+    assert "!/" not in documents[0].path
+
+
+def test_secret_prefix_hash_reports_length_extension_not_collision(tmp_path):
+    path = tmp_path / "challenge.py"
+    path.write_text("digest = sha1(secret + message)\n", encoding="utf-8")
+    findings = scan(collect_documents([str(path)]))
+    assert {finding.rule for finding in findings} == {"MAC-PREFIX-HASH"}
+    finding = findings[0]
+    assert "length-extension" in finding.attack

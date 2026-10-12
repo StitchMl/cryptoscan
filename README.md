@@ -57,6 +57,8 @@ Byte strings may use hexadecimal, `0x`-prefixed hexadecimal, Base64, or JSON byt
 The parser also accepts Python byte literals and common `key: value` challenge dumps.
 It scans text members inside ZIP, TAR, TAR.GZ, TAR.BZ2, and TAR.XZ archives without extracting them to disk. Per-member and entry-count limits bound archive processing.
 
+By default, corpus collection skips documentation, notebooks, tests, writeups, solvers, and exploit scripts. Exact duplicate artifacts across release, server, and archive copies are scanned once. Cross-artifact attacks stay inside one inferred challenge boundary, so unrelated challenge directories do not produce shared-prime, common-modulus, nonce-reuse, or broadcast findings.
+
 ## Stable reports
 
 Finding IDs derive from rule, relative location, and evidence. Reports omit timestamps, scan duration, and absolute input paths. Sorting does not depend on filesystem enumeration order.

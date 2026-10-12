@@ -5,9 +5,9 @@ import math
 import re
 from typing import Any
 
-from .mathutil import extended_gcd, fermat_factor, int_to_bytes, integer_nth_root, signed_mod_pow
+from .mathutil import crt, extended_gcd, fermat_factor, int_to_bytes, integer_nth_root, signed_mod_pow, wiener_private_exponent
 from .model import Finding
-from .parser import Document, assignments, flatten_objects, parse_bytes, parse_int
+from .parser import Document, flatten_objects, parse_bytes, parse_int, scalar_records
 
 
 def _pick(obj: dict[str, Any], *names: str) -> Any | None:
@@ -24,8 +24,7 @@ def _records(documents: list[Document]) -> list[dict[str, Any]]:
         if doc.data is not None:
             for pointer, obj in flatten_objects(doc.data):
                 records.append({"location": f"{doc.path}:{pointer}", "object": obj})
-        assigned = assignments(doc.text)
-        if assigned:
+        for assigned in scalar_records(doc.text):
             records.append({"location": f"{doc.path}:assignments", "object": assigned})
     return records
 
@@ -68,6 +67,67 @@ def _single_byte_score(data: bytes) -> float:
     return score / max(1, len(data))
 
 
+def _language_score(data: bytes) -> float:
+    frequencies = {
+        " ": 0.18, "e": 0.102, "t": 0.075, "a": 0.065, "o": 0.061, "i": 0.057,
+        "n": 0.057, "s": 0.053, "h": 0.049, "r": 0.049, "d": 0.034, "l": 0.033, "u": 0.022,
+    }
+    total = 0.0
+    for value in data:
+        char = chr(value).casefold()
+        if char in frequencies:
+            total += math.log(frequencies[char])
+        elif "a" <= char <= "z":
+            total += math.log(0.012)
+        elif char.isdigit() or char in "{}_=-;:,.!?/":
+            total += math.log(0.008)
+        elif 32 <= value <= 126:
+            total += math.log(0.001)
+        else:
+            total -= 20
+    lowered = data.lower()
+    total += 2.5 * sum(lowered.count(token) for token in (b"the", b"ing", b"ion", b"message", b"padding", b"text"))
+    return total / max(1, len(data))
+
+
+def _repeating_xor_candidate(data: bytes) -> tuple[bytes, bytes, float] | None:
+    """Return a conservative repeating-key XOR solution when it exposes a flag token."""
+    best: tuple[float, bytes, bytes] | None = None
+    for key_size in range(2, min(40, len(data) // 2) + 1):
+        baseline = bytearray()
+        for offset in range(key_size):
+            column = data[offset::key_size]
+            candidates = [(_single_byte_score(bytes(value ^ candidate for value in column)), candidate) for candidate in range(256)]
+            baseline.append(max(candidates, key=lambda row: (row[0], -row[1]))[1])
+        keys = [bytes(baseline)]
+        for crib in (b"flag{", b"ctf{"):
+            for start in range(0, len(data) - len(crib) + 1):
+                candidate = bytearray(baseline)
+                fixed: dict[int, int] = {}
+                valid = True
+                for index, expected in enumerate(crib):
+                    position = (start + index) % key_size
+                    value = data[start + index] ^ expected
+                    if position in fixed and fixed[position] != value:
+                        valid = False
+                        break
+                    fixed[position] = value
+                    candidate[position] = value
+                if valid:
+                    keys.append(bytes(candidate))
+        for key in keys:
+            plain = bytes(value ^ key[index % key_size] for index, value in enumerate(data))
+            if not re.search(rb"(?:flag|ctf|key)\{[^\r\n]{1,200}\}", plain, re.IGNORECASE):
+                continue
+            printable = sum(value in (9, 10, 13) or 32 <= value <= 126 for value in plain) / len(plain)
+            if printable < 0.90:
+                continue
+            score = _language_score(plain) - 0.015 * key_size
+            if best is None or (score, bytes(key)) > (best[0], best[1]):
+                best = score, bytes(key), plain
+    return (best[1], best[2], best[0]) if best else None
+
+
 def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding]:
     records = _records(documents)
     rsa = _rsa_records(records)
@@ -106,6 +166,22 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                     {"kind": "integer_root", "degree": 3, "result_int": str(root), "result_hex": plain.hex()},
                     "Use RSA-OAEP with a maintained cryptographic library."
                 ))
+        if e is not None and e > 1:
+            recovered = wiener_private_exponent(n, e)
+            if recovered:
+                d, p, q = recovered
+                evidence = {"n": str(n), "e": e, "d": str(d), "p": str(p), "q": str(q)}
+                solver: dict[str, Any] = {"kind": "rsa_wiener", "d": str(d), "p": str(p), "q": str(q)}
+                if c is not None and 0 <= c < n:
+                    plain = int_to_bytes(pow(c, d, n))
+                    evidence.update({"plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace")})
+                    solver["result_hex"] = plain.hex()
+                findings.append(Finding(
+                    "RSA-WIENER-SMALL-D", "RSA private exponent recovered by Wiener attack", "critical", "certain", item["location"],
+                    evidence, ["The public key is RSA.", "The private exponent is small enough to occur in convergents of e/n."],
+                    "Expand e/n as a continued fraction. A convergent yields d and factors n exactly.", solver,
+                    "Generate RSA keys with a maintained library and reject private exponents below the Wiener bound."
+                ))
         factorization = fermat_factor(n, fermat_steps)
         if factorization:
             p, q, steps = factorization
@@ -141,15 +217,78 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                     m = (signed_mod_pow(left["c"], a, n) * signed_mod_pow(right["c"], b, n)) % n
                 except ValueError:
                     continue
+                if pow(m, left["e"], n) != left["c"] or pow(m, right["e"], n) != right["c"]:
+                    continue
                 plain = int_to_bytes(m)
                 findings.append(Finding(
                     "RSA-COMMON-MODULUS", "RSA common-modulus attack recovers plaintext", "critical", "certain",
                     f'{left["location"]} + {right["location"]}',
-                    {"n": str(n), "e1": left["e"], "e2": right["e"], "bezout_a": a, "bezout_b": b, "m": str(m), "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace")},
+                    {"n": str(n), "e1": left["e"], "e2": right["e"], "bezout_a": a, "bezout_b": b, "m": str(m), "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace"), "reencryption_verified": True},
                     ["Both ciphertexts encrypt the same plaintext under the same modulus.", "The public exponents are coprime."],
                     "Combine c1^a and c2^b modulo n using Bezout coefficients a and b.",
                     {"kind": "rsa_common_modulus", "result_int": str(m), "result_hex": plain.hex()},
                     "Never share an RSA modulus between keys. Use randomized OAEP padding."
+                ))
+
+    # Hastad broadcast: same small-exponent plaintext under independent moduli.
+    e3 = [item for item in rsa if item["e"] == 3 and item["c"] is not None and 0 <= item["c"] < item["n"]]
+    for i in range(len(e3)):
+        for j in range(i + 1, len(e3)):
+            for k in range(j + 1, len(e3)):
+                group = [e3[i], e3[j], e3[k]]
+                if any(math.gcd(group[a]["n"], group[b]["n"]) != 1 for a in range(3) for b in range(a + 1, 3)):
+                    continue
+                combined, product = crt((item["c"], item["n"]) for item in group)
+                root, exact = integer_nth_root(combined, 3)
+                if not exact:
+                    continue
+                plain = int_to_bytes(root)
+                findings.append(Finding(
+                    "RSA-HASTAD-BROADCAST", "Hastad broadcast attack recovers plaintext", "critical", "certain",
+                    " + ".join(item["location"] for item in group),
+                    {"e": 3, "moduli": [str(item["n"]) for item in group], "crt_value": str(combined),
+                     "crt_modulus": str(product), "m": str(root), "plaintext_hex": plain.hex(),
+                     "plaintext_utf8": plain.decode("utf-8", "replace")},
+                    ["All three ciphertexts encrypt the same plaintext.", "The moduli are pairwise coprime.", "Textbook RSA uses e=3 without randomized padding."],
+                    "Combine ciphertexts with CRT, then take the exact integer cube root.",
+                    {"kind": "rsa_hastad", "result_int": str(root), "result_hex": plain.hex()},
+                    "Use RSA-OAEP. Never encrypt one raw plaintext under several textbook RSA keys."
+                ))
+
+    # Reused DSA/ECDSA nonce: equal r exposes k and private key x.
+    signatures: list[dict[str, Any]] = []
+    for record in records:
+        obj = record["object"]
+        r = parse_int(_pick(obj, "r"))
+        s = parse_int(_pick(obj, "s"))
+        z = parse_int(_pick(obj, "z", "hash", "message_hash", "h"))
+        q = parse_int(_pick(obj, "q", "order", "curve_order", "n_order"))
+        if all(value is not None for value in (r, s, z, q)) and q > 2 and 0 < r < q and 0 < s < q:
+            signatures.append({**record, "r": r, "s": s, "z": z, "q": q})
+    by_signature: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
+    for item in signatures:
+        by_signature[(item["q"], item["r"])].append(item)
+    for (q, r), group in sorted(by_signature.items()):
+        for i, left in enumerate(group):
+            for right in group[i + 1:]:
+                if left["s"] == right["s"] or left["z"] == right["z"]:
+                    continue
+                try:
+                    nonce = ((left["z"] - right["z"]) * pow((left["s"] - right["s"]) % q, -1, q)) % q
+                    private = ((left["s"] * nonce - left["z"]) * pow(r, -1, q)) % q
+                except ValueError:
+                    continue
+                if (left["s"] * nonce - left["z"] - r * private) % q != 0 or (right["s"] * nonce - right["z"] - r * private) % q != 0:
+                    continue
+                findings.append(Finding(
+                    "SIGNATURE-NONCE-REUSE", "DSA/ECDSA nonce reuse exposes private key", "critical", "certain",
+                    f'{left["location"]} + {right["location"]}',
+                    {"q": str(q), "r": str(r), "nonce_k": str(nonce), "private_key_x": str(private),
+                     "z1": str(left["z"]), "s1": str(left["s"]), "z2": str(right["z"]), "s2": str(right["s"])},
+                    ["Both signatures use the same group order and r value.", "The recorded hashes are the signed message integers."],
+                    "Compute k=(z1-z2)/(s1-s2) mod q, then x=(s1*k-z1)/r mod q. Use x to sign the flag request.",
+                    {"kind": "signature_nonce_reuse", "nonce_k": str(nonce), "private_key_x": str(private)},
+                    "Use deterministic RFC 6979 nonces or a CSPRNG and reject repeated r values."
                 ))
 
     # Byte-level attacks.
@@ -160,14 +299,33 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
             plain = bytes(byte ^ key for byte in data)
             candidates.append((_single_byte_score(plain), key, plain))
         score, key, plain = max(candidates, key=lambda row: (row[0], -row[1]))
-        if score >= 1.05 and len(data) >= 6:
+        printable_ratio = sum(byte in (9, 10, 13) or 32 <= byte <= 126 for byte in plain) / len(plain)
+        runner_up = sorted(candidates, key=lambda row: row[0], reverse=True)[1][0]
+        flag_shape = bool(re.search(rb"(?:flag|ctf|key)\{[^\r\n]{1,200}\}", plain, re.IGNORECASE))
+        if key != 0 and len(data) >= 6 and printable_ratio >= 0.90 and (flag_shape or (score >= 1.20 and score - runner_up >= 0.18)):
             findings.append(Finding(
-                "XOR-SINGLE-BYTE", "Single-byte XOR key is recoverable", "high", "high", f'{record["location"]}.{record["field"]}',
-                {"key_hex": f"{key:02x}", "score": round(score, 4), "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace")},
+                "XOR-SINGLE-BYTE", "Single-byte XOR key is recoverable", "high", "certain" if flag_shape else "high", f'{record["location"]}.{record["field"]}',
+                {"key_hex": f"{key:02x}", "score": round(score, 4), "score_margin": round(score - runner_up, 4),
+                 "printable_ratio": round(printable_ratio, 4), "flag_shape": flag_shape,
+                 "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace")},
                 ["Ciphertext represents repeated single-byte XOR.", "Plaintext resembles printable CTF text."],
                 "Try all 256 keys and rank decoded text. The highest-scoring key and plaintext are included.",
                 {"kind": "xor_single_byte", "key": key, "result_hex": plain.hex()},
                 "Replace XOR obfuscation with authenticated encryption and a unique nonce."
+            ))
+        repeating = _repeating_xor_candidate(data)
+        if repeating:
+            repeated_key, repeated_plain, repeated_score = repeating
+            findings.append(Finding(
+                "XOR-REPEATING-KEY", "Repeating-key XOR plaintext recovered", "high", "high",
+                f'{record["location"]}.{record["field"]}',
+                {"key_hex": repeated_key.hex(), "key_length": len(repeated_key), "score": round(repeated_score, 4),
+                 "plaintext_hex": repeated_plain.hex(), "plaintext_utf8": repeated_plain.decode("utf-8", "replace"),
+                 "flag_shape": True},
+                ["Ciphertext uses a short repeating XOR key.", "Recovered plaintext contains a CTF flag-shaped token and is at least 90% printable."],
+                "Transpose ciphertext by candidate key length, solve each column, and repeat the recovered key across the ciphertext.",
+                {"kind": "xor_repeating_key", "key_hex": repeated_key.hex(), "result_hex": repeated_plain.hex()},
+                "Use authenticated encryption with a random key and a unique nonce."
             ))
         for block_size in (16, 8):
             blocks = [data[i:i + block_size] for i in range(0, len(data) - block_size + 1, block_size)]
@@ -184,8 +342,9 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                 ))
                 break
 
-    for i, left in enumerate(byte_records):
-        for right in byte_records[i + 1 :]:
+    stream_records = [item for item in byte_records if any(token in item["field"].casefold() for token in ("xor", "stream", "otp"))]
+    for i, left in enumerate(stream_records[:512]):
+        for right in stream_records[i + 1:512]:
             if left["bytes"] == right["bytes"]:
                 continue
             length = min(len(left["bytes"]), len(right["bytes"]))
@@ -197,7 +356,7 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                     "XOR-KEYSTREAM-REUSE", "Ciphertexts likely reuse an XOR keystream", "high", "medium",
                     f'{left["location"]}.{left["field"]} + {right["location"]}.{right["field"]}',
                     {"xor_hex": xored.hex(), "length": length, "space_letter_positions": alpha_positions},
-                    ["Both values are stream/XOR ciphertexts aligned at offset zero.", "Natural-language plaintext contains spaces."],
+                    ["Field names identify both values as stream, OTP, or XOR ciphertexts.", "Both values align at offset zero.", "Natural-language plaintext contains spaces."],
                     "C1 xor C2 removes the keystream. Crib-drag likely words to recover both plaintexts and the reused keystream.",
                     {"kind": "xor_crib_drag", "combined_hex": xored.hex()},
                     "Generate a unique nonce for every encryption under a key and reject nonce reuse."
@@ -210,7 +369,8 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
         nonce = parse_bytes(_pick(obj, "nonce", "iv"))
         cipher = parse_bytes(_pick(obj, "ciphertext", "ct", "encrypted"))
         mode = str(_pick(obj, "mode", "algorithm", "alg") or "").casefold()
-        key_id = str(_pick(obj, "key_id", "kid", "key", "keyid") or "unknown-key")
+        explicit_key_id = _pick(obj, "key_id", "kid", "keyid")
+        key_id = str(explicit_key_id or "unknown-key")
         if nonce and cipher and any(token in mode for token in ("ctr", "gcm", "chacha")):
             nonce_groups[(key_id, nonce)].append({**record, "nonce": nonce, "cipher": cipher, "mode": mode})
     for (key_id, nonce), group in sorted(nonce_groups.items(), key=lambda item: (item[0][0], item[0][1])):
@@ -223,10 +383,11 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                 is_gcm = "gcm" in left["mode"] or "gcm" in right["mode"]
                 rule = "GCM-NONCE-REUSE" if is_gcm else "CTR-NONCE-REUSE"
                 findings.append(Finding(
-                    rule, f'{"GCM" if is_gcm else "CTR/stream"} nonce reuse', "critical", "certain",
+                    rule, f'{"GCM" if is_gcm else "CTR/stream"} nonce reuse', "critical", "certain" if key_id != "unknown-key" else "medium",
                     f'{left["location"]} + {right["location"]}',
                     {"key_id": key_id, "nonce_hex": nonce.hex(), "ciphertexts_xor_hex": combined.hex()},
-                    ["Records use the same key identifier and nonce.", "Ciphertexts start at the same stream offset."],
+                    (["Records use the same explicit key identifier and nonce.", "Ciphertexts start at the same stream offset."]
+                     if key_id != "unknown-key" else ["Records use the same nonce and mode, but omit a key identifier.", "Confirm both records use the same key."]),
                     ("XOR ciphertexts to cancel the keystream; crib-drag the result. GCM reuse may also permit authentication forgeries."
                      if is_gcm else "XOR ciphertexts to cancel the keystream, then crib-drag known flag and message formats."),
                     {"kind": "nonce_reuse", "mode": "gcm" if is_gcm else "ctr", "combined_hex": combined.hex()},
@@ -255,6 +416,14 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
          r"\b(?:mt19937|random\.getrandbits|random\.randbytes)\b",
          "Collect enough outputs to clone MT state, then predict later keys, nonces, or tokens.",
          "Use secrets.token_bytes or an operating-system CSPRNG."),
+        ("PRNG-NONCRYPTO-RANDOM", "Non-cryptographic random value protects a secret", "high",
+         r"\b(?:key|nonce|token|secret|otp)\s*=\s*random\.(?:randint|randrange|choice|choices)\s*\(",
+         "Reconstruct or brute-force the PRNG state, then predict the generated secret value.",
+         "Generate keys, nonces, and tokens with secrets or an operating-system CSPRNG."),
+        ("KEY-HARDCODED", "Hardcoded cryptographic key", "high",
+         r"\b(?:aes_?|encryption_?|secret_?)?key\s*=\s*(?:b|bytes\.fromhex\s*\()?[\"'][^\"']{8,}[\"']",
+         "Read the embedded key and decrypt the challenge ciphertext with the declared algorithm and parameters.",
+         "Load the key from a secret store or challenge runtime. Rotate the exposed key."),
         ("CIPHER-ECB", "ECB mode selected in source", "high", r"\b(?:MODE_ECB|AES[-_]?ECB|\becb\b)",
          "Exploit equal-block leakage; with an encryption oracle, align input for byte-at-a-time secret recovery.",
          "Use AES-GCM or ChaCha20-Poly1305 with a unique nonce."),
@@ -270,6 +439,14 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
             for match in regex.finditer(doc.text):
                 line = doc.text.count("\n", 0, match.start()) + 1
                 excerpt = doc.text.splitlines()[line - 1].strip()[:200]
+                if excerpt.startswith(("#", "//", "/*", "*")):
+                    continue
+                if rule == "HASH-WEAK" and not re.search(
+                    r"(?:digest|hash|signature|sign|verify|password|token|flag|secret|mac|checksum)\s*=|==|!=|return\s+",
+                    excerpt,
+                    re.IGNORECASE,
+                ):
+                    continue
                 findings.append(Finding(
                     rule, title, severity, "medium", f"{doc.path}:{line}",
                     {"match": match.group(0), "line": excerpt},

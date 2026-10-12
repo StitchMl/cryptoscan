@@ -10,10 +10,14 @@ Use it only on CTF challenges and systems you may test.
 - RSA `e=3` exact-root plaintext recovery
 - Fermat factorization for close RSA primes
 - RSA common-modulus plaintext recovery
+- Hastad `e=3` broadcast recovery across three pairwise-coprime moduli
+- Wiener recovery of unsafe small RSA private exponents
+- DSA/ECDSA repeated-nonce private-key recovery
 - single-byte XOR recovery and reused XOR/stream keystream evidence
 - repeated ECB blocks at 16-byte and 8-byte boundaries
 - CTR, GCM, and ChaCha-family nonce reuse for a matching key identifier
 - source patterns for MD5/SHA-1, secret-prefix hash MACs, ECB, constant nonces, Mersenne Twister, and time-seeded PRNGs
+- hardcoded keys and non-cryptographic `random` calls used for keys, nonces, tokens, or OTP material
 
 The scanner calculates factors, plaintext roots, Bezout coefficients, XOR combinations, candidate keys, and recovered plaintext when the available evidence permits it. A source match alone receives lower confidence.
 
@@ -50,6 +54,8 @@ c = 123456...
 ```
 
 Byte strings may use hexadecimal, `0x`-prefixed hexadecimal, Base64, or JSON byte arrays. Structured nonce-reuse checks understand fields such as `mode`, `key_id`, `nonce` or `iv`, and `ciphertext` or `ct`.
+The parser also accepts Python byte literals and common `key: value` challenge dumps.
+It scans text members inside ZIP, TAR, TAR.GZ, TAR.BZ2, and TAR.XZ archives without extracting them to disk. Per-member and entry-count limits bound archive processing.
 
 ## Stable reports
 
@@ -57,7 +63,7 @@ Finding IDs derive from rule, relative location, and evidence. Reports omit time
 
 ## Limits
 
-`cryptoscan` performs bounded static and corpus analysis. It does not execute challenge code, connect to services, guess arbitrary encodings, disassemble binaries, or prove that a matched source line is reachable. Stream-cipher reuse heuristics can produce false positives. Confirm each finding against challenge behavior and the stated preconditions.
+`cryptoscan` performs bounded static and corpus analysis. It does not execute challenge code, connect to services, guess arbitrary encodings, disassemble binaries, or prove that a matched source line is reachable. Findings marked `certain` include a mathematical verification, such as exact roots, recovered factors, signature-equation checks, or ciphertext re-encryption. Heuristic source and language findings use lower confidence. Confirm them against challenge behavior and the stated preconditions.
 
 ## Development
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 
 
 def integer_nth_root(value: int, degree: int) -> tuple[int, bool]:
@@ -54,3 +55,48 @@ def int_to_bytes(value: int) -> bytes:
     if value == 0:
         return b"\0"
     return value.to_bytes((value.bit_length() + 7) // 8, "big")
+
+
+def crt(values: Iterable[tuple[int, int]]) -> tuple[int, int]:
+    """Return x and modulus for pairwise-coprime (remainder, modulus) pairs."""
+    pairs = list(values)
+    modulus = math.prod(n for _, n in pairs)
+    result = 0
+    for remainder, current in pairs:
+        partial = modulus // current
+        result = (result + remainder * partial * pow(partial, -1, current)) % modulus
+    return result, modulus
+
+
+def continued_fraction(numerator: int, denominator: int) -> list[int]:
+    terms: list[int] = []
+    while denominator:
+        quotient, numerator, denominator = numerator // denominator, denominator, numerator % denominator
+        terms.append(quotient)
+    return terms
+
+
+def convergents(terms: Iterable[int]) -> Iterable[tuple[int, int]]:
+    p0, p1, q0, q1 = 0, 1, 1, 0
+    for term in terms:
+        p0, p1 = p1, term * p1 + p0
+        q0, q1 = q1, term * q1 + q0
+        yield p1, q1
+
+
+def wiener_private_exponent(n: int, e: int) -> tuple[int, int, int] | None:
+    """Recover d when RSA uses Wiener's small-private-exponent regime."""
+    for k, d in convergents(continued_fraction(e, n)):
+        if k == 0 or d == 0 or (e * d - 1) % k:
+            continue
+        phi = (e * d - 1) // k
+        total = n - phi + 1
+        discriminant = total * total - 4 * n
+        if discriminant < 0:
+            continue
+        root = math.isqrt(discriminant)
+        if root * root == discriminant and (total + root) % 2 == 0:
+            p, q = (total + root) // 2, (total - root) // 2
+            if p > 1 and p * q == n:
+                return d, p, q
+    return None

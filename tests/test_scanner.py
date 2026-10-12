@@ -1,4 +1,5 @@
 import json
+import zipfile
 
 from cryptoscan.parser import collect_documents
 from cryptoscan.scanner import scan
@@ -69,3 +70,70 @@ def test_deterministic_json(tmp_path):
     second = [finding.to_dict() for finding in scan(collect_documents([str(path)]))]
     assert first == second
     assert all("duration" not in finding and str(tmp_path) not in json.dumps(finding) for finding in first)
+
+
+def test_hastad_wiener_and_signature_nonce_reuse(tmp_path):
+    message = int.from_bytes(b"flag", "big")
+    moduli = [1000000007 * 1000000009, 1000000033 * 1000000087, 1000000093 * 1000000097]
+    broadcast = [{"n": n, "e": 3, "c": pow(message, 3, n)} for n in moduli]
+
+    p, q, d = 1009, 1013, 5
+    n = p * q
+    e = pow(d, -1, (p - 1) * (q - 1))
+    wiener = {"n": n, "e": e, "c": pow(42, e, n)}
+
+    order, private, nonce, r = 1019, 123, 77, 321
+    z1, z2 = 111, 222
+    sig1 = {"q": order, "r": r, "s": ((z1 + r * private) * pow(nonce, -1, order)) % order, "z": z1}
+    sig2 = {"q": order, "r": r, "s": ((z2 + r * private) * pow(nonce, -1, order)) % order, "z": z2}
+    path = tmp_path / "advanced.json"
+    path.write_text(json.dumps(broadcast + [wiener, sig1, sig2]), encoding="utf-8")
+    findings = scan(collect_documents([str(path)]))
+    rules = {finding.rule for finding in findings}
+    assert {"RSA-HASTAD-BROADCAST", "RSA-WIENER-SMALL-D", "SIGNATURE-NONCE-REUSE"} <= rules
+    signature = next(finding for finding in findings if finding.rule == "SIGNATURE-NONCE-REUSE")
+    assert signature.solver["private_key_x"] == str(private)
+
+
+def test_archive_and_colon_dump_parsing(tmp_path):
+    archive_path = tmp_path / "challenge.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("data/weak.py", "digest = md5(flag)\n")
+        archive.writestr("data/key.txt", "mode: AES-GCM\nnonce: 000102030405060708090a0b\n")
+    documents = collect_documents([str(archive_path)])
+    assert [document.path for document in documents] == ["challenge.zip!/data/key.txt", "challenge.zip!/data/weak.py"]
+    assert "HASH-WEAK" in {finding.rule for finding in scan(documents)}
+
+
+def test_false_positive_guards(tmp_path):
+    path = tmp_path / "safe.py"
+    path.write_text(
+        "# digest = md5(flag)\n"
+        "cache_name = md5(public_filename)\n"
+        "ciphertext = b'plain printable data'\n",
+        encoding="utf-8",
+    )
+    rules = rules_for(path)
+    assert "HASH-WEAK" not in rules
+    assert "XOR-SINGLE-BYTE" not in rules
+
+
+def test_nonce_reuse_without_key_id_is_not_certain(tmp_path):
+    path = tmp_path / "nonce.json"
+    path.write_text(json.dumps([
+        {"mode": "AES-GCM", "nonce": "00112233445566778899aabb", "ct": "0011223344556677"},
+        {"mode": "AES-GCM", "nonce": "00112233445566778899aabb", "ct": "1021324354657687"},
+    ]), encoding="utf-8")
+    finding = next(item for item in scan(collect_documents([str(path)])) if item.rule == "GCM-NONCE-REUSE")
+    assert finding.confidence == "medium"
+
+
+def test_repeating_key_xor_recovery(tmp_path):
+    plain = b"message=flag{repeating_xor_recovered};padding=english-text"
+    key = b"ICE"
+    cipher = bytes(value ^ key[index % len(key)] for index, value in enumerate(plain))
+    path = tmp_path / "xor.json"
+    path.write_text(json.dumps({"ciphertext": cipher.hex()}), encoding="utf-8")
+    findings = scan(collect_documents([str(path)]))
+    repeated = next(item for item in findings if item.rule == "XOR-REPEATING-KEY")
+    assert bytes.fromhex(repeated.solver["result_hex"]) == plain

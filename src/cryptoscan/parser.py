@@ -69,6 +69,12 @@ def collect_documents(targets: Iterable[str]) -> list[Document]:
             relative = path.relative_to(root).as_posix()
             documents.extend(_tar_documents(path, relative, _scope(relative, Path(relative).name.casefold().split(".tar", 1)[0])))
             continue
+        if path.suffix.casefold() in {".der", ".cer"}:
+            keys = der_rsa_public_keys(raw)
+            if keys:
+                relative = path.relative_to(root).as_posix()
+                documents.append(Document(relative, "", keys, _scope(relative), hashlib.sha256(raw).hexdigest()))
+            continue
         if b"\0" in raw[:4096]:
             continue
         text = raw.decode("utf-8", errors="replace")
@@ -87,7 +93,12 @@ def collect_documents(targets: Iterable[str]) -> list[Document]:
 
 
 def _document_from_bytes(name: str, raw: bytes, scope: str) -> Document | None:
-    if _ignored(name.split("!/", 1)[-1]) or len(raw) > 8 * 1024 * 1024 or b"\0" in raw[:4096]:
+    if _ignored(name.split("!/", 1)[-1]) or len(raw) > 8 * 1024 * 1024:
+        return None
+    if Path(name).suffix.casefold() in {".der", ".cer"}:
+        keys = der_rsa_public_keys(raw)
+        return Document(name, "", keys, scope, hashlib.sha256(raw).hexdigest()) if keys else None
+    if b"\0" in raw[:4096]:
         return None
     text = raw.decode("utf-8", errors="replace")
     data = None
@@ -213,3 +224,66 @@ def scalar_records(text: str) -> list[dict[str, Any]]:
             integer = parse_int(raw)
             result[key] = integer if integer is not None else raw.strip("\"'")
     return [result] if result else []
+
+
+def pem_rsa_public_keys(text: str) -> list[dict[str, int]]:
+    """Parse RSA PKCS#1 and SubjectPublicKeyInfo PEM without external packages."""
+    found: list[dict[str, int]] = []
+    pattern = re.compile(r"-----BEGIN (RSA PUBLIC KEY|PUBLIC KEY)-----\s*(.*?)\s*-----END \1-----", re.DOTALL)
+    for label, body in pattern.findall(text):
+        try:
+            der = base64.b64decode(re.sub(r"\s+", "", body), validate=True)
+            keys = der_rsa_public_keys(der, spki=label == "PUBLIC KEY")
+            found.extend(keys)
+        except (ValueError, base64.binascii.Error):
+            continue
+    return found
+
+
+def der_rsa_public_keys(der: bytes, spki: bool | None = None) -> list[dict[str, int]]:
+    attempts = (False, True) if spki is None else (spki,)
+    for is_spki in attempts:
+        try:
+            candidate = der
+            if is_spki:
+                outer, end = _der_value(candidate, 0, 0x30)
+                if end != len(candidate):
+                    continue
+                _, offset = _der_value(outer, 0, 0x30)
+                bits, offset = _der_value(outer, offset, 0x03)
+                if offset != len(outer) or not bits or bits[0] != 0:
+                    continue
+                candidate = bits[1:]
+            sequence, end = _der_value(candidate, 0, 0x30)
+            if end != len(candidate):
+                continue
+            n_raw, offset = _der_value(sequence, 0, 0x02)
+            e_raw, offset = _der_value(sequence, offset, 0x02)
+            if offset != len(sequence):
+                continue
+            n, e = int.from_bytes(n_raw, "big"), int.from_bytes(e_raw, "big")
+            if n > 3 and e > 1:
+                return [{"n": n, "e": e}]
+        except ValueError:
+            continue
+    return []
+
+
+def _der_value(data: bytes, offset: int, expected_tag: int) -> tuple[bytes, int]:
+    if offset >= len(data) or data[offset] != expected_tag:
+        raise ValueError("unexpected DER tag")
+    offset += 1
+    if offset >= len(data):
+        raise ValueError("truncated DER length")
+    length = data[offset]
+    offset += 1
+    if length & 0x80:
+        count = length & 0x7F
+        if count == 0 or count > 4 or offset + count > len(data):
+            raise ValueError("invalid DER length")
+        length = int.from_bytes(data[offset:offset + count], "big")
+        offset += count
+    end = offset + length
+    if end > len(data):
+        raise ValueError("truncated DER value")
+    return data[offset:end], end

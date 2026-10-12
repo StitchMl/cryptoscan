@@ -1,4 +1,5 @@
 import json
+import base64
 import zipfile
 
 from cryptoscan.parser import collect_documents
@@ -178,3 +179,86 @@ def test_secret_prefix_hash_reports_length_extension_not_collision(tmp_path):
     assert {finding.rule for finding in findings} == {"MAC-PREFIX-HASH"}
     finding = findings[0]
     assert "length-extension" in finding.attack
+
+
+def test_rsa_private_parameter_leaks(tmp_path):
+    p, q, e, message = 1009, 1013, 65537, 42
+    n = p * q
+    phi = (p - 1) * (q - 1)
+    d = pow(e, -1, phi)
+    ciphertext = pow(message, e, n)
+    corpus = [
+        {"n": n, "e": e, "c": ciphertext, "p": p},
+        {"n": n, "e": e, "c": ciphertext, "dp": d % (p - 1)},
+        {"n": n, "e": e, "c": ciphertext, "d": d},
+    ]
+    path = tmp_path / "leaks.json"
+    path.write_text(json.dumps(corpus), encoding="utf-8")
+    findings = scan(collect_documents([str(path)]))
+    rules = {finding.rule for finding in findings}
+    assert {"RSA-PARAMETER-LEAK", "RSA-PRIVATE-EXPONENT-LEAK"} <= rules
+    assert all(finding.confidence == "certain" for finding in findings if finding.rule.startswith("RSA-") and "LEAK" in finding.rule)
+
+
+def test_lcg_dh_and_cbc_calculated_vectors(tmp_path):
+    modulus, multiplier, increment, state = 2147483647, 48271, 12345, 987654
+    outputs = []
+    for _ in range(7):
+        state = (multiplier * state + increment) % modulus
+        outputs.append(state)
+    dh_p, dh_g, alice_private, bob_private = 1019, 2, 123, 77
+    known = "role=user;pad=00"
+    target = "role=admin;pad=0"
+    corpus = [
+        {"type": "LCG", "modulus": modulus, "outputs": outputs},
+        {"algorithm": "DH", "p": dh_p, "g": dh_g, "public_a": pow(dh_g, alice_private, dh_p), "public_b": pow(dh_g, bob_private, dh_p)},
+        {"mode": "AES-CBC", "iv": "00" * 16, "ciphertext": "11" * 32, "known_plaintext": known, "target_plaintext": target},
+    ]
+    path = tmp_path / "structured.json"
+    path.write_text(json.dumps(corpus), encoding="utf-8")
+    findings = scan(collect_documents([str(path)]))
+    by_rule = {finding.rule: finding for finding in findings}
+    assert {"LCG-STATE-RECOVERY", "DH-SMALL-GROUP", "CBC-FIRST-BLOCK-BITFLIP"} <= set(by_rule)
+    assert by_rule["LCG-STATE-RECOVERY"].solver["next_output"] == str((multiplier * outputs[-1] + increment) % modulus)
+    assert by_rule["DH-SMALL-GROUP"].evidence["discrete_log_verified"] is True
+
+
+def _der(tag, value):
+    length = bytes([len(value)]) if len(value) < 128 else bytes([0x81, len(value)])
+    return bytes([tag]) + length + value
+
+
+def _der_integer(value):
+    raw = value.to_bytes((value.bit_length() + 7) // 8, "big")
+    if raw[0] & 0x80:
+        raw = b"\0" + raw
+    return _der(0x02, raw)
+
+
+def test_pkcs1_pem_public_key_parsing(tmp_path):
+    n, e = 1009 * 1013, 65537
+    der = _der(0x30, _der_integer(n) + _der_integer(e))
+    encoded = base64.b64encode(der).decode()
+    path = tmp_path / "public.pem"
+    path.write_text(f"-----BEGIN RSA PUBLIC KEY-----\n{encoded}\n-----END RSA PUBLIC KEY-----\n", encoding="utf-8")
+    documents = collect_documents([str(path)])
+    findings = scan(documents)
+    assert any(finding.rule == "RSA-FERMAT-CLOSE-PRIMES" for finding in findings)
+    der_path = tmp_path / "public.der"
+    der_path.write_bytes(der)
+    der_findings = scan(collect_documents([str(der_path)]))
+    assert any(finding.rule == "RSA-FERMAT-CLOSE-PRIMES" for finding in der_findings)
+
+
+def test_structured_attack_negative_guards(tmp_path):
+    corpus = [
+        {"n": 1009 * 1013, "e": 65537, "c": 7, "p": 17, "dp": 2},
+        {"outputs": [1, 8, 2, 19, 4, 7], "modulus": 23},
+        {"p": 1019, "g": 2, "public_a": 5},
+        {"algorithm": "ECDH", "p": 1019, "g": 2, "public_a": 5},
+        {"mode": "AES-CBC", "iv": "00" * 16, "ciphertext": "11" * 32, "known_plaintext": "role=user;pad=00"},
+    ]
+    path = tmp_path / "negative.json"
+    path.write_text(json.dumps(corpus), encoding="utf-8")
+    rules = {finding.rule for finding in scan(collect_documents([str(path)]))}
+    assert not {"RSA-PARAMETER-LEAK", "LCG-STATE-RECOVERY", "DH-SMALL-GROUP", "CBC-FIRST-BLOCK-BITFLIP"} & rules

@@ -13,6 +13,10 @@ Use it only on CTF challenges and systems you may test.
 - Hastad `e=3` broadcast recovery across three pairwise-coprime moduli
 - Wiener recovery of unsafe small RSA private exponents
 - DSA/ECDSA repeated-nonce private-key recovery
+- RSA `p`, `q`, `d`, `dp`, or `dq` leaks with verified factorization or re-encryption
+- LCG parameter recovery and next-output prediction from structured output sequences
+- small or degenerate finite-field Diffie-Hellman groups with verified discrete-log recovery
+- calculated CBC first-block bit flips when known and target plaintext are supplied
 - single-byte XOR recovery and reused XOR/stream keystream evidence
 - repeated ECB blocks at 16-byte and 8-byte boundaries
 - CTR, GCM, and ChaCha-family nonce reuse for a matching key identifier
@@ -56,6 +60,7 @@ c = 123456...
 Byte strings may use hexadecimal, `0x`-prefixed hexadecimal, Base64, or JSON byte arrays. Structured nonce-reuse checks understand fields such as `mode`, `key_id`, `nonce` or `iv`, and `ciphertext` or `ct`.
 The parser also accepts Python byte literals and common `key: value` challenge dumps.
 It scans text members inside ZIP, TAR, TAR.GZ, TAR.BZ2, and TAR.XZ archives without extracting them to disk. Per-member and entry-count limits bound archive processing.
+RSA public keys in PKCS#1 or SubjectPublicKeyInfo PEM and DER form are parsed with a bounded built-in DER reader.
 
 By default, corpus collection skips documentation, notebooks, tests, writeups, solvers, and exploit scripts. Exact duplicate artifacts across release, server, and archive copies are scanned once. Cross-artifact attacks stay inside one inferred challenge boundary, so unrelated challenge directories do not produce shared-prime, common-modulus, nonce-reuse, or broadcast findings.
 

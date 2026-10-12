@@ -1,4 +1,4 @@
-from cryptoscan.mathutil import crt, fermat_factor, integer_nth_root, wiener_private_exponent
+from cryptoscan.mathutil import crt, discrete_log_bsgs, fermat_factor, integer_nth_root, wiener_private_exponent
 
 
 def test_exact_integer_root():
@@ -17,3 +17,8 @@ def test_crt_and_wiener():
     n = p * q
     e = pow(d, -1, (p - 1) * (q - 1))
     assert wiener_private_exponent(n, e) == (d, q, p)
+
+
+def test_bounded_discrete_log():
+    assert discrete_log_bsgs(2, pow(2, 123, 1019), 1019) == 123
+    assert discrete_log_bsgs(2, 4, 10**13, max_steps=10) is None

@@ -100,3 +100,23 @@ def wiener_private_exponent(n: int, e: int) -> tuple[int, int, int] | None:
             if p > 1 and p * q == n:
                 return d, p, q
     return None
+
+
+def discrete_log_bsgs(base: int, target: int, modulus: int, max_steps: int = 1_000_000) -> int | None:
+    size = math.isqrt(modulus - 1) + 1
+    if size > max_steps or math.gcd(base, modulus) != 1:
+        return None
+    table: dict[int, int] = {}
+    value = 1
+    for exponent in range(size):
+        table.setdefault(value, exponent)
+        value = value * base % modulus
+    factor = pow(pow(base, size, modulus), -1, modulus)
+    gamma = target % modulus
+    for giant in range(size + 1):
+        if gamma in table:
+            exponent = giant * size + table[gamma]
+            if pow(base, exponent, modulus) == target % modulus:
+                return exponent
+        gamma = gamma * factor % modulus
+    return None

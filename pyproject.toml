@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cryptoscan-ctf"
+version = "0.1.0"
+description = "Deterministic offline cryptography weakness scanner for CTF Jeopardy challenges"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "cryptoscan contributors"}]
+dependencies = []
+
+[project.scripts]
+cryptoscan = "cryptoscan.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

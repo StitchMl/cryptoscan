@@ -33,6 +33,20 @@ Each finding has a recovery status:
 
 The status is derived from rule-specific arithmetic checks. It never upgrades a source-pattern match or an unverified plaintext guess.
 
+## Offline CyberChef recipes
+
+Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.
+
+Import the emitted recipe and input into a CyberChef instance you run locally. For example, after cloning or downloading CyberChef into `C:\Tools\CyberChef`:
+
+```powershell
+Set-Location C:\Tools\CyberChef
+npm install
+npm run build
+```
+
+Open the resulting local build yourself and use **Load recipe**. Keep challenge inputs off public CyberChef instances. The generated object is also suitable for deterministic tooling that consumes CyberChef's JSON recipe format.
+
 ## Install and run
 
 Python 3.10 or newer is required.

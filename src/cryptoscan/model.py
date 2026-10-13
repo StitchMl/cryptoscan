@@ -99,9 +99,37 @@ class Finding:
             return "Use the verified values in solver with the stated attack and preconditions to reach the flag path."
         return "Validate the preconditions against the challenge before treating this as a flag-recovery vector."
 
+    @property
+    def cyberchef(self) -> dict[str, Any] | None:
+        """Return an offline-importable CyberChef recipe for exact compatible solvers."""
+        kind = self.solver.get("kind")
+        if kind not in {"xor_single_byte", "xor_repeating_key"}:
+            return None
+        encoding = self.evidence.get("input_encoding")
+        encoded_input = self.evidence.get("encoded_input")
+        if encoding not in {"hex", "base64"} or not isinstance(encoded_input, str):
+            return None
+        recipe: list[dict[str, Any]] = []
+        if encoding == "hex":
+            recipe.append({"op": "From Hex", "args": ["Auto"]})
+        else:
+            recipe.append({"op": "From Base64", "args": ["A-Za-z0-9+/=", True, False]})
+        key_hex = self.evidence.get("key_hex")
+        if not isinstance(key_hex, str):
+            return None
+        recipe.append({"op": "XOR", "args": [{"option": "Hex", "string": key_hex}, "Standard", False]})
+        return {
+            "input": encoded_input,
+            "input_encoding": encoding,
+            "recipe": recipe,
+            "execution": "Import the recipe into a trusted local/offline CyberChef instance; do not send challenge data to a public instance.",
+        }
+
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
         result["id"] = self.id
         result["recovery_status"] = self.recovery_status
         result["flag_path"] = self.flag_path
+        if self.cyberchef is not None:
+            result["cyberchef"] = self.cyberchef
         return {"id": result.pop("id"), **result}

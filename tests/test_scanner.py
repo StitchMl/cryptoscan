@@ -140,6 +140,19 @@ def test_repeating_key_xor_recovery(tmp_path):
     repeated = next(item for item in findings if item.rule == "XOR-REPEATING-KEY")
     assert bytes.fromhex(repeated.solver["result_hex"]) == plain
     assert repeated.recovery_status == "flag-recovered"
+    assert [step["op"] for step in repeated.cyberchef["recipe"]] == ["From Hex", "XOR"]
+
+
+def test_cyberchef_recipe_preserves_base64_input(tmp_path):
+    plaintext = b"flag{base64_recipe}"
+    ciphertext = bytes(value ^ 0x42 for value in plaintext)
+    encoded = base64.b64encode(ciphertext).decode()
+    path = tmp_path / "encoded.json"
+    path.write_text(json.dumps({"ciphertext": encoded}), encoding="utf-8")
+    finding = next(item for item in scan(collect_documents([str(path)])) if item.rule == "XOR-SINGLE-BYTE")
+    assert finding.cyberchef["input"] == encoded
+    assert finding.cyberchef["input_encoding"] == "base64"
+    assert [step["op"] for step in finding.cyberchef["recipe"]] == ["From Base64", "XOR"]
 
 
 def test_support_files_are_ignored_by_default(tmp_path):

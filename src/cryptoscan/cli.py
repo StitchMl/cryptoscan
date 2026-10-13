@@ -40,6 +40,10 @@ def _text(findings, color: bool) -> str:
         output.append(f"  Preconditions: {'; '.join(finding.preconditions)}")
         output.append(f"  Attack: {finding.attack}")
         output.append(f"  Solver: {json.dumps(finding.solver, sort_keys=True, ensure_ascii=False)}")
+        if finding.cyberchef is not None:
+            output.append(f"  CyberChef input: {finding.cyberchef['input']}")
+            output.append(f"  CyberChef recipe: {json.dumps(finding.cyberchef['recipe'], separators=(',', ':'), ensure_ascii=False)}")
+            output.append("  CyberChef use: import into a trusted local/offline instance; never upload challenge data to a public instance.")
         output.append(f"  Patch: {finding.patch}")
     return "\n".join(output)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+import base64
 import math
 import re
 from typing import Any
@@ -55,8 +56,26 @@ def _bytes_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if any(token in name for token in ("cipher", "ct", "encrypted", "payload", "data")):
                 parsed = parse_bytes(value)
                 if parsed and len(parsed) >= 4:
-                    result.append({**record, "field": str(key), "bytes": parsed})
+                    encoding, encoded_input = _cyberchef_input(value, parsed)
+                    result.append({**record, "field": str(key), "bytes": parsed,
+                                   "input_encoding": encoding, "encoded_input": encoded_input})
     return result
+
+
+def _cyberchef_input(value: Any, parsed: bytes) -> tuple[str, str]:
+    """Preserve the artifact's representation for deterministic offline recipes."""
+    if isinstance(value, str):
+        cleaned = value.strip()
+        hexed = cleaned[2:] if cleaned.casefold().startswith("0x") else cleaned
+        normalized_hex = re.sub(r"[\s:_-]", "", hexed)
+        if len(normalized_hex) % 2 == 0 and re.fullmatch(r"[0-9a-fA-F]+", normalized_hex or ""):
+            return "hex", normalized_hex.lower()
+        try:
+            if base64.b64decode(cleaned, validate=True) == parsed:
+                return "base64", cleaned
+        except (ValueError, base64.binascii.Error):
+            pass
+    return "hex", parsed.hex()
 
 
 def _single_byte_score(data: bytes) -> float:
@@ -486,7 +505,8 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                 {"key_hex": f"{key:02x}", "score": round(score, 4), "score_margin": round(score - runner_up, 4),
                  "printable_ratio": round(printable_ratio, 4), "flag_shape": flag_shape,
                  "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace"),
-                 "roundtrip_verified": bytes(value ^ key for value in plain) == data},
+                 "roundtrip_verified": bytes(value ^ key for value in plain) == data,
+                 "input_encoding": record["input_encoding"], "encoded_input": record["encoded_input"]},
                 ["Ciphertext represents repeated single-byte XOR.", "Plaintext resembles printable CTF text."],
                 "Try all 256 keys and rank decoded text. The highest-scoring key and plaintext are included.",
                 {"kind": "xor_single_byte", "key": key, "result_hex": plain.hex()},
@@ -501,7 +521,8 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                 {"key_hex": repeated_key.hex(), "key_length": len(repeated_key), "score": round(repeated_score, 4),
                  "plaintext_hex": repeated_plain.hex(), "plaintext_utf8": repeated_plain.decode("utf-8", "replace"),
                  "flag_shape": True,
-                 "roundtrip_verified": bytes(value ^ repeated_key[index % len(repeated_key)] for index, value in enumerate(repeated_plain)) == data},
+                 "roundtrip_verified": bytes(value ^ repeated_key[index % len(repeated_key)] for index, value in enumerate(repeated_plain)) == data,
+                 "input_encoding": record["input_encoding"], "encoded_input": record["encoded_input"]},
                 ["Ciphertext uses a short repeating XOR key.", "Recovered plaintext contains a CTF flag-shaped token and is at least 90% printable."],
                 "Transpose ciphertext by candidate key length, solve each column, and repeat the recovered key across the ciphertext.",
                 {"kind": "xor_repeating_key", "key_hex": repeated_key.hex(), "result_hex": repeated_plain.hex()},

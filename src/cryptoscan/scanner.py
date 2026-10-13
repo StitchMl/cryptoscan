@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 import base64
+from itertools import combinations, islice
 import math
+import random
 import re
+import struct
 from typing import Any
 
 from .mathutil import crt, discrete_log_bsgs, extended_gcd, fermat_factor, int_to_bytes, integer_nth_root, signed_mod_pow, wiener_private_exponent
@@ -17,6 +20,13 @@ def _pick(obj: dict[str, Any], *names: str) -> Any | None:
         if name in lowered:
             return lowered[name]
     return None
+
+
+def _bytes_or_text(value: Any) -> bytes | None:
+    parsed = parse_bytes(value)
+    if parsed is not None:
+        return parsed
+    return value.encode() if isinstance(value, str) else None
 
 
 def _records(documents: list[Document]) -> list[dict[str, Any]]:
@@ -144,6 +154,87 @@ def _recover_lcg(outputs: list[int], modulus: int | None) -> tuple[int, int, int
     return modulus, multiplier, increment
 
 
+def _untemper_mt19937(value: int) -> int:
+    """Invert the MT19937 tempering transform for one full 32-bit output."""
+    def undo_right(output: int, shift: int) -> int:
+        result = output
+        for _ in range(32 // shift + 1):
+            result = output ^ (result >> shift)
+        return result & 0xFFFFFFFF
+
+    def undo_left(output: int, shift: int, mask: int) -> int:
+        result = output
+        for _ in range(32 // shift + 1):
+            result = output ^ ((result << shift) & mask)
+        return result & 0xFFFFFFFF
+
+    value = undo_right(value & 0xFFFFFFFF, 18)
+    value = undo_left(value, 15, 0xEFC60000)
+    value = undo_left(value, 7, 0x9D2C5680)
+    return undo_right(value, 11)
+
+
+def _temper_mt19937(value: int) -> int:
+    value ^= value >> 11
+    value ^= (value << 7) & 0x9D2C5680
+    value ^= (value << 15) & 0xEFC60000
+    value ^= value >> 18
+    return value & 0xFFFFFFFF
+
+
+def _clone_mt19937(outputs: list[int]) -> tuple[int, bool] | None:
+    if len(outputs) < 624 or any(value < 0 or value > 0xFFFFFFFF for value in outputs[:624]):
+        return None
+    state = [_untemper_mt19937(value) for value in outputs[:624]]
+    verified = all(_temper_mt19937(raw) == output for raw, output in zip(state, outputs[:624]))
+    if not verified:
+        return None
+    clone = random.Random()
+    clone.setstate((3, tuple(state + [624]), None))
+    return clone.getrandbits(32), True
+
+
+def _sha1_compress(block: bytes, state: tuple[int, int, int, int, int]) -> tuple[int, int, int, int, int]:
+    words = list(struct.unpack(">16I", block)) + [0] * 64
+    for index in range(16, 80):
+        word = words[index - 3] ^ words[index - 8] ^ words[index - 14] ^ words[index - 16]
+        words[index] = ((word << 1) | (word >> 31)) & 0xFFFFFFFF
+    a, b, c, d, e = state
+    original = state
+    for index, word in enumerate(words):
+        if index < 20:
+            function, constant = (b & c) | (~b & d), 0x5A827999
+        elif index < 40:
+            function, constant = b ^ c ^ d, 0x6ED9EBA1
+        elif index < 60:
+            function, constant = (b & c) | (b & d) | (c & d), 0x8F1BBCDC
+        else:
+            function, constant = b ^ c ^ d, 0xCA62C1D6
+        rotated = ((a << 5) | (a >> 27)) & 0xFFFFFFFF
+        temp = (rotated + function + e + constant + word) & 0xFFFFFFFF
+        a, b, c, d, e = temp, a, ((b << 30) | (b >> 2)) & 0xFFFFFFFF, c, d
+    return tuple((left + right) & 0xFFFFFFFF for left, right in zip((a, b, c, d, e), original))
+
+
+def _sha1_padding(message_length: int) -> bytes:
+    padding = b"\x80"
+    padding += b"\0" * ((56 - (message_length + 1) % 64) % 64)
+    return padding + struct.pack(">Q", message_length * 8)
+
+
+def _sha1_length_extend(digest: bytes, message: bytes, secret_length: int, suffix: bytes) -> tuple[bytes, bytes] | None:
+    if len(digest) != 20 or secret_length < 0:
+        return None
+    glue = _sha1_padding(secret_length + len(message))
+    forged_message = message + glue + suffix
+    state = struct.unpack(">5I", digest)
+    total_before_suffix = secret_length + len(message) + len(glue)
+    tail = suffix + _sha1_padding(total_before_suffix + len(suffix))
+    for offset in range(0, len(tail), 64):
+        state = _sha1_compress(tail[offset:offset + 64], state)
+    return forged_message, struct.pack(">5I", *state)
+
+
 def _repeating_xor_candidate(data: bytes) -> tuple[bytes, bytes, float] | None:
     """Return a conservative repeating-key XOR solution when it exposes a flag token."""
     best: tuple[float, bytes, bytes] | None = None
@@ -206,6 +297,43 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                     "Generate each RSA prime with an independent CSPRNG and reject duplicate primes across the key corpus."
                 ))
 
+    # Bellcore/Lenstra CRT fault: one valid and one faulty signature of the same
+    # representative factor n through gcd(S-S', n).
+    rsa_signatures: dict[tuple[str, int, int, int], list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        obj = record["object"]
+        n = parse_int(_pick(obj, "n", "modulus"))
+        e = parse_int(_pick(obj, "e", "exponent", "public_exponent"))
+        signature = parse_int(_pick(obj, "signature", "sig", "s"))
+        message = parse_int(_pick(obj, "message_representative", "message_int", "m", "hash_int"))
+        if n and e and signature is not None and message is not None and 0 <= signature < n:
+            rsa_signatures[(record["scope"], n, e, message % n)].append({**record, "signature": signature})
+    for (_, n, e, message), group in sorted(rsa_signatures.items()):
+        valid = [item for item in group if pow(item["signature"], e, n) == message]
+        faulty = [item for item in group if pow(item["signature"], e, n) != message]
+        for correct in valid:
+            recovered = None
+            bad = None
+            for candidate in faulty:
+                factor = math.gcd(abs(correct["signature"] - candidate["signature"]), n)
+                if 1 < factor < n:
+                    recovered, bad = factor, candidate
+                    break
+            if recovered is None or bad is None:
+                continue
+            p, q = recovered, n // recovered
+            findings.append(Finding(
+                "RSA-CRT-FAULT", "RSA CRT fault factors the signing modulus", "critical", "certain",
+                f'{correct["location"]} + {bad["location"]}',
+                {"n": str(n), "e": e, "message_representative": str(message), "valid_signature": str(correct["signature"]),
+                 "faulty_signature": str(bad["signature"]), "p": str(p), "q": str(q), "factorization_verified": p * q == n},
+                ["Both values are RSA signatures of the same message representative.", "One signature verifies and the other is faulty."],
+                "Compute gcd(valid_signature-faulty_signature, n), derive the private key, then sign the flag request.",
+                {"kind": "rsa_crt_fault", "p": str(p), "q": str(q)},
+                "Verify CRT signatures before release, harden fault handling, and rotate the factored RSA key."
+            ))
+            break
+
     for item in rsa:
         n, e, c = item["n"], item["e"], item["c"]
         factor = None
@@ -265,6 +393,25 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                     {"kind": "integer_root", "degree": 3, "result_int": str(root), "result_hex": plain.hex()},
                     "Use RSA-OAEP with a maintained cryptographic library."
                 ))
+        if e in {3, 5, 7, 11, 17} and c is not None and 0 <= c < n:
+            # Textbook RSA can still be rooted after modular wraparound when m^e=c+k*n
+            # for a small k. The exact modular round trip prevents guessed plaintexts.
+            wrap_limits = {3: 10_000, 5: 2_000, 7: 256, 11: 32, 17: 4}
+            for multiplier in range(0 if e != 3 else 1, wrap_limits[e] + 1):
+                root, exact = integer_nth_root(c + multiplier * n, e)
+                if not exact or pow(root, e, n) != c:
+                    continue
+                plain = int_to_bytes(root)
+                findings.append(Finding(
+                    "RSA-LOW-EXPONENT-SMALL-MESSAGE", "Unpadded low-exponent RSA plaintext recovered", "critical", "certain", item["location"],
+                    {"n": str(n), "e": e, "c": str(c), "wrap_multiplier": multiplier, "m": str(root),
+                     "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace"), "reencryption_verified": True},
+                    ["Textbook RSA was used without randomized padding.", "The message power wraps the modulus only a bounded number of times."],
+                    "Find the exact e-th root of c+k*n for bounded k; verify the candidate by modular re-encryption.",
+                    {"kind": "rsa_low_exponent", "degree": e, "wrap_multiplier": multiplier, "result_int": str(root), "result_hex": plain.hex()},
+                    "Use RSA-OAEP with a maintained cryptographic library."
+                ))
+                break
         if e is not None and e > 1:
             recovered = wiener_private_exponent(n, e)
             if recovered:
@@ -359,6 +506,33 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                     "Use RSA-OAEP. Never encrypt one raw plaintext under several textbook RSA keys."
                 ))
 
+    # Generalized Hastad broadcast for other practical small public exponents.
+    broadcast_groups: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    for item in rsa:
+        if item["e"] in {5, 7} and item["c"] is not None and 0 <= item["c"] < item["n"]:
+            broadcast_groups[(item["scope"], item["e"])].append(item)
+    for (_, exponent), candidates in sorted(broadcast_groups.items()):
+        for group in islice(combinations(candidates[:32], exponent), 10_000):
+            if any(math.gcd(left["n"], right["n"]) != 1 for left, right in combinations(group, 2)):
+                continue
+            combined, product = crt((item["c"], item["n"]) for item in group)
+            root, exact = integer_nth_root(combined, exponent)
+            if not exact or any(pow(root, exponent, item["n"]) != item["c"] for item in group):
+                continue
+            plain = int_to_bytes(root)
+            findings.append(Finding(
+                "RSA-HASTAD-BROADCAST", "Hastad broadcast attack recovers plaintext", "critical", "certain",
+                " + ".join(item["location"] for item in group),
+                {"e": exponent, "moduli": [str(item["n"]) for item in group], "crt_value": str(combined),
+                 "crt_modulus": str(product), "m": str(root), "plaintext_hex": plain.hex(),
+                 "plaintext_utf8": plain.decode("utf-8", "replace"), "reencryption_verified": True},
+                [f"All {exponent} ciphertexts encrypt the same plaintext.", "The moduli are pairwise coprime.", "Textbook RSA omits randomized padding."],
+                "Combine ciphertexts with CRT, then take the exact integer e-th root.",
+                {"kind": "rsa_hastad", "degree": exponent, "result_int": str(root), "result_hex": plain.hex()},
+                "Use RSA-OAEP. Never encrypt one raw plaintext under several textbook RSA keys."
+            ))
+            break
+
     # Reused DSA/ECDSA nonce: equal r exposes k and private key x.
     signatures: list[dict[str, Any]] = []
     for record in records:
@@ -395,6 +569,54 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                     "Use deterministic RFC 6979 nonces or a CSPRNG and reject repeated r values."
                 ))
 
+    # A disclosed DSA/ECDSA nonce is sufficient for exact private-key recovery.
+    for item in signatures:
+        nonce = parse_int(_pick(item["object"], "k", "nonce", "signature_nonce"))
+        if nonce is None or not 0 < nonce < item["q"]:
+            continue
+        try:
+            private = ((item["s"] * nonce - item["z"]) * pow(item["r"], -1, item["q"])) % item["q"]
+        except ValueError:
+            continue
+        verified = (item["s"] * nonce - item["z"] - item["r"] * private) % item["q"] == 0
+        if not verified:
+            continue
+        findings.append(Finding(
+            "SIGNATURE-NONCE-DISCLOSURE", "Disclosed DSA/ECDSA nonce exposes private key", "critical", "certain", item["location"],
+            {"q": str(item["q"]), "r": str(item["r"]), "s": str(item["s"]), "z": str(item["z"]),
+             "nonce_k": str(nonce), "private_key_x": str(private), "signature_equation_verified": True},
+            ["The structured k or nonce value belongs to this signature."],
+            "Compute x=(s*k-z)/r mod q, then use the recovered key in the challenge's flag-signing path.",
+            {"kind": "signature_nonce_disclosure", "nonce_k": str(nonce), "private_key_x": str(private)},
+            "Never disclose signature nonces. Use deterministic RFC 6979 nonces and rotate the exposed private key."
+        ))
+
+    # Exact SHA-1 secret-prefix length-extension vector when all public inputs and
+    # the candidate secret length are structured. The original secret is not needed.
+    for record in records:
+        obj = record["object"]
+        algorithm = str(_pick(obj, "algorithm", "hash", "digest_algorithm", "mac_algorithm") or "").casefold().replace("-", "")
+        digest = parse_bytes(_pick(obj, "digest", "mac", "signature", "tag"))
+        message = _bytes_or_text(_pick(obj, "message", "data", "original_message"))
+        suffix = _bytes_or_text(_pick(obj, "append", "suffix", "extension", "additional_data"))
+        secret_length = parse_int(_pick(obj, "secret_length", "key_length", "prefix_length"))
+        if algorithm != "sha1" or digest is None or message is None or suffix is None or secret_length is None:
+            continue
+        extended = _sha1_length_extend(digest, message, secret_length, suffix)
+        if not extended:
+            continue
+        forged_message, forged_digest = extended
+        findings.append(Finding(
+            "SHA1-LENGTH-EXTENSION", "SHA-1 secret-prefix MAC extension calculated", "critical", "certain", record["location"],
+            {"algorithm": "sha1", "digest_hex": digest.hex(), "message_hex": message.hex(), "suffix_hex": suffix.hex(),
+             "secret_length": secret_length, "forged_message_hex": forged_message.hex(), "forged_digest_hex": forged_digest.hex(),
+             "compression_calculated": True},
+            ["The verifier computes SHA1(secret || message).", "The supplied secret length is correct.", "The parser accepts SHA-1 glue padding in the message."],
+            "Submit forged_message_hex with forged_digest_hex. The digest continues from the published SHA-1 state without knowing the secret.",
+            {"kind": "sha1_length_extension", "message_hex": forged_message.hex(), "digest_hex": forged_digest.hex()},
+            "Replace the secret-prefix digest with HMAC-SHA-256 and compare tags in constant time."
+        ))
+
     # Structured LCG state recovery.
     for record in records:
         obj = record["object"]
@@ -419,6 +641,37 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
             "Recover the recurrence from output differences, then predict the next value used for the flag key or token.",
             {"kind": "lcg_recovery", "modulus": str(modulus), "multiplier": str(multiplier), "increment": str(increment), "next_output": str(next_value)},
             "Use an operating-system CSPRNG for secret keys, nonces, and tokens."
+        ))
+
+    # Full-output MT19937 state cloning. Require an explicit generator label to
+    # avoid interpreting arbitrary integer arrays as PRNG state.
+    for record in records:
+        obj = record["object"]
+        generator = str(_pick(obj, "generator", "prng", "algorithm", "type") or "").casefold().replace("-", "")
+        raw_outputs = _pick(obj, "outputs", "states", "samples", "sequence")
+        if generator not in {"mt19937", "mersennetwister", "pythonrandom"} or not isinstance(raw_outputs, list):
+            continue
+        outputs = [parse_int(value) for value in raw_outputs]
+        if any(value is None for value in outputs):
+            continue
+        cloned = _clone_mt19937(outputs)
+        if not cloned:
+            continue
+        predicted, verified = cloned
+        evidence: dict[str, Any] = {"generator": generator, "observed_outputs": 624,
+                                    "state_roundtrip_verified": verified, "predicted_next": str(predicted)}
+        if len(outputs) >= 625:
+            evidence["observed_next"] = str(outputs[624])
+            evidence["prediction_verified"] = predicted == outputs[624]
+            if predicted != outputs[624]:
+                continue
+        findings.append(Finding(
+            "MT19937-STATE-CLONE", "MT19937 internal state cloned from outputs", "critical", "certain", record["location"],
+            evidence,
+            ["The values are consecutive, complete 32-bit MT19937 outputs with no skipped draws."],
+            "Restore the recovered 624-word state and predict the next value used for the flag key or token.",
+            {"kind": "mt19937_clone", "predicted_next": str(predicted)},
+            "Use an operating-system CSPRNG for keys, tokens, nonces, and other secrets."
         ))
 
     # Structured finite-field Diffie-Hellman only; generic p/q records are ignored.
@@ -575,7 +828,8 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
         explicit_key_id = _pick(obj, "key_id", "kid", "keyid")
         key_id = str(explicit_key_id or "unknown-key")
         if nonce and cipher and any(token in mode for token in ("ctr", "gcm", "chacha")):
-            nonce_groups[(record["scope"], key_id, nonce)].append({**record, "nonce": nonce, "cipher": cipher, "mode": mode})
+            known = _bytes_or_text(_pick(obj, "known_plaintext", "plaintext", "known_plain"))
+            nonce_groups[(record["scope"], key_id, nonce)].append({**record, "nonce": nonce, "cipher": cipher, "mode": mode, "known": known})
     for (_, key_id, nonce), group in sorted(nonce_groups.items(), key=lambda item: (item[0][0], item[0][1], item[0][2])):
         if len(group) < 2:
             continue
@@ -585,17 +839,56 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                 combined = bytes(a ^ b for a, b in zip(left["cipher"][:length], right["cipher"][:length]))
                 is_gcm = "gcm" in left["mode"] or "gcm" in right["mode"]
                 rule = "GCM-NONCE-REUSE" if is_gcm else "CTR-NONCE-REUSE"
+                evidence: dict[str, Any] = {"key_id": key_id, "nonce_hex": nonce.hex(), "ciphertexts_xor_hex": combined.hex()}
+                solver: dict[str, Any] = {"kind": "nonce_reuse", "mode": "gcm" if is_gcm else "ctr", "combined_hex": combined.hex()}
+                for known_side, target_side in ((left, right), (right, left)):
+                    known = known_side.get("known")
+                    if not known or len(known) < len(target_side["cipher"]) or len(known_side["cipher"]) < len(target_side["cipher"]):
+                        continue
+                    keystream = bytes(a ^ b for a, b in zip(known_side["cipher"], known))
+                    recovered = bytes(a ^ b for a, b in zip(target_side["cipher"], keystream))
+                    evidence.update({"known_plaintext_hex": known[:len(target_side["cipher"])].hex(),
+                                     "recovered_plaintext_hex": recovered.hex(), "known_plaintext_roundtrip_verified":
+                                     bytes(a ^ b for a, b in zip(known[:len(target_side["cipher"])], keystream)) == known_side["cipher"][:len(target_side["cipher"])]})
+                    solver["result_hex"] = recovered.hex()
+                    break
                 findings.append(Finding(
                     rule, f'{"GCM" if is_gcm else "CTR/stream"} nonce reuse', "critical", "certain" if key_id != "unknown-key" else "medium",
                     f'{left["location"]} + {right["location"]}',
-                    {"key_id": key_id, "nonce_hex": nonce.hex(), "ciphertexts_xor_hex": combined.hex()},
+                    evidence,
                     (["Records use the same explicit key identifier and nonce.", "Ciphertexts start at the same stream offset."]
                      if key_id != "unknown-key" else ["Records use the same nonce and mode, but omit a key identifier.", "Confirm both records use the same key."]),
                     ("XOR ciphertexts to cancel the keystream; crib-drag the result. GCM reuse may also permit authentication forgeries."
                      if is_gcm else "XOR ciphertexts to cancel the keystream, then crib-drag known flag and message formats."),
-                    {"kind": "nonce_reuse", "mode": "gcm" if is_gcm else "ctr", "combined_hex": combined.hex()},
+                    solver,
                     "Allocate nonces atomically per key, persist the counter, and reject duplicates before encryption."
                 ))
+
+    # Reusing a CBC IV under one explicit key leaks equality of first plaintext
+    # blocks. This is diagnosis only: IV reuse alone does not decrypt a flag.
+    cbc_groups: dict[tuple[str, str, bytes], list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        obj = record["object"]
+        mode = str(_pick(obj, "mode", "algorithm", "alg") or "").casefold()
+        key_id = _pick(obj, "key_id", "kid", "keyid")
+        iv = parse_bytes(_pick(obj, "iv"))
+        cipher = parse_bytes(_pick(obj, "ciphertext", "ct", "encrypted"))
+        if "cbc" in mode and key_id is not None and iv and cipher and len(iv) in {8, 16}:
+            cbc_groups[(record["scope"], str(key_id), iv)].append({**record, "cipher": cipher})
+    for (_, key_id, iv), group in sorted(cbc_groups.items(), key=lambda item: (item[0][0], item[0][1], item[0][2])):
+        distinct = {item["cipher"] for item in group}
+        if len(distinct) < 2:
+            continue
+        findings.append(Finding(
+            "CBC-IV-REUSE", "CBC IV reused under the same key", "medium", "certain",
+            " + ".join(item["location"] for item in group[:8]),
+            {"key_id": key_id, "iv_hex": iv.hex(), "ciphertext_count": len(distinct),
+             "first_blocks_hex": sorted({item["cipher"][:len(iv)].hex() for item in group})},
+            ["The records share an explicit key identifier and IV."],
+            "Compare first ciphertext blocks to detect equal first plaintext blocks. Combine only with a separate oracle or known-plaintext flaw.",
+            {"kind": "cbc_iv_reuse", "iv_hex": iv.hex()},
+            "Generate an unpredictable fresh IV for every CBC encryption, or migrate to an AEAD mode with unique nonces."
+        ))
 
     findings.extend(_source_findings(documents))
     unique = {finding.id: finding for finding in findings}
@@ -658,4 +951,25 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                     ["Matched code executes in the challenge cryptographic path."], attack,
                     {"kind": "source_guidance", "matched_pattern": rule}, patch
                 ))
+        # An oracle requires both CBC/unpadding and an externally distinguishable
+        # padding failure. Either signal alone is too common to report.
+        cbc = re.search(r"(?:MODE_CBC|AES[-_]?CBC|\bcbc\b)", doc.text, re.IGNORECASE)
+        unpad = re.search(r"\bunpad\s*\(|padding(?:error|exception)|invalid\s+padding", doc.text, re.IGNORECASE)
+        signal = re.search(
+            r"(?:return|abort|send|jsonify|raise)[^\r\n]{0,100}(?:padding|decrypt|invalid)|"
+            r"except\s+(?:ValueError|PaddingError)[^:]*:",
+            doc.text,
+            re.IGNORECASE,
+        )
+        authenticated = re.search(r"(?:MODE_GCM|MODE_EAX|ChaCha20_Poly1305|verify\s*\(\s*tag|decrypt_and_verify)", doc.text, re.IGNORECASE)
+        if cbc and unpad and signal and not authenticated:
+            line = doc.text.count("\n", 0, signal.start()) + 1
+            findings.append(Finding(
+                "CBC-PADDING-ORACLE", "Potential distinguishable CBC padding failure", "critical", "medium", f"{doc.path}:{line}",
+                {"cbc_match": cbc.group(0), "unpad_match": unpad.group(0), "signal_match": signal.group(0)[:200], "aead_check_seen": False},
+                ["The matched failure reaches a client-visible status, body, timing class, or exception path.", "The ciphertext is attacker-controlled."],
+                "Modify the preceding ciphertext block and classify padding-valid responses to decrypt blocks or forge a flag-authorized plaintext.",
+                {"kind": "cbc_padding_oracle", "block_size": 16},
+                "Authenticate ciphertexts before decryption, use one indistinguishable failure response, and migrate to an AEAD mode."
+            ))
     return findings

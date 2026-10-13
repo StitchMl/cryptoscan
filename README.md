@@ -7,19 +7,23 @@ Use it only on CTF challenges and systems you may test.
 ## Detectors
 
 - RSA shared primes across the input corpus
-- RSA `e=3` exact-root plaintext recovery
+- RSA exact and bounded wrapped low-exponent plaintext recovery for `e=3`, `5`, `7`, `11`, and `17`
 - Fermat factorization for close RSA primes
 - RSA common-modulus plaintext recovery
-- Hastad `e=3` broadcast recovery across three pairwise-coprime moduli
+- Hastad broadcast recovery for `e=3`, `5`, and `7` across pairwise-coprime moduli
 - Wiener recovery of unsafe small RSA private exponents
-- DSA/ECDSA repeated-nonce private-key recovery
+- RSA CRT-fault factorization from valid and faulty signatures
+- DSA/ECDSA repeated or disclosed-nonce private-key recovery
 - RSA `p`, `q`, `d`, `dp`, or `dq` leaks with verified factorization or re-encryption
 - LCG parameter recovery and next-output prediction from structured output sequences
+- MT19937 state cloning and next-output prediction from 624 complete outputs
 - small or degenerate finite-field Diffie-Hellman groups with verified discrete-log recovery
 - calculated CBC first-block bit flips when known and target plaintext are supplied
+- calculated SHA-1 secret-prefix length-extension messages and digests
 - single-byte XOR recovery and reused XOR/stream keystream evidence
 - repeated ECB blocks at 16-byte and 8-byte boundaries
-- CTR, GCM, and ChaCha-family nonce reuse for a matching key identifier
+- CTR, GCM, and ChaCha-family nonce reuse, including exact recovery when one plaintext is known
+- CBC IV reuse and compound static padding-oracle indicators
 - source patterns for MD5/SHA-1, secret-prefix hash MACs, ECB, constant nonces, Mersenne Twister, and time-seeded PRNGs
 - hardcoded keys and non-cryptographic `random` calls used for keys, nonces, tokens, or OTP material
 

@@ -1,6 +1,8 @@
 import json
 import base64
 import zipfile
+import hashlib
+import random
 
 from cryptoscan.parser import collect_documents
 from cryptoscan.scanner import scan
@@ -279,3 +281,115 @@ def test_structured_attack_negative_guards(tmp_path):
     path.write_text(json.dumps(corpus), encoding="utf-8")
     rules = {finding.rule for finding in scan(collect_documents([str(path)]))}
     assert not {"RSA-PARAMETER-LEAK", "LCG-STATE-RECOVERY", "DH-SMALL-GROUP", "CBC-FIRST-BLOCK-BITFLIP"} & rules
+
+
+def test_general_low_exponent_and_hastad_e5(tmp_path):
+    message = int.from_bytes(b"flag{e5}", "big")
+    moduli = [10**30 + offset for offset in (57, 61, 69, 87, 91)]
+    # A separate wrapped e=3 sample exercises c+k*n root recovery.
+    wrapped_n = 101 * 113
+    wrapped_m = 30
+    corpus = [{"n": n, "e": 5, "c": pow(message, 5, n)} for n in moduli]
+    corpus.append({"n": wrapped_n, "e": 3, "c": pow(wrapped_m, 3, wrapped_n)})
+    path = tmp_path / "low-exponent.json"
+    path.write_text(json.dumps(corpus), encoding="utf-8")
+    findings = scan(collect_documents([str(path)]))
+    hastad = next(item for item in findings if item.rule == "RSA-HASTAD-BROADCAST" and item.evidence["e"] == 5)
+    assert bytes.fromhex(hastad.solver["result_hex"]) == b"flag{e5}"
+    assert hastad.recovery_status == "flag-recovered"
+    wrapped = next(item for item in findings if item.rule == "RSA-LOW-EXPONENT-SMALL-MESSAGE")
+    assert wrapped.evidence["m"] == str(wrapped_m)
+
+
+def test_known_plaintext_nonce_reuse_recovers_flag(tmp_path):
+    nonce = "00" * 12
+    key_stream = bytes(range(1, 33))
+    known = b"A" * 32
+    secret = b"flag{nonce_reuse_recovery}!!!!!!"
+    assert len(known) == len(secret) == len(key_stream)
+    encrypt = lambda plain: bytes(left ^ right for left, right in zip(plain, key_stream)).hex()
+    path = tmp_path / "nonce-reuse.json"
+    path.write_text(json.dumps([
+        {"mode": "AES-CTR", "key_id": "k1", "nonce": nonce, "ciphertext": encrypt(known), "known_plaintext": known.hex()},
+        {"mode": "AES-CTR", "key_id": "k1", "nonce": nonce, "ciphertext": encrypt(secret)},
+    ]), encoding="utf-8")
+    finding = next(item for item in scan(collect_documents([str(path)])) if item.rule == "CTR-NONCE-REUSE")
+    assert bytes.fromhex(finding.solver["result_hex"]) == secret
+    assert finding.recovery_status == "flag-recovered"
+
+
+def test_mt_clone_and_disclosed_signature_nonce(tmp_path):
+    generator = random.Random(1337)
+    outputs = [generator.getrandbits(32) for _ in range(625)]
+    q, private, nonce, r, z = 1019, 123, 77, 321, 456
+    s = ((z + r * private) * pow(nonce, -1, q)) % q
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps([
+        {"generator": "MT19937", "outputs": outputs},
+        {"q": q, "r": r, "s": s, "z": z, "k": nonce},
+    ]), encoding="utf-8")
+    by_rule = {item.rule: item for item in scan(collect_documents([str(path)]))}
+    assert by_rule["MT19937-STATE-CLONE"].solver["predicted_next"] == str(outputs[624])
+    assert by_rule["MT19937-STATE-CLONE"].recovery_status == "payload-ready"
+    assert by_rule["SIGNATURE-NONCE-DISCLOSURE"].solver["private_key_x"] == str(private)
+
+
+def test_sha1_length_extension_vector_is_valid(tmp_path):
+    secret = b"hidden-key"
+    message = b"role=user"
+    suffix = b"&role=admin"
+    digest = hashlib.sha1(secret + message).hexdigest()
+    path = tmp_path / "extension.json"
+    path.write_text(json.dumps({
+        "algorithm": "sha1", "digest": digest, "message": message.hex(),
+        "append": suffix.hex(), "secret_length": len(secret),
+    }), encoding="utf-8")
+    finding = next(item for item in scan(collect_documents([str(path)])) if item.rule == "SHA1-LENGTH-EXTENSION")
+    forged_message = bytes.fromhex(finding.solver["message_hex"])
+    forged_digest = finding.solver["digest_hex"]
+    assert hashlib.sha1(secret + forged_message).hexdigest() == forged_digest
+    assert finding.recovery_status == "payload-ready"
+
+
+def test_cbc_iv_reuse_is_diagnostic_only(tmp_path):
+    path = tmp_path / "cbc.json"
+    path.write_text(json.dumps([
+        {"mode": "AES-CBC", "key_id": "same", "iv": "00" * 16, "ciphertext": "11" * 32},
+        {"mode": "AES-CBC", "key_id": "same", "iv": "00" * 16, "ciphertext": "22" * 32},
+    ]), encoding="utf-8")
+    finding = next(item for item in scan(collect_documents([str(path)])) if item.rule == "CBC-IV-REUSE")
+    assert finding.recovery_status == "validation-only"
+
+
+def test_rsa_crt_fault_factors_modulus(tmp_path):
+    p, q, e, message = 1009, 1013, 65537, 42
+    n = p * q
+    d = pow(e, -1, (p - 1) * (q - 1))
+    valid = pow(message, d, n)
+    faulty = valid + p
+    path = tmp_path / "fault.json"
+    path.write_text(json.dumps([
+        {"n": n, "e": e, "message_representative": message, "signature": valid},
+        {"n": n, "e": e, "message_representative": message, "signature": faulty},
+    ]), encoding="utf-8")
+    finding = next(item for item in scan(collect_documents([str(path)])) if item.rule == "RSA-CRT-FAULT")
+    assert int(finding.solver["p"]) * int(finding.solver["q"]) == n
+    assert finding.recovery_status == "payload-ready"
+
+
+def test_padding_oracle_requires_compound_source_evidence(tmp_path):
+    vulnerable = tmp_path / "oracle.py"
+    vulnerable.write_text(
+        "cipher = AES.new(key, AES.MODE_CBC, iv)\n"
+        "try:\n"
+        "    value = unpad(cipher.decrypt(data), 16)\n"
+        "except ValueError:\n"
+        "    return 'invalid padding', 403\n",
+        encoding="utf-8",
+    )
+    finding = next(item for item in scan(collect_documents([str(vulnerable)])) if item.rule == "CBC-PADDING-ORACLE")
+    assert finding.recovery_status == "validation-only"
+
+    safe = tmp_path / "safe_cbc.py"
+    safe.write_text("cipher = AES.new(key, AES.MODE_CBC, iv)\nvalue = unpad(cipher.decrypt(data), 16)\n", encoding="utf-8")
+    assert "CBC-PADDING-ORACLE" not in rules_for(safe)

@@ -253,8 +253,10 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                 evidence = {"n": str(n), "e": e, "d": str(d), "p": str(p), "q": str(q)}
                 solver: dict[str, Any] = {"kind": "rsa_wiener", "d": str(d), "p": str(p), "q": str(q)}
                 if c is not None and 0 <= c < n:
-                    plain = int_to_bytes(pow(c, d, n))
+                    message = pow(c, d, n)
+                    plain = int_to_bytes(message)
                     evidence.update({"plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace")})
+                    evidence.update({"c": str(c), "reencryption_verified": pow(message, e, n) == c})
                     solver["result_hex"] = plain.hex()
                 findings.append(Finding(
                     "RSA-WIENER-SMALL-D", "RSA private exponent recovered by Wiener attack", "critical", "certain", item["location"],
@@ -274,7 +276,8 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                     d = pow(e, -1, (p - 1) * (q - 1))
                     m = pow(c, d, n)
                     plain = int_to_bytes(m)
-                    evidence.update({"d": str(d), "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace")})
+                    evidence.update({"d": str(d), "c": str(c), "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace"),
+                                     "reencryption_verified": pow(m, e, n) == c})
                     solver.update({"d": str(d), "result_hex": plain.hex()})
                 findings.append(Finding(
                     "RSA-FERMAT-CLOSE-PRIMES", "RSA primes are close enough for Fermat factorization", "critical", "certain", item["location"],
@@ -482,7 +485,8 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                 "XOR-SINGLE-BYTE", "Single-byte XOR key is recoverable", "high", "certain" if flag_shape else "high", f'{record["location"]}.{record["field"]}',
                 {"key_hex": f"{key:02x}", "score": round(score, 4), "score_margin": round(score - runner_up, 4),
                  "printable_ratio": round(printable_ratio, 4), "flag_shape": flag_shape,
-                 "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace")},
+                 "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace"),
+                 "roundtrip_verified": bytes(value ^ key for value in plain) == data},
                 ["Ciphertext represents repeated single-byte XOR.", "Plaintext resembles printable CTF text."],
                 "Try all 256 keys and rank decoded text. The highest-scoring key and plaintext are included.",
                 {"kind": "xor_single_byte", "key": key, "result_hex": plain.hex()},
@@ -496,7 +500,8 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                 f'{record["location"]}.{record["field"]}',
                 {"key_hex": repeated_key.hex(), "key_length": len(repeated_key), "score": round(repeated_score, 4),
                  "plaintext_hex": repeated_plain.hex(), "plaintext_utf8": repeated_plain.decode("utf-8", "replace"),
-                 "flag_shape": True},
+                 "flag_shape": True,
+                 "roundtrip_verified": bytes(value ^ repeated_key[index % len(repeated_key)] for index, value in enumerate(repeated_plain)) == data},
                 ["Ciphertext uses a short repeating XOR key.", "Recovered plaintext contains a CTF flag-shaped token and is at least 90% printable."],
                 "Transpose ciphertext by candidate key length, solve each column, and repeat the recovered key across the ciphertext.",
                 {"kind": "xor_repeating_key", "key_hex": repeated_key.hex(), "result_hex": repeated_plain.hex()},

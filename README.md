@@ -25,6 +25,14 @@ Use it only on CTF challenges and systems you may test.
 
 The scanner calculates factors, plaintext roots, Bezout coefficients, XOR combinations, candidate keys, and recovered plaintext when the available evidence permits it. A source match alone receives lower confidence.
 
+Each finding has a recovery status:
+
+- `flag-recovered`: a verified computation produced flag-shaped plaintext in `solver.result_hex`.
+- `payload-ready`: the solver contains verified factors, keys, secrets, predictions, or a transformed payload usable under the listed preconditions.
+- `validation-only`: the scanner found guidance or a heuristic signal, but not enough proof to claim a usable flag-recovery vector.
+
+The status is derived from rule-specific arithmetic checks. It never upgrades a source-pattern match or an unverified plaintext guess.
+
 ## Install and run
 
 Python 3.10 or newer is required.

@@ -30,6 +30,7 @@ def test_rsa_calculated_attacks(tmp_path):
     assert {"RSA-SHARED-PRIME", "RSA-E3-EXACT-ROOT", "RSA-COMMON-MODULUS"} <= rules
     cube = next(f for f in findings if f.rule == "RSA-E3-EXACT-ROOT")
     assert cube.evidence["plaintext_utf8"] == "flag"
+    assert cube.recovery_status == "payload-ready"
     common = next(f for f in findings if f.rule == "RSA-COMMON-MODULUS")
     assert common.evidence["m"] == "42"
 
@@ -138,6 +139,7 @@ def test_repeating_key_xor_recovery(tmp_path):
     findings = scan(collect_documents([str(path)]))
     repeated = next(item for item in findings if item.rule == "XOR-REPEATING-KEY")
     assert bytes.fromhex(repeated.solver["result_hex"]) == plain
+    assert repeated.recovery_status == "flag-recovered"
 
 
 def test_support_files_are_ignored_by_default(tmp_path):
@@ -220,7 +222,9 @@ def test_lcg_dh_and_cbc_calculated_vectors(tmp_path):
     by_rule = {finding.rule: finding for finding in findings}
     assert {"LCG-STATE-RECOVERY", "DH-SMALL-GROUP", "CBC-FIRST-BLOCK-BITFLIP"} <= set(by_rule)
     assert by_rule["LCG-STATE-RECOVERY"].solver["next_output"] == str((multiplier * outputs[-1] + increment) % modulus)
+    assert by_rule["LCG-STATE-RECOVERY"].recovery_status == "payload-ready"
     assert by_rule["DH-SMALL-GROUP"].evidence["discrete_log_verified"] is True
+    assert by_rule["CBC-FIRST-BLOCK-BITFLIP"].recovery_status == "payload-ready"
 
 
 def _der(tag, value):

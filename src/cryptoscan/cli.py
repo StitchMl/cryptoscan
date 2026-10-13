@@ -35,6 +35,8 @@ def _text(findings, color: bool) -> str:
         output.append(f"{prefix}[{finding.severity.upper()}] {finding.rule} {finding.id}{suffix}")
         output.append(f"  {finding.title} at {finding.location}")
         output.append(f"  Evidence: {json.dumps(finding.evidence, sort_keys=True, ensure_ascii=False)}")
+        output.append(f"  Recovery: {finding.recovery_status}")
+        output.append(f"  Flag path: {finding.flag_path}")
         output.append(f"  Preconditions: {'; '.join(finding.preconditions)}")
         output.append(f"  Attack: {finding.attack}")
         output.append(f"  Solver: {json.dumps(finding.solver, sort_keys=True, ensure_ascii=False)}")

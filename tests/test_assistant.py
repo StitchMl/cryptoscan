@@ -62,3 +62,21 @@ def test_conflicting_cli_flags(tmp_path):
     source.write_text("token = md5(message)\n", encoding="utf-8")
     with pytest.raises(SystemExit):
         main([str(source), "--assist", "--no-assist"])
+
+
+def test_rewrite_record_with_declared_digest(capsys):
+    assistant_session(read=feed(
+        "r", "demo;demo;guest;abc", "", "1,3", "admin", "super_admin",
+        "4", "1,2,3", "sha256", "plain", "", "q"
+    ))
+    output = capsys.readouterr().out
+    digest = hashlib.sha256(b"admin;demo;super_admin").hexdigest()
+    assert "Computed record: admin;demo;super_admin;" + digest in output
+
+
+def test_rewrite_hmac_requires_key(capsys):
+    assistant_session(read=feed(
+        "r", "demo;guest;deadbeef", "", "2", "admin",
+        "3", "1,2", "sha256", "hmac", "", "q"
+    ))
+    assert "MAC key is unknown" in capsys.readouterr().out

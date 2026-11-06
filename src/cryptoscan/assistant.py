@@ -202,6 +202,7 @@ def source_verified_token_workflow(
 ) -> None:
     """Derive a minimal token solely from source-required JSON fields."""
     from .cookie import transform_json_cookie
+    from .http_cookie import cookie_request_header, local_cookie_parse_check
 
     write(f"Builder: {recipe.build.path}:{recipe.build.line} ({recipe.build.function})")
     write(f"Verifier: {recipe.verify.path}:{recipe.verify.line} ({recipe.verify.function})")
@@ -213,7 +214,7 @@ def source_verified_token_workflow(
     ))
     if recipe.cookie_name:
         write(f"Cookie name in source: {recipe.cookie_name}")
-    write("Only observed builder fields and a cookie are needed; no admin password or username.")
+    write("Only observed builder fields and the cookie are needed; no unverified credentials.")
     write("WARNING: authentication tag will be invalid and is retained only because the verifier ignores it.")
     known_values = {
         name: _ask(f"Observed {name} (exact): ", read) for name in recipe.fields
@@ -227,6 +228,9 @@ def source_verified_token_workflow(
         return
     write("Minimal plaintext: " + plaintext.decode("utf-8"))
     write("Candidate cookie: " + token)
+    if recipe.cookie_name:
+        write("HTTP header for Burp Repeater: " + cookie_request_header(recipe.cookie_name, token))
+        write("Local Cookie header parse roundtrip: " + ("OK" if local_cookie_parse_check(recipe.cookie_name, token) else "FAILED"))
     write("Locally derived, NOT remotely verified. The MAC/tag is invalid for modified ciphertext.")
 
 

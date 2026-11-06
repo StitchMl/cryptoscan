@@ -975,6 +975,18 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                     "Use separate GCM counter blocks and a maintained AEAD implementation."
                 ))
 
+    overlap_files = {
+        document.path for document in documents
+        if document.path.lower().endswith(".py")
+        and counter_overlap_lines(document.text)
+    }
+    if overlap_files:
+        findings = [
+            item for item in findings
+            if not (item.rule == "CIPHER-ECB"
+                    and item.location.rsplit(":", 1)[0] in overlap_files)
+        ]
+
     unique = {finding.id: finding for finding in findings}
     return sorted(unique.values(), key=lambda finding: (finding.location.casefold(), finding.rule, finding.id))
 

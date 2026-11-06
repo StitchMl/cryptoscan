@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from .parser import Document
+from .gcm_overlap_workflow import guided_overlap_workflow
 from .guided import selected_finding_workflow, existing_verified_result, rsa_factors_workflow, cbc_iv_workflow
 from .source_context import discover_token_recipes, linked_recipe, relevant_source, TokenRecipe
 
@@ -296,6 +297,11 @@ def assistant_session(
             for context in relevant_source(finding, documents):
                 write(f"Analyzed source: {context.path}:{context.line} in {context.function}")
                 write(f"  {context.excerpt}")
+            if finding.rule == "GCM-COUNTER-OVERLAP":
+                answer = _ask("Run source-derived GCM workflow? [y/N]: ", read)
+                if answer.casefold() in {"y", "yes"}:
+                    guided_overlap_workflow(finding, documents, read, write)
+                continue
             recipe = linked_recipe(finding, recipes)
             if recipe:
                 write("Source-verified token construction and unchecked authentication path found.")

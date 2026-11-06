@@ -224,6 +224,34 @@ missing exponents, prime factors, ciphertexts, keys, plaintext encodings,
 authentication tags or remote responses. Each crypto family needs explicit
 solver support; arbitrary CTFs are **not guaranteed solvable**.
 
+## Custom GCM counter/tag-mask overlap
+
+When a Python implementation calls the same initial GCTR counter for both
+plaintext encryption and GHASH tag masking, CryptoScan reports
+`GCM-COUNTER-OVERLAP`. In interactive mode it tries to locate the associated
+JSON token serializer and authenticated verifier in the analyzed sources.
+If a unique compatible codec is discovered, it asks for **fresh** observed
+values and the token `ciphertext_hex;tag_hex`.
+
+The offline solver uses a known first plaintext block to recover the exposed
+counter mask, solves the bounded GHASH polynomial over GF(2^128), verifies
+each candidate against the captured tag, and constructs candidate tags for
+the minimum plaintext required by the source verifier. There may be multiple
+algebraically consistent candidates. It also emits correctly encoded HTTP
+Cookie headers when the source names a cookie.
+
+```powershell
+cryptoscan challenge.zip --assist
+```
+
+This is not a generic GCM break: it needs the proven faulty counter reuse,
+the expected GHASH arithmetic, aligned known plaintext, matching nonce/key,
+a full tag and a supported token serialization. The tool makes no remote
+network requests and does not guarantee that any endpoint accepts the
+candidates. Correct authenticated GCM is not vulnerable to this workflow.
+AES-ECB used solely as an internal block primitive of GCM is not independently
+reported as ECB-mode data encryption when this implementation is recognized.
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

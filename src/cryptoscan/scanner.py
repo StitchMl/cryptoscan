@@ -21,6 +21,7 @@ from .mathutil import (
     wiener_private_exponent,
 )
 from .model import Finding
+from .ntru import recognize_ntru, is_polynomial_coefficients, analyze_ntru_vectors, pair_ntru_records
 from .mlwe import recognize_weak_mlwe_ring
 from .gcm_overlap_detector import counter_overlap_lines
 from .aead_diagnostics import unused_validation_flags
@@ -77,13 +78,16 @@ def _rsa_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def _bytes_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _bytes_records(records: list[dict[str, Any]], ntru_contexts=()) -> list[dict[str, Any]]:
     result = []
     for record in records:
         obj = record["object"]
         for key, value in sorted(obj.items(), key=lambda item: str(item[0])):
             name = str(key).casefold()
             if any(token in name for token in ("cipher", "ct", "encrypted", "payload", "data")):
+                if any(record["scope"] == ctx.scope and is_polynomial_coefficients(value, ctx)
+                       for ctx in ntru_contexts):
+                    continue  # Ring coefficients are not serialized ciphertext bytes.
                 parsed = parse_bytes(value)
                 if parsed and len(parsed) >= 4:
                     encoding, encoded_input = _cyberchef_input(value, parsed)
@@ -295,8 +299,9 @@ def _repeating_xor_candidate(data: bytes) -> tuple[bytes, bytes, float] | None:
 
 def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding]:
     records = _records(documents)
+    ntru_contexts = recognize_ntru(documents)
     rsa = _rsa_records(records)
-    byte_records = _bytes_records(records)
+    byte_records = _bytes_records(records, ntru_contexts)
     findings: list[Finding] = []
 
     # RSA pairwise shared factors.

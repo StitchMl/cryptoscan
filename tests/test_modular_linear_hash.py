@@ -14,9 +14,9 @@ def challenge_documents(secret="a1b2c3d4e5f60718", seed=2026):
     source = """
 from utils import sanitize, get_a
 from re import match
-FLAG = getenv("FLAG", "TEST{0000000000000000}")
-assert bool(match(r'^TEST\\{[0-9a-f]+\\}$', FLAG))
-FLAG = FLAG.strip("TEST{}")
+FLAG = getenv("FLAG", "LABCTF{0000000000000000}")
+assert bool(match(r'^LABCTF\\{[0-9a-f]+\\}$', FLAG))
+FLAG = FLAG.strip("LABCTF{}")
 assert len(FLAG) == 16
 k, l = 48, 50
 n = 256
@@ -75,17 +75,17 @@ def test_recovers_unique_flag_from_unrelated_generated_matrix():
     assert context[0].modulus == 256
     assert context[0].rows == 48
     result = solve_linear_hash(docs, context[0])
-    assert result.recovered == ("TEST{a1b2c3d4e5f60718}",)
+    assert result.recovered == ("LABCTF{a1b2c3d4e5f60718}",)
     assert result.verified
     finding = next(item for item in scan(docs) if item.rule == "LINEAR-HASH-SMALL-ALPHABET")
     assert finding.recovery_status == "flag-recovered"
-    assert finding.solver["result_hex"] == "TEST{a1b2c3d4e5f60718}".encode().hex()
+    assert finding.solver["result_hex"] == "LABCTF{a1b2c3d4e5f60718}".encode().hex()
 
 
 def test_different_data_produces_different_secret():
     docs = challenge_documents(secret="0123456789abcdef", seed=77)
     context = recognize_linear_hash(docs)[0]
-    assert solve_linear_hash(docs, context).recovered == ("TEST{0123456789abcdef}",)
+    assert solve_linear_hash(docs, context).recovered == ("LABCTF{0123456789abcdef}",)
 
 
 def test_not_rsa_despite_zmod_n_and_matrix():

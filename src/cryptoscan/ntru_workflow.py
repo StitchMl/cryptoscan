@@ -6,6 +6,7 @@ from typing import Any
 
 from .ntru import recognize_ntru, pair_ntru_records
 from .ntru_lattice import solve
+from .ntru_isolation import solve_isolated
 from .parser import Document, scalar_records
 
 
@@ -56,12 +57,25 @@ def ntru_lattice_workflow(
     bkz_value = read("Optional BKZ block size [0=LLL only]: ").strip() or "0"
     try:
         bkz = int(bkz_value)
-        results = solve(
-            public["value"], encrypted["value"],
-            context.degree, context.plaintext_modulus, context.ciphertext_modulus,
-            context.f_weight, context.g_weight,
-            bkz=bkz, progress=write,
-        )
+        if context.degree > 32:
+            write(
+                "Large lattice reduction runs in a separate process so Windows "
+                "reclaims its CPU/RAM allocations when it finishes."
+            )
+            timeout_raw = read("Maximum worker duration in seconds [300]: ").strip() or "300"
+            results = solve_isolated(
+                public["value"], encrypted["value"],
+                context.degree, context.plaintext_modulus, context.ciphertext_modulus,
+                context.f_weight, context.g_weight,
+                bkz=bkz, timeout_seconds=int(timeout_raw), progress=write,
+            )
+        else:
+            results = solve(
+                public["value"], encrypted["value"],
+                context.degree, context.plaintext_modulus, context.ciphertext_modulus,
+                context.f_weight, context.g_weight,
+                bkz=bkz, progress=write,
+            )
     except (ValueError, RuntimeError, ImportError, MemoryError) as exc:
         write("NTRU key recovery stopped: " + str(exc))
         return

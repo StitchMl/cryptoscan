@@ -289,6 +289,30 @@ current pattern recognizer covers the supported Python/Sage source
 structure; other MLWE schemes may require additional structural
 recognizers and mathematical solvers.
 
+## Diagnose Python and SymPy on Windows
+
+Use `cryptoscan doctor` to inspect which Python executable is actually
+running the console entry point, whether SymPy imports, and whether LLL works:
+
+```powershell
+cryptoscan doctor
+```
+
+A broken `mpmath` installation may cause SymPy imports to fail with
+`No module named 'mpmath.libmp.gammazeta'` **even when pip reports that
+SymPy and mpmath are installed**. Repair packages using the same Python
+interpreter shown by `cryptoscan doctor`:
+
+```powershell
+py -3.12 -m pip install --no-cache-dir --force-reinstall "mpmath==1.3.0" "sympy==1.14.0"
+py -3.12 -c "import sympy, mpmath; from sympy import Matrix; print(Matrix([[1,2],[3,4]]).lll())"
+```
+
+If different Python installations still conflict, create a virtual
+environment with `py -3.12 -m venv .venv` and install this repository
+using `.\\.venv\\Scripts\\python.exe -m pip install -e .`. Run
+`.\\.venv\\Scripts\\cryptoscan.exe` to use exactly that environment.
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

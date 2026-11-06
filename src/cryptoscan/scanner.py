@@ -21,6 +21,7 @@ from .mathutil import (
     wiener_private_exponent,
 )
 from .model import Finding
+from .gcm_overlap_detector import counter_overlap_lines
 from .aead_diagnostics import unused_validation_flags
 from .parser import (
     Document,
@@ -958,6 +959,21 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                     "Check the call path and ensure invalid authentication is rejected.",
                 ],
             ))
+
+    for document in documents:
+        if document.path.lower().endswith(".py"):
+            for line in counter_overlap_lines(document.text):
+                findings.append(Finding(
+                    "GCM-COUNTER-OVERLAP",
+                    "Custom GCM reuses the initial counter for data and tag masking",
+                    "critical", "high", f"{document.path}:{line}",
+                    {"line": document.text.splitlines()[line - 1].strip()},
+                    ["The custom GCM uses standard GHASH arithmetic.",
+                     "A fresh ciphertext, tag and exact known plaintext are available."],
+                    "Recover counter-mask and GHASH parameters from known data.",
+                    {"kind": "gcm_counter_overlap"},
+                    "Use separate GCM counter blocks and a maintained AEAD implementation."
+                ))
 
     unique = {finding.id: finding for finding in findings}
     return sorted(unique.values(), key=lambda finding: (finding.location.casefold(), finding.rule, finding.id))

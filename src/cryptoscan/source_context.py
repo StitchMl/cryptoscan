@@ -140,7 +140,6 @@ def _verification_signature(node: ast.FunctionDef) -> bool:
         for part in ast.walk(node)
     )
     uses_auth = False
-    parses_role = False
     status_names: set[str] = set()
     for part in ast.walk(node):
         if isinstance(part, ast.Assign) and isinstance(part.value, ast.Call) and isinstance(part.value.func, ast.Attribute):
@@ -149,9 +148,7 @@ def _verification_signature(node: ast.FunctionDef) -> bool:
                 if len(target.elts) == 2 and isinstance(target.elts[1], ast.Name):
                     decrypted = True
                     status_names.add(target.elts[1].id)
-        if isinstance(part, ast.Subscript) and isinstance(part.slice, ast.Constant) and part.slice.value == "role":
-            parses_role = True
-    if not (decrypted and parses_role and status_names and gcm_constructed):
+    if not (decrypted and status_names and gcm_constructed):
         return False
     for part in ast.walk(node):
         if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Load) and part.id in status_names:

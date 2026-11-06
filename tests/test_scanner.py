@@ -37,6 +37,27 @@ def test_rsa_calculated_attacks(tmp_path):
     assert common.evidence["m"] == "42"
 
 
+def test_rsa_small_factor_recovers_plaintext(tmp_path):
+    p = 997
+    q = 2 ** 61 - 1  # Mersenne prime, far from p.
+    n = p * q
+    e = 65537
+    m = int.from_bytes(b"flag", "big")
+    c = pow(m, e, n)
+    path = tmp_path / "small.json"
+    path.write_text(json.dumps([{"n": n, "e": e, "c": c}]), encoding="utf-8")
+    findings = scan(collect_documents([str(path)]))
+    small = next(f for f in findings if f.rule == "RSA-SMALL-FACTOR")
+    assert small.evidence["factorization_verified"] is True
+    assert small.evidence["plaintext_utf8"] == "flag"
+    assert small.recovery_status in {"payload-ready", "flag-recovered"}
+    # A strong modulus must not be flagged.
+    strong = (2 ** 1279 - 1) * (2 ** 2203 - 1)
+    strong_path = tmp_path / "strong.json"
+    strong_path.write_text(json.dumps([{"n": strong, "e": e}]), encoding="utf-8")
+    assert "RSA-SMALL-FACTOR" not in {f.rule for f in scan(collect_documents([str(strong_path)]))}
+
+
 def test_xor_ecb_and_nonce_reuse(tmp_path):
     plaintext = b"flag{single_byte_xor}"
     encrypted = bytes(value ^ 0x42 for value in plaintext).hex()

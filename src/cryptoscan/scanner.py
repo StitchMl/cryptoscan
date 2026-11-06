@@ -9,7 +9,7 @@ import re
 import struct
 from typing import Any
 
-from .mathutil import crt, discrete_log_bsgs, extended_gcd, fermat_factor, int_to_bytes, integer_nth_root, signed_mod_pow, wiener_private_exponent
+from .mathutil import crt, discrete_log_bsgs, extended_gcd, fermat_factor, int_to_bytes, integer_nth_root, signed_mod_pow, small_factor, wiener_private_exponent
 from .model import Finding
 from .parser import Document, flatten_objects, parse_bytes, parse_int, pem_rsa_public_keys, scalar_records
 
@@ -451,6 +451,31 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                     "Write n as a^2-b^2; recover p=a-b and q=a+b, then derive the private key.", solver,
                     "Generate independent primes with a CSPRNG and enforce an adequate distance between p and q."
                 ))
+
+        if not item["p"] and not item["q"]:
+            factor = small_factor(n)
+            if factor:
+                p, q = factor, n // factor
+                closeness = abs(q - p)
+                # Fermat already owns close-prime moduli; report only the weak
+                # small-factor case here to avoid a duplicate finding.
+                if p * q == n and closeness * closeness >= n:
+                    evidence = {"n": str(n), "p": str(p), "q": str(q), "factorization_verified": True}
+                    solver = {"kind": "rsa_small_factor", "p": str(p), "q": str(q)}
+                    if e and c is not None and math.gcd(e, (p - 1) * (q - 1)) == 1:
+                        d = pow(e, -1, (p - 1) * (q - 1))
+                        m = pow(c, d, n)
+                        plain = int_to_bytes(m)
+                        evidence.update({"d": str(d), "c": str(c), "plaintext_hex": plain.hex(),
+                                         "plaintext_utf8": plain.decode("utf-8", "replace"),
+                                         "reencryption_verified": pow(m, e, n) == c})
+                        solver.update({"d": str(d), "result_hex": plain.hex()})
+                    findings.append(Finding(
+                        "RSA-SMALL-FACTOR", "RSA modulus has a recoverable small factor", "critical", "certain", item["location"],
+                        evidence, ["The modulus is not a product of two large, independent primes."],
+                        "Factor n by trial division and bounded Pollard's rho, derive the private key, then decrypt the flag ciphertext.", solver,
+                        "Use two large (>=1024-bit) independent primes from a maintained library; never a smooth or small modulus."
+                    ))
 
     by_modulus: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     for item in rsa:

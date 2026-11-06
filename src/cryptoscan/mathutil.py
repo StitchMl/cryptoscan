@@ -37,6 +37,36 @@ def fermat_factor(n: int, max_steps: int = 100_000) -> tuple[int, int, int] | No
     return None
 
 
+def small_factor(n: int, trial_bound: int = 100_000, rho_steps: int = 20_000) -> int | None:
+    """Return a nontrivial factor of ``n`` found cheaply, or None.
+
+    Trial division up to ``trial_bound`` catches a small prime factor; a bounded,
+    deterministic Pollard's rho then catches a moderately larger one. Strong RSA
+    moduli yield nothing within the budget, so the caller never reports them.
+    """
+    if n <= 3:
+        return None
+    if n % 2 == 0:
+        return 2
+    divisor = 3
+    while divisor <= trial_bound and divisor * divisor <= n:
+        if n % divisor == 0:
+            return divisor
+        divisor += 2
+    if divisor * divisor > n:
+        return None  # n is prime: no factor at or below its square root.
+    x = y = 2
+    g = 1
+    for _ in range(rho_steps):
+        x = (x * x + 1) % n
+        y = (y * y + 1) % n
+        y = (y * y + 1) % n
+        g = math.gcd(abs(x - y), n)
+        if g != 1:
+            break
+    return g if 1 < g < n else None
+
+
 def extended_gcd(a: int, b: int) -> tuple[int, int, int]:
     if b == 0:
         return a, 1, 0

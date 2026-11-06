@@ -1,4 +1,4 @@
-from cryptoscan.mathutil import crt, discrete_log_bsgs, fermat_factor, integer_nth_root, wiener_private_exponent
+from cryptoscan.mathutil import crt, discrete_log_bsgs, fermat_factor, integer_nth_root, small_factor, wiener_private_exponent
 
 
 def test_exact_integer_root():
@@ -17,6 +17,13 @@ def test_crt_and_wiener():
     n = p * q
     e = pow(d, -1, (p - 1) * (q - 1))
     assert wiener_private_exponent(n, e) == (d, q, p)
+
+
+def test_small_factor_finds_weak_moduli_and_skips_strong_ones():
+    assert small_factor(997 * (2 ** 61 - 1)) == 997           # trial division
+    assert small_factor(1000003 * 1000033) in (1000003, 1000033)  # Pollard rho (above trial bound)
+    assert small_factor(2 ** 61 - 1) is None                  # prime
+    assert small_factor((2 ** 607 - 1) * (2 ** 1279 - 1)) is None  # strong
 
 
 def test_bounded_discrete_log():

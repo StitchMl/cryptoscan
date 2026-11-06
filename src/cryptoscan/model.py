@@ -54,7 +54,7 @@ class Finding:
                 return self.evidence.get("reencryption_verified") is True and pow(
                     int(self.evidence["m"]), int(self.evidence["e"]), int(self.evidence["n"])
                 ) == int(self.evidence["c"])
-            if self.rule in {"RSA-WIENER-SMALL-D", "RSA-FERMAT-CLOSE-PRIMES"}:
+            if self.rule in {"RSA-WIENER-SMALL-D", "RSA-FERMAT-CLOSE-PRIMES", "RSA-SMALL-FACTOR"}:
                 factors_match = int(self.evidence["p"]) * int(self.evidence["q"]) == int(self.evidence["n"])
                 return factors_match and ("result_hex" not in self.solver or self.evidence.get("reencryption_verified") is True)
             if self.rule == "RSA-COMMON-MODULUS":

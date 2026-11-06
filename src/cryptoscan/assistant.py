@@ -299,6 +299,15 @@ def assistant_session(
             for context in relevant_source(finding, documents):
                 write(f"Analyzed source: {context.path}:{context.line} in {context.function}")
                 write(f"  {context.excerpt}")
+            if finding.rule == "LINEAR-HASH-SMALL-ALPHABET":
+                if finding.recovery_status == "flag-recovered":
+                    write("Source-derived modular inversion produced a unique verified flag:")
+                    write(str(finding.evidence["recovered_flag"]))
+                    write("Reconstruction and matrix-output roundtrip both verified.")
+                else:
+                    write("Modular hash inversion is incomplete or ambiguous.")
+                    write("Check the finding evidence for missing matrix/output or search bounds.")
+                continue
             if finding.rule.startswith("NTRU-"):
                 write("Polynomial NTRU data detected. Public key and ciphertext are NOT byte-XOR inputs.")
                 if finding.rule == "NTRU-X1-HAMMING-LEAK":

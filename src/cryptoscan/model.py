@@ -35,6 +35,14 @@ class Finding:
     def _verified_solver(self) -> bool:
         """Accept only rule-specific, reproducible proof as an actionable result."""
         try:
+            if self.rule == "LINEAR-HASH-SMALL-ALPHABET":
+                flag = self.evidence.get("recovered_flag")
+                return (
+                    self.evidence.get("unique_flag_verified") is True
+                    and isinstance(flag, str)
+                    and self.solver.get("result_hex") == flag.encode().hex()
+                    and self.solver.get("candidates") == [flag]
+                )
             if self.rule == "RSA-SHARED-PRIME":
                 factor = int(self.evidence["gcd"])
                 return factor * int(self.evidence["q1"]) == int(self.evidence["n1"]) and factor * int(self.evidence["q2"]) == int(self.evidence["n2"])

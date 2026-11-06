@@ -423,6 +423,37 @@ already running an older CryptoScan, quit the terminal process to return
 memory before updating. Windows Task Manager can identify an unrelated
 Python process that continues to consume resources.
 
+## Modular small-alphabet matrix hashes (Sage)
+
+CryptoScan now distinguishes an RSA public modulus from the unrelated
+`n` of a Sage quotient ring (`Zmod(n)`). A standalone `n=256` without
+an RSA exponent is not RSA evidence.
+
+When the analyzed source establishes a modular matrix hash of a
+truncated base-B encoding over a small alphabet, CryptoScan derives the
+matrix dimensions, coefficient modulus, alphabet, block size, original
+format regular expression, and output from files in the same scope.
+It applies unit-pivot modular elimination, enumerates a **bounded**
+number of free alphabet variables, inverts the source-defined radix
+encoding, then independently recomputes the complete hash. If exactly
+one flag-shaped preimage survives, it reports `flag-recovered` and
+prints the candidate in `--assist`.
+
+For a recognized source with `A.txt` and `output.txt`:
+
+```powershell
+cryptoscan .\challenge.zip --assist
+```
+
+This is a deterministic offline solver, not a hardcoded CTF answer.
+The resulting candidate must satisfy both the source-defined format and
+the original matrix output. Incompatible encodings, non-unit pivots,
+excessively many free variables, missing files and ambiguous candidate
+sets remain `validation-only`; no flag is fabricated. The supported
+source recognizer currently targets the observed family of base-B,
+block-XOR, matrix-hash constructions; it does not solve every linear
+code or arbitrary Sage script.
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

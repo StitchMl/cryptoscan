@@ -21,6 +21,7 @@ from .mathutil import (
     wiener_private_exponent,
 )
 from .model import Finding
+from .modular_linear_hash import recognize_linear_hash, solve_linear_hash
 from .ntru import recognize_ntru, is_polynomial_coefficients, analyze_ntru_vectors, pair_ntru_records
 from .mlwe import recognize_weak_mlwe_ring
 from .gcm_overlap_detector import counter_overlap_lines
@@ -70,7 +71,9 @@ def _rsa_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         n = parse_int(_pick(obj, "n", "modulus"))
         e = parse_int(_pick(obj, "e", "exponent", "public_exponent"))
         c = parse_int(_pick(obj, "c", "ciphertext", "ct"))
-        if n is not None and n > 3:
+        # RSA requires an actual public exponent. A standalone 'n' may be
+        # an unrelated ring dimension or modulus (e.g. n=256 in Sage Zmod(n)).
+        if n is not None and n > 3 and e is not None and e > 1:
             result.append({**record, "n": n, "e": e, "c": c,
                            "p": parse_int(_pick(obj, "p", "prime1")), "q": parse_int(_pick(obj, "q", "prime2")),
                            "d": parse_int(_pick(obj, "d", "private_exponent")),
@@ -1086,6 +1089,63 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                     "Calculate sum(c) - p*sum(h)*dr modulo q.",
                     "Treat the result as a limited Hamming-weight leak, not plaintext recovery.",
                 ],
+            ))
+
+    for context in recognize_linear_hash(documents):
+        try:
+            result = solve_linear_hash(documents, context)
+            recovered = list(result.recovered)
+            verified = result.verified and len(recovered) == 1
+            findings.append(Finding(
+                rule="LINEAR-HASH-SMALL-ALPHABET",
+                title="Modular matrix hash over a truncated small-alphabet encoding",
+                severity="critical" if verified else "high",
+                confidence="high",
+                location=f"{context.path}:{context.line}",
+                evidence={
+                    "modulus": context.modulus, "rows": context.rows,
+                    "columns": context.columns, "alphabet": list(context.alphabet),
+                    "modular_rank": result.modular_rank,
+                    "free_variables": result.free_variables,
+                    "small_vector_solutions": result.alphabet_solutions,
+                    "candidate_count": len(recovered),
+                    "unique_flag_verified": verified,
+                    "recovered_flag": recovered[0] if verified else None,
+                },
+                preconditions=[
+                    "The matrix, hash and small-alphabet serializer originate from one source scope.",
+                    "Unit-pivot elimination over the declared modulus is applicable.",
+                    "The source-defined padded-XOR encoding and flag syntax match the recovered vector.",
+                ],
+                attack=(
+                    "Invert the modular matrix under bounded small-alphabet constraints, "
+                    "reverse the truncated radix expansion and verify each source-defined candidate."
+                ),
+                solver={
+                    "kind": "modular_small_alphabet",
+                    "candidates": recovered[:20],
+                    **({"result_hex": recovered[0].encode().hex()} if verified else {}),
+                },
+                patch="Use a cryptographic hash rather than a reversible modular matrix encoding.",
+                playbook=[
+                    "Load the matching matrix and digest from the challenge files.",
+                    "Reduce the linear system with invertible pivots modulo n.",
+                    "Enumerate bounded free variables in the inferred alphabet.",
+                    "Invert the source's radix encoding and validate candidate format and digest.",
+                ],
+            ))
+        except (ValueError, OverflowError, TypeError) as exc:
+            findings.append(Finding(
+                rule="LINEAR-HASH-SMALL-ALPHABET",
+                title="Modular small-alphabet matrix hash detected; recovery incomplete",
+                severity="medium", confidence="medium",
+                location=f"{context.path}:{context.line}",
+                evidence={"modulus": context.modulus, "rows": context.rows,
+                          "columns": context.columns, "reason": str(exc)},
+                preconditions=["Provide a matching matrix and output, or reduce the free-variable search bound."],
+                attack="Solve the bounded modular system, then invert its radix encoding.",
+                solver={"kind": "source_guidance"},
+                patch="Use a cryptographic hash instead of a linear encoding.",
             ))
 
     unique = {finding.id: finding for finding in findings}

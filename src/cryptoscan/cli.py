@@ -9,7 +9,6 @@ from . import __version__
 from .parser import collect_documents
 from .scanner import scan
 
-
 COLORS = {"critical": "\033[91m", "high": "\033[31m", "medium": "\033[33m", "low": "\033[36m"}
 RESET = "\033[0m"
 

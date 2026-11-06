@@ -1,4 +1,11 @@
-from cryptoscan.mathutil import crt, discrete_log_bsgs, fermat_factor, integer_nth_root, small_factor, wiener_private_exponent
+from cryptoscan.mathutil import (
+    crt,
+    discrete_log_bsgs,
+    fermat_factor,
+    integer_nth_root,
+    small_factor,
+    wiener_private_exponent,
+)
 
 
 def test_exact_integer_root():

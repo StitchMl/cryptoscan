@@ -9,6 +9,7 @@ Use it only on CTF challenges and systems you may test.
 - RSA shared primes across the input corpus
 - RSA exact and bounded wrapped low-exponent plaintext recovery for `e=3`, `5`, `7`, `11`, and `17`
 - Fermat factorization for close RSA primes
+- RSA small-factor recovery by trial division and bounded Pollard's rho (weak or smooth moduli only)
 - RSA common-modulus plaintext recovery
 - Hastad broadcast recovery for `e=3`, `5`, and `7` across pairwise-coprime moduli
 - Wiener recovery of unsafe small RSA private exponents

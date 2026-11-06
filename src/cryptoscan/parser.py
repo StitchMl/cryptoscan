@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import ast
 import base64
-from dataclasses import dataclass
+import contextlib
 import hashlib
 import json
-from pathlib import Path
 import re
 import tarfile
-from typing import Any, Iterable
 import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable
 
 
 @dataclass(frozen=True)
@@ -51,9 +52,8 @@ def collect_documents(targets: Iterable[str]) -> list[Document]:
         target = Path(raw).resolve()
         if target.is_dir():
             files.extend((target, p) for p in target.rglob("*") if p.is_file() and not _ignored(p.relative_to(target).as_posix()))
-        elif target.is_file():
-            if not _ignored(target.name):
-                files.append((target.parent, target))
+        elif target.is_file() and not _ignored(target.name):
+            files.append((target.parent, target))
     documents: list[Document] = []
     for root, path in sorted(files, key=lambda pair: pair[1].as_posix().casefold()):
         try:
@@ -80,10 +80,8 @@ def collect_documents(targets: Iterable[str]) -> list[Document]:
         text = raw.decode("utf-8", errors="replace")
         data = None
         if path.suffix.casefold() == ".json" or text.lstrip().startswith(("{", "[")):
-            try:
+            with contextlib.suppress(json.JSONDecodeError):
                 data = json.loads(text)
-            except json.JSONDecodeError:
-                pass
         relative = path.relative_to(root).as_posix()
         documents.append(Document(relative, text, data, _scope(relative), hashlib.sha256(raw).hexdigest()))
     unique: dict[str, Document] = {}
@@ -103,10 +101,8 @@ def _document_from_bytes(name: str, raw: bytes, scope: str) -> Document | None:
     text = raw.decode("utf-8", errors="replace")
     data = None
     if name.casefold().endswith(".json") or text.lstrip().startswith(("{", "[")):
-        try:
+        with contextlib.suppress(json.JSONDecodeError):
             data = json.loads(text)
-        except json.JSONDecodeError:
-            pass
     return Document(name, text, data, scope, hashlib.sha256(raw).hexdigest())
 
 

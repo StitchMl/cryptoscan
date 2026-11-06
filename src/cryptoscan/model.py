@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import hashlib
 import json
 import re
+from dataclasses import asdict, dataclass
 from typing import Any
-
 
 FLAG_PATTERN = re.compile(rb"(?:flag|ctf|key)\{[^\r\n]{1,200}\}", re.IGNORECASE)
 
@@ -89,7 +88,7 @@ class Finding:
                 iv = bytes.fromhex(self.evidence["iv_hex"])
                 known = bytes.fromhex(self.evidence["known_block_hex"])
                 target = bytes.fromhex(self.evidence["target_block_hex"])
-                expected = bytes(left ^ old ^ new for left, old, new in zip(iv, known, target))
+                expected = bytes(left ^ old ^ new for left, old, new in zip(iv, known, target, strict=False))
                 return expected.hex() == self.solver.get("modified_iv_hex")
             if self.rule in {"XOR-SINGLE-BYTE", "XOR-REPEATING-KEY"}:
                 return self.evidence.get("flag_shape") is True and self.evidence.get("roundtrip_verified") is True

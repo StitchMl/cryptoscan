@@ -1,8 +1,8 @@
-import json
 import base64
-import zipfile
 import hashlib
+import json
 import random
+import zipfile
 
 from cryptoscan.parser import collect_documents
 from cryptoscan.scanner import scan
@@ -112,7 +112,7 @@ def test_hastad_wiener_and_signature_nonce_reuse(tmp_path):
     sig1 = {"q": order, "r": r, "s": ((z1 + r * private) * pow(nonce, -1, order)) % order, "z": z1}
     sig2 = {"q": order, "r": r, "s": ((z2 + r * private) * pow(nonce, -1, order)) % order, "z": z2}
     path = tmp_path / "advanced.json"
-    path.write_text(json.dumps(broadcast + [wiener, sig1, sig2]), encoding="utf-8")
+    path.write_text(json.dumps([*broadcast, wiener, sig1, sig2]), encoding="utf-8")
     findings = scan(collect_documents([str(path)]))
     rules = {finding.rule for finding in findings}
     assert {"RSA-HASTAD-BROADCAST", "RSA-WIENER-SMALL-D", "SIGNATURE-NONCE-REUSE"} <= rules
@@ -328,7 +328,7 @@ def test_known_plaintext_nonce_reuse_recovers_flag(tmp_path):
     known = b"A" * 32
     secret = b"flag{nonce_reuse_recovery}!!!!!!"
     assert len(known) == len(secret) == len(key_stream)
-    encrypt = lambda plain: bytes(left ^ right for left, right in zip(plain, key_stream)).hex()
+    encrypt = lambda plain: bytes(left ^ right for left, right in zip(plain, key_stream, strict=False)).hex()
     path = tmp_path / "nonce-reuse.json"
     path.write_text(json.dumps([
         {"mode": "AES-CTR", "key_id": "k1", "nonce": nonce, "ciphertext": encrypt(known), "known_plaintext": known.hex()},

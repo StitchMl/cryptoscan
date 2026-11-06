@@ -1,17 +1,34 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
 import base64
-from itertools import combinations, islice
 import math
 import random
 import re
 import struct
+from collections import Counter, defaultdict
+from itertools import combinations, islice, pairwise
 from typing import Any
 
-from .mathutil import crt, discrete_log_bsgs, extended_gcd, fermat_factor, int_to_bytes, integer_nth_root, signed_mod_pow, small_factor, wiener_private_exponent
+from .mathutil import (
+    crt,
+    discrete_log_bsgs,
+    extended_gcd,
+    fermat_factor,
+    int_to_bytes,
+    integer_nth_root,
+    signed_mod_pow,
+    small_factor,
+    wiener_private_exponent,
+)
 from .model import Finding
-from .parser import Document, flatten_objects, parse_bytes, parse_int, pem_rsa_public_keys, scalar_records
+from .parser import (
+    Document,
+    flatten_objects,
+    parse_bytes,
+    parse_int,
+    pem_rsa_public_keys,
+    scalar_records,
+)
 
 
 def _pick(obj: dict[str, Any], *names: str) -> Any | None:
@@ -137,7 +154,7 @@ def _recover_lcg(outputs: list[int], modulus: int | None) -> tuple[int, int, int
     if len(outputs) < 4 or any(value < 0 for value in outputs):
         return None
     if modulus is None:
-        differences = [right - left for left, right in zip(outputs, outputs[1:])]
+        differences = [right - left for left, right in pairwise(outputs)]
         zeros = [abs(differences[i + 2] * differences[i] - differences[i + 1] ** 2) for i in range(len(differences) - 2)]
         modulus = 0
         for value in zeros:
@@ -149,7 +166,7 @@ def _recover_lcg(outputs: list[int], modulus: int | None) -> tuple[int, int, int
     except ValueError:
         return None
     increment = (outputs[1] - multiplier * outputs[0]) % modulus
-    if any((multiplier * left + increment) % modulus != right for left, right in zip(outputs, outputs[1:])):
+    if any((multiplier * left + increment) % modulus != right for left, right in pairwise(outputs)):
         return None
     return modulus, multiplier, increment
 
@@ -186,11 +203,11 @@ def _clone_mt19937(outputs: list[int]) -> tuple[int, bool] | None:
     if len(outputs) < 624 or any(value < 0 or value > 0xFFFFFFFF for value in outputs[:624]):
         return None
     state = [_untemper_mt19937(value) for value in outputs[:624]]
-    verified = all(_temper_mt19937(raw) == output for raw, output in zip(state, outputs[:624]))
+    verified = all(_temper_mt19937(raw) == output for raw, output in zip(state, outputs[:624], strict=False))
     if not verified:
         return None
     clone = random.Random()
-    clone.setstate((3, tuple(state + [624]), None))
+    clone.setstate((3, (*state, 624), None))
     return clone.getrandbits(32), True
 
 
@@ -213,7 +230,7 @@ def _sha1_compress(block: bytes, state: tuple[int, int, int, int, int]) -> tuple
         rotated = ((a << 5) | (a >> 27)) & 0xFFFFFFFF
         temp = (rotated + function + e + constant + word) & 0xFFFFFFFF
         a, b, c, d, e = temp, a, ((b << 30) | (b >> 2)) & 0xFFFFFFFF, c, d
-    return tuple((left + right) & 0xFFFFFFFF for left, right in zip((a, b, c, d, e), original))
+    return tuple((left + right) & 0xFFFFFFFF for left, right in zip((a, b, c, d, e), original, strict=False))
 
 
 def _sha1_padding(message_length: int) -> bytes:
@@ -246,7 +263,7 @@ def _repeating_xor_candidate(data: bytes) -> tuple[bytes, bytes, float] | None:
             baseline.append(max(candidates, key=lambda row: (row[0], -row[1]))[1])
         keys = [bytes(baseline)]
         for crib in (b"flag{", b"ctf{"):
-            for start in range(0, len(data) - len(crib) + 1):
+            for start in range(len(data) - len(crib) + 1):
                 candidate = bytearray(baseline)
                 fixed: dict[int, int] = {}
                 valid = True
@@ -829,7 +846,7 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
             if left["bytes"] == right["bytes"]:
                 continue
             length = min(len(left["bytes"]), len(right["bytes"]))
-            xored = bytes(a ^ b for a, b in zip(left["bytes"][:length], right["bytes"][:length]))
+            xored = bytes(a ^ b for a, b in zip(left["bytes"][:length], right["bytes"][:length], strict=False))
             # Space-letter pattern is useful evidence for reused stream keystreams.
             alpha_positions = [idx for idx, b in enumerate(xored) if chr(b ^ 0x20).isalpha()]
             if length >= 8 and len(alpha_positions) / length >= 0.35:
@@ -861,7 +878,7 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
         for i, left in enumerate(group):
             for right in group[i + 1 :]:
                 length = min(len(left["cipher"]), len(right["cipher"]))
-                combined = bytes(a ^ b for a, b in zip(left["cipher"][:length], right["cipher"][:length]))
+                combined = bytes(a ^ b for a, b in zip(left["cipher"][:length], right["cipher"][:length], strict=False))
                 is_gcm = "gcm" in left["mode"] or "gcm" in right["mode"]
                 rule = "GCM-NONCE-REUSE" if is_gcm else "CTR-NONCE-REUSE"
                 evidence: dict[str, Any] = {"key_id": key_id, "nonce_hex": nonce.hex(), "ciphertexts_xor_hex": combined.hex()}
@@ -870,11 +887,11 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                     known = known_side.get("known")
                     if not known or len(known) < len(target_side["cipher"]) or len(known_side["cipher"]) < len(target_side["cipher"]):
                         continue
-                    keystream = bytes(a ^ b for a, b in zip(known_side["cipher"], known))
-                    recovered = bytes(a ^ b for a, b in zip(target_side["cipher"], keystream))
+                    keystream = bytes(a ^ b for a, b in zip(known_side["cipher"], known, strict=False))
+                    recovered = bytes(a ^ b for a, b in zip(target_side["cipher"], keystream, strict=False))
                     evidence.update({"known_plaintext_hex": known[:len(target_side["cipher"])].hex(),
                                      "recovered_plaintext_hex": recovered.hex(), "known_plaintext_roundtrip_verified":
-                                     bytes(a ^ b for a, b in zip(known[:len(target_side["cipher"])], keystream)) == known_side["cipher"][:len(target_side["cipher"])]})
+                                     bytes(a ^ b for a, b in zip(known[:len(target_side["cipher"])], keystream, strict=False)) == known_side["cipher"][:len(target_side["cipher"])]})
                     solver["result_hex"] = recovered.hex()
                     break
                 findings.append(Finding(

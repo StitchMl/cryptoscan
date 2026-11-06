@@ -70,7 +70,13 @@ def test_build_token_roundtrip_against_challenge_gcm():
 
 
 def test_cookie_help_and_scan_help(capsys):
-    assert main(["cookie", "--help"]) == 0
+    import pytest
+
+    with pytest.raises(SystemExit) as cookie_exit:
+        main(["cookie", "--help"])
+    assert cookie_exit.value.code == 0
     assert "build" in capsys.readouterr().out
-    assert main(["--help"]) == 0
+    with pytest.raises(SystemExit) as scan_exit:
+        main(["--help"])
+    assert scan_exit.value.code == 0
     assert "targets" in capsys.readouterr().out

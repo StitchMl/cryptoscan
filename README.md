@@ -45,6 +45,35 @@ prints it as `Step 1`, `Step 2`, ... and the JSON report exposes it under
 `playbook`. The steps are guidance, not a guaranteed solve: an interactive
 challenge still needs you to collect ciphertexts and submit the forged value.
 
+## Authentification-1 cookie utilities (offline)
+
+These commands are independent of scanning and target the specific custom AES-GCM
+implementation used in the supplied Authentification-1 CTF challenge, **not arbitrary
+web session cookies**. Install the optional cryptographic library for `build`:
+
+```powershell
+python -m pip install pycryptodome
+cryptoscan cookie build --masterkey "00112233445566778899aabbccddeeff" --user demo --role guest
+```
+
+Given a cookie plus the known original username and role, the XOR helper can
+change its plaintext without recovering the master key:
+
+```powershell
+cryptoscan cookie forge --cookie "CIPHERTEXT_HEX;TAG_HEX" --user long_username --role guest --target-role super_admin
+```
+
+The modified cookie reuses an **invalid** authentication tag and is only suitable
+for challenge verifiers that ignore authentication failure. It requires the exact
+known JSON plaintext and enough known ciphertext bytes to cover the replacement.
+If a longer role will not fit, the command automatically shortens an ASCII username;
+specify `--target-user` to choose one. Neither mode contacts a live service.
+
+The scanner also reports `AEAD-AUTH-RESULT-IGNORED` (critical, static diagnostic)
+when a Python function appears to discard the authentication status returned
+alongside decrypted plaintext. Confirm the actual method semantics and call path
+before treating this result as exploitable.
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

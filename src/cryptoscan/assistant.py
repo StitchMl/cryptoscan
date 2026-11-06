@@ -25,6 +25,35 @@ def _bytes(text: str, encoding: str) -> bytes:
     return text.encode("utf-8")
 
 
+def auth_evidence_workflow(
+    read: Callable[[str], str] = input,
+    write: Callable[[str], Any] = print,
+) -> dict[str, dict[str, str | None]]:
+    """Collect observations independently; never treat their separator as a token format."""
+    write("Authentication observations: enter each field separately.")
+    write("Leave any unknown value blank. Cookie values are opaque until their codec is established.")
+    labels = (
+        ("username", "Username"),
+        ("password", "Password"),
+        ("role", "Role"),
+        ("cookie", "Auth cookie"),
+    )
+    evidence: dict[str, dict[str, str | None]] = {"observed": {}, "target": {}}
+    for group, prefix in (("observed", "Observed"), ("target", "Target")):
+        for key, label in labels:
+            value = _ask(f"{prefix} {label} (blank if unknown): ", read)
+            evidence[group][key] = value or None
+    write("Evidence captured separately (passwords and cookie values are not printed).")
+    for group in ("observed", "target"):
+        for key in ("username", "role"):
+            write(f"  {group}.{key}: {evidence[group][key] or '<unknown>'}")
+        for key in ("password", "cookie"):
+            write(f"  {group}.{key}: {'provided' if evidence[group][key] is not None else 'unknown'}")
+    write("No cryptographic relationship between these fields has been established.")
+    write("Inspect the token-generation/verification code or matching finding before computing a replacement.")
+    return evidence
+
+
 def inspect_record(record: str, write: Callable[[str], Any] = print) -> None:
     """Diagnose a delimited token without assuming its layout or MAC scheme."""
     parts = record.split(";")
@@ -183,6 +212,7 @@ def assistant_session(
     while True:
         for index, finding in enumerate(findings, 1):
             write(f"  {index}. [{finding.severity.upper()}] {finding.rule}: {finding.title}")
+        write("  e. Enter separate authentication evidence (username/password/role/cookie)")
         write("  t. Inspect a captured token or delimited record")
         write("  h. Calculate / compare a digest (plain, secret prefix/suffix, HMAC)")
         write("  x. Known-plaintext XOR transformation")
@@ -195,7 +225,9 @@ def assistant_session(
             return
         if selection in {"q", "quit", "0", ""}:
             return
-        if selection == "t":
+        if selection == "e":
+            auth_evidence_workflow(read, write)
+        elif selection == "t":
             inspect_record(_ask("Captured token/record: ", read), write)
         elif selection == "h":
             digest_workflow(read, write)

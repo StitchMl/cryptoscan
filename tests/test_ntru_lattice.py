@@ -103,3 +103,33 @@ def encrypt(h,m):
     ntru_lattice_workflow(finding, documents, lambda _: next(answers), output.append)
     assert any("Candidate 1: A" in line for line in output)
     assert any("Public-key relation verified: YES" in line for line in output)
+
+
+
+@pytest.mark.parametrize("n", [8, 16, 32])
+def test_native_flint_backend_recovers_independent_ntru_plaintexts(n):
+    pytest.importorskip("flint")
+    args = synthetic(n=n, seed=n + 67)
+    degree, p, q, df, dg, dr, h, ct, plaintext, _ = args
+    output = []
+    candidates = solve(
+        h, ct, degree, p, q, df, dg,
+        backend="flint", progress=output.append,
+    )
+    assert any(item["plaintext"] == plaintext for item in candidates)
+    assert any("FLINT native LLL" in line for line in output)
+
+
+def test_native_windows_auto_selects_flint_and_rejects_bkz(monkeypatch):
+    flint = pytest.importorskip("flint")
+    from cryptoscan import ntru_lattice
+    monkeypatch.setattr(ntru_lattice.sys, "platform", "win32")
+    monkeypatch.setattr(ntru_lattice, "constrained_basis", lambda *args: [[1, 0], [0, 2]])
+    lines = []
+    reduced = ntru_lattice.reduce_basis(
+        [0] * 64, 127, 3, 3, backend="auto", progress=lines.append,
+    )
+    assert len(reduced) == 2
+    assert any("FLINT native LLL" in line for line in lines)
+    with pytest.raises(RuntimeError, match="BKZ is available only"):
+        ntru_lattice.reduce_basis([0] * 64, 127, 3, 3, backend="auto", bkz=20)

@@ -8,9 +8,9 @@ from http.cookies import SimpleCookie
 
 
 def cookie_request_header(name: str, value: str) -> str:
-    if not name or any(ch in name for ch in ";=\\r\\n"):
+    if not name or any(ch in name for ch in (";", "=", chr(13), chr(10))):
         raise ValueError("invalid cookie name")
-    if any(ch in value for ch in "\\r\\n"):
+    if any(ch in value for ch in (chr(13), chr(10))):
         raise ValueError("cookie value cannot contain line breaks")
     jar = SimpleCookie()
     jar[name] = value

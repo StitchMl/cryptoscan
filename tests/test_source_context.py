@@ -135,3 +135,14 @@ def test_verifier_reading_multiple_fields_produces_no_unjustified_minimization()
 def test_verifier_with_non_boolean_success_does_not_claim_recipe():
     changed = SOURCE.replace('    return True', '    return loads(pt.decode())["role"]')
     assert discover_token_recipes(docs(changed)) == []
+
+
+def test_arbitrary_field_and_target_are_inferred_without_role_assumptions():
+    changed = SOURCE.replace('"role": role', '"level": level').replace(
+        'def build_token(key, username, role):', 'def build_token(key, username, level):'
+    ).replace('["role"] != "super_admin"', '["level"] != "captain"')
+    recipes = discover_token_recipes(docs(changed))
+    assert len(recipes) == 1
+    assert recipes[0].fields == ("username", "level")
+    assert recipes[0].required_values == (("level", "captain"),)
+    assert recipes[0].required_fields == ("level",)

@@ -286,10 +286,10 @@ def _repeating_xor_candidate(data: bytes) -> tuple[bytes, bytes, float] | None:
                     keys.append(bytes(candidate))
         for key in keys:
             plain = bytes(value ^ key[index % key_size] for index, value in enumerate(data))
-            if not re.search(rb"(?:flag|ctf|key)\{[^\r\n]{1,200}\}", plain, re.IGNORECASE):
+            if not re.search(rb"(?:flag|ctf|key)\{[A-Za-z0-9_!@#$%+.,:/=\\-]{4,120}\}", plain, re.IGNORECASE):
                 continue
             printable = sum(value in (9, 10, 13) or 32 <= value <= 126 for value in plain) / len(plain)
-            if printable < 0.90:
+            if printable < 0.98:
                 continue
             score = _language_score(plain) - 0.015 * key_size
             if best is None or (score, bytes(key)) > (best[0], best[1]):

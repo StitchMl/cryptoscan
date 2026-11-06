@@ -38,6 +38,13 @@ Each finding has a recovery status:
 
 The status is derived from rule-specific arithmetic checks. It never upgrades a source-pattern match or an unverified plaintext guess.
 
+Source-pattern findings (for example `NONCE-CONSTANT`, `CIPHER-ECB`) also carry a
+`playbook`: an ordered, step-by-step attack procedure for that weakness,
+including the actions to run against a live challenge service. The text report
+prints it as `Step 1`, `Step 2`, ... and the JSON report exposes it under
+`playbook`. The steps are guidance, not a guaranteed solve: an interactive
+challenge still needs you to collect ciphertexts and submit the forged value.
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

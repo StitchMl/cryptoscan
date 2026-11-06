@@ -88,6 +88,23 @@ def test_source_patterns(tmp_path):
     assert {"PRNG-PREDICTABLE-SEED", "NONCE-CONSTANT", "MAC-PREFIX-HASH", "CIPHER-ECB"} <= rules
 
 
+def test_source_findings_carry_a_step_by_step_playbook(tmp_path):
+    from cryptoscan.cli import _text
+
+    path = tmp_path / "chall.py"
+    path.write_text("nonce = b'\\x00' * 12\ncipher = AES.new(key, AES.MODE_ECB)\n", encoding="utf-8")
+    findings = scan(collect_documents([str(path)]))
+    nonce = next(f for f in findings if f.rule == "NONCE-CONSTANT")
+    assert len(nonce.playbook) >= 4
+    assert any("GF(2^128)" in step for step in nonce.playbook)
+    assert any("admin panel" in step for step in nonce.playbook)
+    # The playbook is part of the JSON and text reports.
+    assert "playbook" in nonce.to_dict()
+    assert nonce.to_dict()["playbook"] == nonce.playbook
+    text = _text(findings, color=False)
+    assert "Step 1:" in text
+
+
 def test_deterministic_json(tmp_path):
     path = tmp_path / "sample.json"
     path.write_text(json.dumps({"ciphertext": bytes(x ^ 7 for x in b"flag{stable}").hex()}), encoding="utf-8")

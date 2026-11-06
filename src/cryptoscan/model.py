@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 FLAG_PATTERN = re.compile(rb"(?:flag|ctf|key)\{[^\r\n]{1,200}\}", re.IGNORECASE)
@@ -21,6 +21,7 @@ class Finding:
     attack: str
     solver: dict[str, Any]
     patch: str
+    playbook: list[str] = field(default_factory=list)
 
     @property
     def id(self) -> str:

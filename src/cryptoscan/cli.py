@@ -38,6 +38,8 @@ def _text(findings, color: bool) -> str:
         output.append(f"  Flag path: {finding.flag_path}")
         output.append(f"  Preconditions: {'; '.join(finding.preconditions)}")
         output.append(f"  Attack: {finding.attack}")
+        for index, step in enumerate(finding.playbook, 1):
+            output.append(f"  Step {index}: {step}")
         output.append(f"  Solver: {json.dumps(finding.solver, sort_keys=True, ensure_ascii=False)}")
         if finding.cyberchef is not None:
             output.append(f"  CyberChef input: {finding.cyberchef['input']}")

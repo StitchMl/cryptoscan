@@ -937,6 +937,56 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
     return sorted(unique.values(), key=lambda finding: (finding.location.casefold(), finding.rule, finding.id))
 
 
+_SOURCE_PLAYBOOKS: dict[str, list[str]] = {
+    "NONCE-CONSTANT": [
+        "Confirm the nonce/IV is identical across every ciphertext the challenge gives you.",
+        "Collect two or more ciphertexts under this key and nonce: sign up / log in twice, or call the encrypt endpoint repeatedly.",
+        "Read the source to learn the plaintext format and where the admin/role field sits.",
+        "Stream, CTR or GCM: XOR two ciphertexts to cancel the keystream, then crib-drag the known format to recover plaintext.",
+        "GCM auth bypass: recover the authentication key H from two (ciphertext, tag) pairs over GF(2^128), then compute a valid tag for your target plaintext.",
+        "Replace the session token/cookie with your forged ciphertext and tag, then submit it to reach the admin panel or flag.",
+    ],
+    "CIPHER-ECB": [
+        "Confirm ECB: send input with two identical adjacent blocks (32 equal bytes) and look for two identical ciphertext blocks.",
+        "If you control input next to a secret, pad so one unknown byte sits at the end of a block.",
+        "Recover that byte by trying all 256 values and matching the ciphertext block.",
+        "Shift by one byte and repeat to peel the whole secret, then read the flag or key.",
+    ],
+    "HASH-WEAK": [
+        "Find where this digest gates access: a comparison, a signature check, or an integrity token.",
+        "For MD5/SHA-1 integrity, craft a colliding or chosen-prefix input that keeps the digest the server expects.",
+        "Submit the forged input so its digest matches and the check passes.",
+    ],
+    "MAC-PREFIX-HASH": [
+        "Capture one valid (message, digest) pair that the server accepts.",
+        "Brute-force a small range for the secret length.",
+        "Use a length-extension tool (for example hashpump) to append your payload and get the forged digest.",
+        "Submit the extended message with the forged digest.",
+    ],
+    "PRNG-PREDICTABLE-SEED": [
+        "Note the approximate time the secret or token was generated.",
+        "Enumerate candidate Unix timestamps around that moment.",
+        "Re-seed the same PRNG with each candidate and regenerate the key or token.",
+        "Try each regenerated value against the challenge until one is accepted.",
+    ],
+    "PRNG-MT-CRYPTO": [
+        "Collect 624 consecutive 32-bit outputs from the service (or enough raw random bytes).",
+        "Feed those outputs to cryptoscan to clone the MT19937 state.",
+        "Predict the next key, nonce or token and submit it.",
+    ],
+    "PRNG-NONCRYPTO-RANDOM": [
+        "Identify which secret this value protects: key, nonce, token or OTP.",
+        "Collect outputs tied to the same PRNG and reconstruct or brute-force its state.",
+        "Predict the target secret and submit it.",
+    ],
+    "KEY-HARDCODED": [
+        "Read the embedded key from the matched line.",
+        "Identify the algorithm, mode and IV/nonce used with it.",
+        "Decrypt the challenge ciphertext locally with that key and parameters to read the flag.",
+    ],
+}
+
+
 def _source_findings(documents: list[Document]) -> list[Finding]:
     rules = [
         ("HASH-WEAK", "Weak hash primitive", "medium", r"\b(?:md5|sha1)\s*\(",
@@ -991,7 +1041,8 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                     rule, title, severity, "medium", f"{doc.path}:{line}",
                     {"match": match.group(0), "line": excerpt},
                     ["Matched code executes in the challenge cryptographic path."], attack,
-                    {"kind": "source_guidance", "matched_pattern": rule}, patch
+                    {"kind": "source_guidance", "matched_pattern": rule}, patch,
+                    _SOURCE_PLAYBOOKS.get(rule, []),
                 ))
         # An oracle requires both CBC/unpadding and an externally distinguishable
         # padding failure. Either signal alone is too common to report.

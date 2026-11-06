@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cryptoscan-ctf"
-version = "0.8.1"
+version = "0.8.2"
 description = "Deterministic offline cryptography weakness scanner for CTF Jeopardy challenges"
 readme = "README.md"
 requires-python = ">=3.10"

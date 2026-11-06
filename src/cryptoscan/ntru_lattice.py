@@ -84,10 +84,10 @@ def reduce_basis(
     n = len(h)
     if backend == "auto":
         backend = "sympy" if n <= 32 else "fpylll"
+    if backend == "sympy" and n > 32:
+        raise RuntimeError("SymPy lattice backend limited to degree <=32; use fpylll")
     rows = constrained_basis(h, q, df, dg)
     if backend == "sympy":
-        if n > 32:
-            raise RuntimeError("SymPy lattice backend limited to degree <=32; use fpylll")
         from sympy import Matrix
         progress(f"SymPy LLL, lattice dimension {len(rows)}")
         return [[int(value) for value in row] for row in Matrix(rows).lll().tolist()]

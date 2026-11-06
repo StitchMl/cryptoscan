@@ -61,7 +61,7 @@ def test_build_token_roundtrip_against_challenge_gcm():
     ciphertext_hex, tag_hex = cookie.split(";")
     ciphertext = bytes.fromhex(ciphertext_hex)
     aes = AES.new(bytes.fromhex(key), AES.MODE_ECB)
-    j0 = bytes(15) + b"\\x01"
+    j0 = bytes(15) + bytes([1])
     decoded = _gctr(aes, j0, ciphertext)
     assert decoded == token_payload("demo", "guest")
     block = ciphertext + bytes(-len(ciphertext) % 16)

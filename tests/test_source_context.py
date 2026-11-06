@@ -98,3 +98,21 @@ def test_no_documents_disables_recipe():
     output = []
     assistant_session([fake_finding()], lambda _prompt: "q", output.append)
     assert "No analyzed source loaded" in "\n".join(output)
+
+
+def test_renamed_functions_still_recognized():
+    alternate = SOURCE.replace("build_token", "issue_session").replace("verif_token", "check_session")
+    recipes = discover_token_recipes(docs(alternate))
+    assert len(recipes) == 1
+    assert recipes[0].build.function == "issue_session"
+    assert recipes[0].verify.function == "check_session"
+
+
+def test_different_gcm_iv_is_not_an_approved_recipe():
+    changed = SOURCE.replace("gcm = GCM(key, IV)", "gcm = GCM(key, OTHER_IV)", 1)
+    assert discover_token_recipes(docs(changed)) == []
+
+
+def test_non_default_json_serialization_is_not_assumed():
+    changed = SOURCE.replace("}).encode()", "}, separators=(',', ':')).encode()")
+    assert discover_token_recipes(docs(changed)) == []

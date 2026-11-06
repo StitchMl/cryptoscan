@@ -252,6 +252,43 @@ candidates. Correct authenticated GCM is not vulnerable to this workflow.
 AES-ECB used solely as an internal block primitive of GCM is not independently
 reported as ECB-mode data encryption when this implementation is recognized.
 
+## Sage / Module-LWE quotient-ring distinguisher
+
+CryptoScan recognizes a family of Sage short-secret Module-LWE vs uniform
+challenges where the polynomial quotient modulus includes the factor x-1
+(for example x^N-1, rather than a modulus that does not vanish at x=1).
+It **derives** q, N, the matrix dimensions, eta and the weak ring polynomial
+from the analyzed Sage sources, not from any challenge name or flag.
+
+The source-derived attack evaluates each polynomial at x=1, builds the
+corresponding modular LWE lattice and applies LLL plus Babai nearest-plane.
+It checks the modular relation and compares the residual to a conservative
+short-error threshold. This is an evidence-backed statistical classifier,
+**not** a universal MLWE solver or a guaranteed result for arbitrary ring
+parameters. Numerical and shortness assumptions must hold.
+
+Usage:
+
+~~~powershell
+cryptoscan ".\challenge-files" --assist
+~~~
+
+Select the new \`MLWE-REDUCIBLE-RING-QUOTIENT\` finding. Choose \`file\`
+to analyze a captured text transcript with \`sanitize_mat(A)\` and
+\`sanitize_vec(t)\` (base64/gzip encoded). The tool outputs an MLWE
+prediction \`1\` or a uniform prediction \`0\` and a residual bound.
+Choose \`tcp\` **only for CTF services you are authorized to test**,
+and supply the server host and port. It uses the native TCP challenge
+protocol, not HTTP, and submits consecutive predictions; it does not
+embed a challenge URL, flag or known response. Press Ctrl+C to stop.
+
+The decoder uses bounded gzip decompression and literal parsing,
+and the lattice solver runs offline. Python/SymPy are sufficient;
+SageMath and an AI connection are not required at runtime. The
+current pattern recognizer covers the supported Python/Sage source
+structure; other MLWE schemes may require additional structural
+recognizers and mathematical solvers.
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

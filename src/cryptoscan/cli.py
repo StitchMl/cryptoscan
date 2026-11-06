@@ -6,6 +6,7 @@ import os
 import sys
 
 from . import __version__
+from .cookie import main as cookie_main
 from .parser import collect_documents
 from .scanner import scan
 
@@ -15,7 +16,7 @@ RESET = "\033[0m"
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cryptoscan", description="Deterministic offline CTF cryptography scanner")
-    parser.add_argument("targets", nargs="+", help="files or directories to scan")
+    parser.add_argument("targets", nargs="+", help="files or directories to scan; use cryptoscan cookie --help for cookie tools")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument("--no-color", action="store_true", help="disable ANSI colors")
     parser.add_argument("--fermat-steps", type=int, default=100_000, help="maximum Fermat iterations per RSA modulus")
@@ -50,7 +51,10 @@ def _text(findings, color: bool) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "cookie":
+        return cookie_main(arguments[1:])
+    args = _parser().parse_args(arguments)
     if args.fermat_steps < 0:
         _parser().error("--fermat-steps must be non-negative")
     documents = collect_documents(args.targets)

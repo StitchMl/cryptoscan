@@ -397,6 +397,32 @@ reduction; native Windows compatibility is *not* a guarantee of a quick
 solution or successful private-key recovery. Missing or rejected keys
 are never presented as a recovered flag.
 
+## NTRU memory isolation on Windows
+
+For NTRU degree >32, CryptoScan now starts an **isolated Python worker**
+for the expensive native FLINT/fpylll lattice reduction instead of holding
+million-entry lattice matrices in the interactive scanner process. The child
+exits after the result or a configurable timeout (default 300 seconds), so
+Windows releases its native allocations. The parent shows only verified
+plaintext candidates; it never imports or retains a reduced lattice matrix.
+
+After the `0` (LLL only) answer, the assistant asks:
+
+```text
+Maximum worker duration in seconds [300]:
+```
+
+Press Enter for 300 seconds, or choose 1–3600 seconds. A timeout stops the
+child process without claiming a flag. If large-instance LLL is too expensive,
+choose `N` at the confirmation rather than repeatedly running it. Native
+Windows LLL at NTRU n=512 is still computationally demanding and is **not**
+guaranteed to recover a private key.
+
+For immediate termination, use Ctrl+C or close the process. If you are
+already running an older CryptoScan, quit the terminal process to return
+memory before updating. Windows Task Manager can identify an unrelated
+Python process that continues to consume resources.
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

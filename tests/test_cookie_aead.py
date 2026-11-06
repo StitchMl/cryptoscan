@@ -2,7 +2,7 @@ import json
 
 from cryptoscan.aead_diagnostics import unused_validation_flags
 from cryptoscan.cli import main
-from cryptoscan.cookie import alter_cookie, build_cookie, token_payload
+from cryptoscan.cookie import alter_cookie, build_cookie, token_payload, transform_json_cookie
 
 
 def test_unused_authentication_detected():
@@ -80,3 +80,29 @@ def test_cookie_help_and_scan_help(capsys):
         main(["--help"])
     assert scan_exit.value.code == 0
     assert "targets" in capsys.readouterr().out
+
+
+def test_minimal_json_transformation_keeps_tag_and_uses_only_required_fields():
+    ciphertext = "afbbb704b5f8af60f155aa7dfe5c9ec7b5e91228430226bd1f382815e044f6f4daf7d18412"
+    tag = "a2f8064887d8e6529fe3df5058058418"
+    modified, plaintext = transform_json_cookie(
+        ciphertext + ";" + tag,
+        {"username": "demo", "role": "guest"},
+        {"role": "super_admin"},
+    )
+    assert plaintext == b'{"role": "super_admin"}'
+    assert modified == "afbbb018bcefe33bbc12fb32ae1b88fdb9e25d6d0d0229;" + tag
+
+
+def test_minimal_json_transformation_checks_observed_plaintext_length():
+    import pytest
+    with pytest.raises(ValueError, match="observed ciphertext"):
+        transform_json_cookie("00;" + "00" * 16, {"username": "demo", "role": "guest"}, {"role": "super_admin"})
+
+
+def test_minimal_json_transformation_refuses_unavailable_keystream():
+    import pytest
+    original = b'{"role": "x"}'
+    cookie = ("00" * len(original)) + ";" + "00" * 16
+    with pytest.raises(ValueError, match="minimal candidate requires"):
+        transform_json_cookie(cookie, {"role": "x"}, {"role": "very_long_role_value"})

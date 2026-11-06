@@ -55,6 +55,39 @@ def alter_cookie(
     return edited.hex() + ";" + tag.hex(), target_username
 
 
+def transform_json_cookie(
+    cookie: str,
+    known_values: dict[str, str],
+    required_values: dict[str, str],
+) -> tuple[str, bytes]:
+    """Use source-established JSON serialization and only verifier-required fields.
+
+    The format must already be verified in source. A valid 16-byte tag is
+    retained, but becomes *invalid* after the ciphertext is modified.
+    This is only applicable when the verifier ignores the tag result.
+    """
+    ciphertext, tag = parse_cookie(cookie)
+    original = json.dumps(known_values).encode()
+    if len(original) != len(ciphertext):
+        raise ValueError(
+            f"observed ciphertext is {len(ciphertext)} bytes but source-derived "
+            f"plaintext is {len(original)} bytes; check observed fields"
+        )
+    candidate = json.dumps(required_values).encode()
+    if len(candidate) > len(original):
+        raise ValueError(
+            f"minimal candidate requires {len(candidate)} known keystream bytes; "
+            f"only {len(original)} bytes are available"
+        )
+    keystream = _xor(ciphertext, original)
+    modified = _xor(candidate, keystream[:len(candidate)])
+    # Roundtrip is a deterministic local consistency check, not proof that the
+    # target service will accept the altered cookie.
+    if _xor(modified, keystream[:len(modified)]) != candidate:
+        raise ValueError("local keystream consistency check failed")
+    return modified.hex() + ";" + tag.hex(), candidate
+
+
 def _multiply(x: int, y: int) -> int:
     result = 0
     value = y

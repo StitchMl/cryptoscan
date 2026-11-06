@@ -88,7 +88,7 @@ def _is_json_payload(node: ast.AST) -> tuple[str, ...] | None:
     if not (isinstance(dumps.func, ast.Name) and dumps.func.id == "dumps"
             or isinstance(dumps.func, ast.Attribute) and dumps.func.attr == "dumps"):
         return None
-    if not dumps.args or not isinstance(dumps.args[0], ast.Dict):
+    if not dumps.args or dumps.keywords or not isinstance(dumps.args[0], ast.Dict):
         return None
     payload = dumps.args[0]
     if not payload.keys or not all(isinstance(key, ast.Constant) and isinstance(key.value, str)
@@ -157,6 +157,19 @@ def _verification_signature(node: ast.FunctionDef) -> bool:
     return not uses_auth
 
 
+def _gcm_iv_signature(node: ast.AST) -> str | None:
+    initializers = [
+        call for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "GCM"
+        and len(call.args) == 2
+    ]
+    if len(initializers) != 1:
+        return None
+    return ast.dump(initializers[0].args[1], include_attributes=False)
+
+
 def discover_token_recipes(documents: Sequence[Document]) -> list[TokenRecipe]:
     """Require a matching builder AND verifier in the same challenge scope."""
     builders = []
@@ -193,6 +206,10 @@ def discover_token_recipes(documents: Sequence[Document]) -> list[TokenRecipe]:
             if doc.scope != other.scope:
                 continue
             if doc.path != other.path or function.name == verifier.name:
+                continue
+            builder_iv = _gcm_iv_signature(function)
+            verifier_iv = _gcm_iv_signature(verifier)
+            if builder_iv is None or builder_iv != verifier_iv:
                 continue
             recipes.append(TokenRecipe(
                 _context(doc, function), _context(other, verifier), fields,

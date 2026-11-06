@@ -93,6 +93,8 @@ cryptoscan assist
 The standalone `cryptoscan assist` mode works without a scan or a finding.
 Its reusable workflows include:
 
+- **e**: collect separately an observed username, password, role, and opaque auth cookie, plus optional target values. Unknown fields remain unknown. This is an evidence worksheet, **not** a semicolon-delimited token parser or a cryptographic solver.
+
 - **t**: inspect semicolon-delimited records without assuming that a field is a
   hash, key, password or GCM tag. It reports the number of fields and whether a
   hexadecimal field has a conventional digest length.

@@ -127,6 +127,37 @@ and different CTFs need different solvers, oracles, and evidence. The tool never
 claims a verified payload merely because an interactive calculation ran.
 The standalone Authentification-1 cookie commands remain available separately.
 
+## Source-grounded assistant (0.8)
+
+The guided assistant now receives the **actual parsed source documents** from the
+same scan, including Python code inside ZIP and TAR challenge packages. Selecting
+a finding displays the matched source line, containing function, file path and
+the existing preconditions. A source-derived token workflow is only proposed
+when static analysis identifies **both** a matching JSON-token builder and a
+verifier that does not read the authenticated-decryption result in the same
+source module and challenge scope.
+
+For the supported JSON/hex-ciphertext/hex-tag recipe, the prompt explains the
+inferred plaintext fields, asks for the exact observed username, role and cookie,
+then asks for the desired role and optional username. Passwords are not requested
+when the recognized token-creation code does not use them. The procedure does
+not claim to recover a master key and explicitly warns that an unchanged GCM tag
+is invalid. If the known cookie is too short for the target plaintext, the
+assistant reports the missing precondition rather than inventing bytes.
+
+Use:
+
+```powershell
+cryptoscan "C:\\Users\\matte\\Downloads\\challenge.zip" --assist
+```
+
+**Limits:** Source-derived token recipes require an exact supported AST shape.
+Other challenges still get their source context and ordinary finding evidence,
+but no arbitrary cookie construction is inferred. Static source analysis does
+not prove runtime reachability, nor can it infer unknown passwords, keys,
+algorithms or remote acceptance. `cryptoscan assist` without an input file
+has no source-grounding and remains a manual worksheet.
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

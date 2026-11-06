@@ -17,8 +17,6 @@ def synthetic(n=16, seed=87):
     p, q, df, dg, dr = 2, 127, 3, 3, 2
     x = symbols("x")
     for _ in range(30):
-        f = [int(i in rand.sample(range(n), df)) for i in range(n)]
-        # Re-sample properly to obtain exactly df distinct positions.
         positions = set(rand.sample(range(n), df))
         f = [int(i in positions) for i in range(n)]
         positions = set(rand.sample(range(n), dg))

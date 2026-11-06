@@ -21,6 +21,7 @@ from .mathutil import (
     wiener_private_exponent,
 )
 from .model import Finding
+from .aead_diagnostics import unused_validation_flags
 from .parser import (
     Document,
     flatten_objects,
@@ -933,6 +934,31 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
         ))
 
     findings.extend(_source_findings(documents))
+    for document in documents:
+        if not document.path.casefold().endswith(".py"):
+            continue
+        for line in unused_validation_flags(document.text):
+            excerpt = document.text.splitlines()[line - 1].strip()[:200]
+            findings.append(Finding(
+                rule="AEAD-AUTH-RESULT-IGNORED",
+                title="Cryptographic authentication status is not checked",
+                severity="critical",
+                confidence="medium",
+                location=f"{document.path}:{line}",
+                evidence={"line": excerpt},
+                preconditions=[
+                    "The second value is an authentication result from authenticated decryption.",
+                    "Untrusted ciphertext reaches this code path.",
+                ],
+                attack="A code path may process unauthenticated plaintext if the status is ignored.",
+                solver={"kind": "source_guidance", "matched_pattern": "AEAD-AUTH-RESULT-IGNORED"},
+                patch="Reject unauthenticated ciphertext before parsing or using its plaintext.",
+                playbook=[
+                    "Confirm the function returns both plaintext and an authentication result.",
+                    "Check the call path and ensure invalid authentication is rejected.",
+                ],
+            ))
+
     unique = {finding.id: finding for finding in findings}
     return sorted(unique.values(), key=lambda finding: (finding.location.casefold(), finding.rule, finding.id))
 

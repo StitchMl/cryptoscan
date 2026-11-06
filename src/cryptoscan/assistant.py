@@ -89,6 +89,55 @@ def digest_workflow(read: Callable[[str], str] = input, write: Callable[[str], A
         write("Digest matches: " + ("YES" if hmac.compare_digest(digest, supplied) else "NO"))
 
 
+def rewrite_record_workflow(read: Callable[[str], str] = input, write: Callable[[str], Any] = print) -> None:
+    """Rewrite delimited fields with an explicitly declared checksum/MAC formula."""
+    original = _ask("Original delimited record: ", read)
+    separator = _ask("Delimiter [;]: ", read) or ";"
+    parts = original.split(separator)
+    write(f"Detected {len(parts)} fields. Indices are 1-based.")
+    for index, value in enumerate(parts, 1):
+        write(f"  {index}: {value}")
+    try:
+        edits = _ask("Fields to change (comma-separated indices): ", read)
+        for entry in [item.strip() for item in edits.split(",") if item.strip()]:
+            index = int(entry) - 1
+            if not 0 <= index < len(parts):
+                raise ValueError("field index out of range")
+            parts[index] = _ask(f"Replacement for field {index + 1}: ", read)
+        digest_index_raw = _ask("Digest/MAC field index (leave blank if none): ", read)
+        if not digest_index_raw:
+            write("Candidate record (without recomputed integrity): " + separator.join(parts))
+            return
+        digest_index = int(digest_index_raw) - 1
+        if not 0 <= digest_index < len(parts):
+            raise ValueError("digest field index out of range")
+        message_indices_raw = _ask("Signed field indices (comma-separated, in order): ", read)
+        indices = [int(part.strip()) - 1 for part in message_indices_raw.split(",")]
+        if not indices or any(not 0 <= index < len(parts) or index == digest_index for index in indices):
+            raise ValueError("invalid signed field indices")
+        algorithm = _ask("Hash algorithm [sha256]: ", read) or "sha256"
+        mode = (_ask("Mode [plain/prefix/suffix/hmac] (plain): ", read) or "plain").lower()
+        if mode not in {"plain", "prefix", "suffix", "hmac"}:
+            raise ValueError("invalid digest mode")
+        secret = b""
+        if mode != "plain":
+            value = _ask("Known secret/key (blank if unavailable): ", read)
+            if not value:
+                write("Cannot calculate: MAC key is unknown. Obtain source details or an oracle.")
+                return
+            encoding = (_ask("Secret encoding [utf8/hex] (utf8): ", read) or "utf8").lower()
+            if encoding not in {"utf8", "hex"}:
+                raise ValueError("invalid secret encoding")
+            secret = _bytes(value, encoding)
+        separator_signed = _ask("Separator between signed fields [same]: ", read) or separator
+        signed = separator_signed.join(parts[index] for index in indices).encode()
+        parts[digest_index] = _digest(signed, algorithm, mode, secret)
+        write("Computed record: " + separator.join(parts))
+        write("Only valid if the declared digest formula, key and field encoding match the target.")
+    except (ValueError, IndexError) as exc:
+        write("Cannot calculate: " + str(exc))
+
+
 def xor_workflow(read: Callable[[str], str] = input, write: Callable[[str], Any] = print) -> None:
     write("Known-plaintext XOR/stream operation. Requires aligned ciphertext and plaintext.")
     ciphertext_hex = _ask("Known ciphertext (hex): ", read)
@@ -137,6 +186,7 @@ def assistant_session(
         write("  t. Inspect a captured token or delimited record")
         write("  h. Calculate / compare a digest (plain, secret prefix/suffix, HMAC)")
         write("  x. Known-plaintext XOR transformation")
+        write("  r. Rewrite delimited record with declared digest/MAC formula")
         write("  q. Quit")
         try:
             selection = _ask("Choose a finding or operation: ", read).lower()
@@ -151,6 +201,8 @@ def assistant_session(
             digest_workflow(read, write)
         elif selection == "x":
             xor_workflow(read, write)
+        elif selection == "r":
+            rewrite_record_workflow(read, write)
         elif selection.isdecimal() and 1 <= int(selection) <= len(findings):
             finding = findings[int(selection) - 1]
             _show_finding(finding, write)

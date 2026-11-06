@@ -52,7 +52,7 @@ def test_existing_noninteractive_json_output(tmp_path, capsys):
 def test_explicit_assist_with_findings(tmp_path, monkeypatch, capsys):
     source = tmp_path / "sample.py"
     source.write_text("token = md5(message)\n", encoding="utf-8")
-    monkeypatch.setattr("cryptoscan.cli.assistant_session", lambda findings: print("ASSIST", len(findings)))
+    monkeypatch.setattr("cryptoscan.cli.assistant_session", lambda findings, documents=(): print("ASSIST", len(findings), len(documents)))
     assert main(["assist", str(source)]) == 0
     assert "ASSIST" in capsys.readouterr().out
 

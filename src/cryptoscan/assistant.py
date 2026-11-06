@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from .parser import Document
+from .rsa_padding_workflow import positive_padding_workflow
 from .ntru_workflow import ntru_lattice_workflow
 from .mlwe_workflow import interactive_mlwe_workflow
 from .gcm_overlap_workflow import guided_overlap_workflow
@@ -299,6 +300,9 @@ def assistant_session(
             for context in relevant_source(finding, documents):
                 write(f"Analyzed source: {context.path}:{context.line} in {context.function}")
                 write(f"  {context.excerpt}")
+            if finding.rule == "RSA-PKCS1-V15-POSITIVE-PADDING-LEAK":
+                positive_padding_workflow(finding, documents, read, write)
+                continue
             if finding.rule == "LINEAR-HASH-SMALL-ALPHABET":
                 if finding.recovery_status == "flag-recovered":
                     write("Source-derived modular inversion produced a unique verified flag:")

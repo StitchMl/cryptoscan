@@ -12,6 +12,9 @@ import re
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from .parser import Document
+from .source_context import discover_token_recipes, linked_recipe, relevant_source, TokenRecipe
+
 HEX = re.compile(r"^[0-9a-fA-F]+$")
 
 
@@ -192,6 +195,40 @@ def xor_workflow(read: Callable[[str], str] = input, write: Callable[[str], Any]
     write("Validity is NOT established: check stream alignment, nonce reuse, tags and application semantics.")
 
 
+def source_verified_token_workflow(
+    recipe: TokenRecipe,
+    read: Callable[[str], str] = input,
+    write: Callable[[str], Any] = print,
+) -> None:
+    """Collect only values required by a source-verified token layout."""
+    from .cookie import alter_cookie
+
+    write(f"Builder: {recipe.build.path}:{recipe.build.line} ({recipe.build.function})")
+    write(f"Verifier: {recipe.verify.path}:{recipe.verify.line} ({recipe.verify.function})")
+    write(f"Observed source format: {recipe.format}; plaintext fields: {', '.join(recipe.fields)}")
+    if recipe.cookie_name:
+        write(f"Cookie name in source: {recipe.cookie_name}")
+    write("Password is NOT a token plaintext field in this recognized source path.")
+    write("The verifier does not consume its authentication result. The retained tag will be invalid.")
+    if recipe.fields != ("username", "role"):
+        write("No matching built-in calculator for this serialization; inspect the source.")
+        return
+    username = _ask("Observed username (exact): ", read)
+    role = _ask("Observed role (exact): ", read)
+    cookie = _ask("Observed auth cookie only (ct_hex;tag_hex): ", read)
+    new_role = _ask("Desired role [super_admin]: ", read) or "super_admin"
+    new_username = _ask("Desired username (blank = adjust length automatically): ", read) or None
+    try:
+        token, actual_username = alter_cookie(cookie, username, role, new_role, new_username)
+    except ValueError as exc:
+        write("Cannot derive token from current evidence: " + str(exc))
+        write("Use a longer legitimate known plaintext/cookie pair or inspect the implementation.")
+        return
+    write("Derived username: " + actual_username)
+    write("Candidate cookie: " + token)
+    write("This result requires the demonstrated source behavior; it is not a valid GCM-authenticated token.")
+
+
 def _show_finding(finding: Any, write: Callable[[str], Any]) -> None:
     write(f"Rule: {finding.rule} | severity: {finding.severity} | recovery: {finding.recovery_status}")
     write("Location: " + finding.location)
@@ -206,8 +243,14 @@ def assistant_session(
     findings: Sequence[Any] = (),
     read: Callable[[str], str] = input,
     write: Callable[[str], Any] = print,
+    documents: Sequence[Document] = (),
 ) -> None:
+    recipes = discover_token_recipes(documents)
     write("Offline CryptoScan assistant (CTF/authorized tasks).")
+    if documents:
+        write(f"Source context loaded: {len(documents)} analyzed documents; {len(recipes)} verified token recipe(s).")
+    else:
+        write("No analyzed source loaded. Provide a scan target to enable source-derived workflows.")
     write("Findings are evidence, not guarantees. Never assume the MAC/key or token format.")
     while True:
         for index, finding in enumerate(findings, 1):
@@ -238,12 +281,24 @@ def assistant_session(
         elif selection.isdecimal() and 1 <= int(selection) <= len(findings):
             finding = findings[int(selection) - 1]
             _show_finding(finding, write)
+            for context in relevant_source(finding, documents):
+                write(f"Analyzed source: {context.path}:{context.line} in {context.function}")
+                write(f"  {context.excerpt}")
+            recipe = linked_recipe(finding, recipes)
+            if recipe:
+                write("Source-verified token construction and unchecked authentication path found.")
+                choice = _ask("Use this source-derived token workflow? [y/N]: ", read)
+                if choice.casefold() in {"y", "yes"}:
+                    source_verified_token_workflow(recipe, read, write)
+                continue
             if finding.rule in {"CTR-NONCE-REUSE", "GCM-NONCE-REUSE", "NONCE-CONSTANT", "XOR-REPEATING-KEY"}:
-                choice = _ask("Try known-plaintext XOR with your own values? [y/N]: ", read)
+                write("Source did not establish a compatible token format or verifier.")
+                choice = _ask("Run a generic XOR worksheet anyway (not source-verified)? [y/N]: ", read)
                 if choice.casefold() in {"y", "yes"}:
                     xor_workflow(read, write)
             elif finding.rule in {"MAC-PREFIX-HASH", "HASH-WEAK", "SHA1-LENGTH-EXTENSION"}:
-                choice = _ask("Calculate a digest with known values? [y/N]: ", read)
+                write("No source-verified digest serialization for this finding.")
+                choice = _ask("Run a generic digest worksheet anyway? [y/N]: ", read)
                 if choice.casefold() in {"y", "yes"}:
                     digest_workflow(read, write)
             else:

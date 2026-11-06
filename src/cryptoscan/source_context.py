@@ -106,6 +106,11 @@ def _is_json_payload(node: ast.AST) -> tuple[str, ...] | None:
 def _build_signature(doc: Document, node: ast.FunctionDef) -> tuple[str, ...] | None:
     """Recognize the supplied custom GCM token layout, not arbitrary GCM use."""
     fields = None
+    gcm_constructed = any(
+        isinstance(part, ast.Call)
+        and isinstance(part.func, ast.Name) and part.func.id == "GCM"
+        for part in ast.walk(node)
+    )
     encrypted = False
     returned_pair = False
     for statement in ast.walk(node):
@@ -122,11 +127,16 @@ def _build_signature(doc: Document, node: ast.FunctionDef) -> tuple[str, ...] | 
                     if len(elements) == 2 and all(isinstance(part, ast.Call) and isinstance(part.func, ast.Attribute)
                                                   and part.func.attr == "hex" for part in elements):
                         returned_pair = True
-    return fields if fields and encrypted and returned_pair else None
+    return fields if fields and encrypted and returned_pair and gcm_constructed else None
 
 
 def _verification_signature(node: ast.FunctionDef) -> bool:
     decrypted = False
+    gcm_constructed = any(
+        isinstance(part, ast.Call)
+        and isinstance(part.func, ast.Name) and part.func.id == "GCM"
+        for part in ast.walk(node)
+    )
     uses_auth = False
     parses_role = False
     status_names: set[str] = set()
@@ -139,7 +149,7 @@ def _verification_signature(node: ast.FunctionDef) -> bool:
                     status_names.add(target.elts[1].id)
         if isinstance(part, ast.Subscript) and isinstance(part.slice, ast.Constant) and part.slice.value == "role":
             parses_role = True
-    if not (decrypted and parses_role and status_names):
+    if not (decrypted and parses_role and status_names and gcm_constructed):
         return False
     for part in ast.walk(node):
         if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Load) and part.id in status_names:
@@ -152,11 +162,10 @@ def discover_token_recipes(documents: Sequence[Document]) -> list[TokenRecipe]:
     builders = []
     verifiers = []
     for doc, function in _functions(documents):
-        if function.name == "build_token":
-            fields = _build_signature(doc, function)
-            if fields:
-                builders.append((doc, function, fields))
-        if function.name == "verif_token" and _verification_signature(function):
+        fields = _build_signature(doc, function)
+        if fields:
+            builders.append((doc, function, fields))
+        if _verification_signature(function):
             verifiers.append((doc, function))
     cookie_names: dict[str, str] = {}
     for document in documents:
@@ -183,7 +192,7 @@ def discover_token_recipes(documents: Sequence[Document]) -> list[TokenRecipe]:
         for other, verifier in verifiers:
             if doc.scope != other.scope:
                 continue
-            if doc.path != other.path:
+            if doc.path != other.path or function.name == verifier.name:
                 continue
             recipes.append(TokenRecipe(
                 _context(doc, function), _context(other, verifier), fields,

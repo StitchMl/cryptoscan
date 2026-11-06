@@ -80,3 +80,22 @@ def test_rewrite_hmac_requires_key(capsys):
         "3", "1,2", "sha256", "hmac", "", "q"
     ))
     assert "MAC key is unknown" in capsys.readouterr().out
+
+
+def test_auth_evidence_fields_are_independent_and_secrets_not_echoed(capsys):
+    observed_cookie = "afbbb704b5f8af60f155aa7dfe5c9ec7b5e91228430226bd1f382815e044f6f4daf7d18412"
+    from cryptoscan.assistant import auth_evidence_workflow
+    data = auth_evidence_workflow(read=feed(
+        "demo", "demo", "guest", observed_cookie,
+        "admin", "", "super_admin", "",
+    ))
+    assert data["observed"] == {
+        "username": "demo", "password": "demo", "role": "guest", "cookie": observed_cookie,
+    }
+    assert data["target"] == {
+        "username": "admin", "password": None, "role": "super_admin", "cookie": None,
+    }
+    output = capsys.readouterr().out
+    assert observed_cookie not in output
+    assert "target.cookie: unknown" in output
+    assert "No cryptographic relationship" in output

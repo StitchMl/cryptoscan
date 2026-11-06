@@ -77,5 +77,5 @@ def main(argv: list[str] | None = None) -> int:
         color = not args.no_color and sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
         print(_text(findings, color))
     if not args.no_assist and args.format == "text" and (args.assist or (findings and sys.stdin.isatty() and sys.stdout.isatty())):
-        assistant_session(findings)
+        assistant_session(findings, documents=documents)
     return 1 if args.fail_on_findings and findings else 0

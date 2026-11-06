@@ -1025,6 +1025,69 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
             ],
         ))
 
+    for context in ntru_contexts:
+        matched_pairs = pair_ntru_records(records, context)
+        if not matched_pairs:
+            findings.append(Finding(
+                rule="NTRU-POLYNOMIAL-RING",
+                title="NTRU sparse-polynomial encryption recognized; ciphertext is not XOR byte data",
+                severity="low",
+                confidence="high",
+                location=f"{context.path}:{context.line}",
+                evidence={
+                    "n": context.degree, "p": context.plaintext_modulus,
+                    "q": context.ciphertext_modulus,
+                    "df": context.f_weight, "dg": context.g_weight,
+                    "dr": context.r_weight,
+                },
+                preconditions=["The source constructs an NTRU public key and ciphertext in a quotient polynomial ring."],
+                attack="Inspect coefficient vectors and test source-derived algebraic relations; do not apply byte XOR.",
+                solver={"kind": "ntru_source_guidance"},
+                patch="Review NTRU parameter selection and the intended polynomial-ring security assumptions.",
+                playbook=["Provide the matching public polynomial and ciphertext coefficients.",
+                          "Analyze quotient-ring projections or a specialized NTRU lattice attack."],
+            ))
+        for public, ciphertext in matched_pairs:
+            try:
+                projection = analyze_ntru_vectors(public["value"], ciphertext["value"], context)
+            except ValueError:
+                continue
+            findings.append(Finding(
+                rule="NTRU-X1-HAMMING-LEAK",
+                title="NTRU polynomial evaluation at x=1 leaks plaintext Hamming weight modulo q",
+                severity="medium",
+                confidence="high" if projection.public_relation_verified else "low",
+                location=f"{ciphertext['record']['location']}.ct",
+                evidence={
+                    "source_path": context.path,
+                    "n": context.degree, "p": context.plaintext_modulus,
+                    "q": context.ciphertext_modulus,
+                    "public_at_one": projection.public_evaluation,
+                    "expected_public_at_one": projection.expected_public_evaluation,
+                    "ciphertext_at_one": projection.ciphertext_evaluation,
+                    "message_weight_mod_q": projection.message_weight_residue,
+                    "possible_message_weights": list(projection.possible_weights),
+                    "public_relation_verified": projection.public_relation_verified,
+                },
+                preconditions=[
+                    "NTRU ciphertext c = p*h*r + m in the ring Z_q[x]/(x^n-1).",
+                    "Public key h = g/f and f,g,r have the observed fixed numbers of unit coefficients.",
+                    "Plaintext is encoded as a binary polynomial.",
+                ],
+                attack="Evaluate c and h at x=1 and infer sum(m_i) modulo q; this alone does not recover the message.",
+                solver={
+                    "kind": "ntru_x1_projection",
+                    "message_weight_mod_q": projection.message_weight_residue,
+                    "possible_message_weights": list(projection.possible_weights),
+                },
+                patch="Do not use ad-hoc sparse-polynomial NTRU parameters without proven security.",
+                playbook=[
+                    "Verify public-key evaluation matches g(1)/f(1) modulo q.",
+                    "Calculate sum(c) - p*sum(h)*dr modulo q.",
+                    "Treat the result as a limited Hamming-weight leak, not plaintext recovery.",
+                ],
+            ))
+
     unique = {finding.id: finding for finding in findings}
     return sorted(unique.values(), key=lambda finding: (finding.location.casefold(), finding.rule, finding.id))
 

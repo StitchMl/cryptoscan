@@ -21,6 +21,7 @@ from .mathutil import (
     wiener_private_exponent,
 )
 from .model import Finding
+from .mlwe import recognize_weak_mlwe_ring
 from .gcm_overlap_detector import counter_overlap_lines
 from .aead_diagnostics import unused_validation_flags
 from .parser import (
@@ -986,6 +987,38 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
             if not (item.rule == "CIPHER-ECB"
                     and item.location.rsplit(":", 1)[0] in overlap_files)
         ]
+
+    for context in recognize_weak_mlwe_ring(documents):
+        findings.append(Finding(
+            rule="MLWE-REDUCIBLE-RING-QUOTIENT",
+            title="MLWE distinguisher possible through polynomial evaluation at x=1",
+            severity="high",
+            confidence="high",
+            location=f"{context.path}:{context.line}",
+            evidence={
+                "q": context.modulus, "polynomial_rank": context.rank,
+                "matrix_rows": context.rows, "matrix_columns": context.columns,
+                "eta": context.eta, "ring_root": 1,
+            },
+            preconditions=[
+                "The quotient modulus has factor x-1, so evaluation at 1 is a homomorphism.",
+                "Small secret and error polynomials are sampled as recognized in source.",
+                "The supplied matrix and vector use the same parameters and ring.",
+            ],
+            attack=(
+                "Project A and t at x=1, then distinguish a short LWE residual "
+                "from a uniformly sampled vector using a lattice."
+            ),
+            solver={"kind": "mlwe_x1_lattice", "source_verified": True},
+            patch="Use a properly designed MLWE polynomial ring and established lattice cryptography parameters.",
+            playbook=[
+                "Read q, k, l, N and eta from the analyzed Sage source.",
+                "Decode the observed matrix/vector samples (bounded gzip/base64).",
+                "Project each polynomial at x=1 modulo q.",
+                "Apply LLL and Babai nearest-plane to recover a short residual.",
+                "Check the modular relation and classify a short residual as MLWE.",
+            ],
+        ))
 
     unique = {finding.id: finding for finding in findings}
     return sorted(unique.values(), key=lambda finding: (finding.location.casefold(), finding.rule, finding.id))

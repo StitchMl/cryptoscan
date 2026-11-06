@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from .parser import Document
+from .mlwe_workflow import interactive_mlwe_workflow
 from .gcm_overlap_workflow import guided_overlap_workflow
 from .guided import selected_finding_workflow, existing_verified_result, rsa_factors_workflow, cbc_iv_workflow
 from .source_context import discover_token_recipes, linked_recipe, relevant_source, TokenRecipe
@@ -297,6 +298,9 @@ def assistant_session(
             for context in relevant_source(finding, documents):
                 write(f"Analyzed source: {context.path}:{context.line} in {context.function}")
                 write(f"  {context.excerpt}")
+            if finding.rule == "MLWE-REDUCIBLE-RING-QUOTIENT":
+                interactive_mlwe_workflow(finding, documents, read, write)
+                continue
             if finding.rule == "GCM-COUNTER-OVERLAP":
                 answer = _ask("Run source-derived GCM workflow? [y/N]: ", read)
                 if answer.casefold() in {"y", "yes"}:

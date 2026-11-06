@@ -8,6 +8,7 @@ import sys
 from . import __version__
 from .cookie import main as cookie_main
 from .assistant import assistant_session
+from .diagnostics import diagnose_runtime
 from .parser import collect_documents
 from .scanner import scan
 
@@ -55,6 +56,8 @@ def _text(findings, color: bool) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "doctor":
+        return diagnose_runtime()
     if arguments and arguments[0] == "cookie":
         return cookie_main(arguments[1:])
     if arguments and arguments[0] == "assist":

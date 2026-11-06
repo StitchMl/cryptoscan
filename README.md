@@ -183,6 +183,23 @@ technique is limited to the observed serialization and source-verified
 unchecked-authentication path. With unsupported conditions, the tool will
 not guess a token or invent missing bytes.
 
+### HTTP Cookie transport and rule provenance
+
+For source-derived cookie candidates the assistant now prints both the opaque
+cookie value and a correctly encoded `Cookie:` header for Burp Repeater. For
+example, a token containing an internal semicolon must not be copied into an
+unquoted HTTP Cookie field: that semicolon separates cookies. CryptoScan uses
+Python's standard `http.cookies.SimpleCookie` encoder and locally verifies a
+parser round-trip before displaying the header. The header is only a transport
+example, not proof of server acceptance.
+
+The verifier constraint parser does **not** hardcode `role` or
+`super_admin`; it derives literal key/expected-value checks from the Python
+AST and declines unsupported conditional flows. The current token codec still
+recognizes only specific JSON + GCM + hex/ciphertext/tag constructions. It is
+not a universal solver for other crypto systems, and tests for that recognized
+construction do not imply the target endpoint has accepted the token.
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

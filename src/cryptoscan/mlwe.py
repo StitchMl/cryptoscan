@@ -11,6 +11,7 @@ import gzip
 import io
 import math
 import re
+import sys
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -172,7 +173,13 @@ def distinguish_mlwe(
     try:
         from sympy import Matrix
     except ImportError as exc:
-        raise RuntimeError("install offline MLWE dependency: python -m pip install sympy") from exc
+        raise RuntimeError(
+            "MLWE dependencies failed to import. Runtime interpreter: "
+            + sys.executable + ". Error: " + str(exc)
+            + ". Repair SymPy/mpmath in that interpreter using: \""
+            + sys.executable + "\" -m pip install --no-cache-dir --force-reinstall sympy mpmath. "
+            "Run cryptoscan doctor for diagnostic details."
+        ) from exc
     n, m, q = context.rows, context.columns, context.modulus
     if len(matrix) != n or len(vector) != n or any(len(row) != m for row in matrix):
         raise ValueError("invalid matrix/vector dimensions")

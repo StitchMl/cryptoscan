@@ -6,7 +6,6 @@ structures establish the token serialization, encryption and verification.
 from __future__ import annotations
 
 import ast
-import re
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -160,10 +159,25 @@ def discover_token_recipes(documents: Sequence[Document]) -> list[TokenRecipe]:
         if function.name == "verif_token" and _verification_signature(function):
             verifiers.append((doc, function))
     cookie_names: dict[str, str] = {}
-    for doc in documents:
-        matches = re.findall(r"\\.set_cookie\\(\\s*['\"]([^'\"]+)['\"]", doc.text)
+    for document in documents:
+        if not document.path.lower().endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(document.text)
+        except (SyntaxError, ValueError):
+            continue
+        matches = [
+            call.args[0].value
+            for call in ast.walk(tree)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "set_cookie"
+            and call.args
+            and isinstance(call.args[0], ast.Constant)
+            and isinstance(call.args[0].value, str)
+        ]
         if len(set(matches)) == 1:
-            cookie_names[doc.scope] = matches[0]
+            cookie_names[document.scope] = matches[0]
     recipes = []
     for doc, function, fields in builders:
         for other, verifier in verifiers:

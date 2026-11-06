@@ -12,9 +12,10 @@ from dataclasses import replace
 from Crypto.PublicKey import RSA
 from sympy import nextprime
 
-from cryptoscan.parser import Document
+from cryptoscan.parser import Document, scalar_records, pem_rsa_public_keys
 from cryptoscan.rsa_padding_positives import (
     _check_candidate,
+    _source_names,
     discover_positive_padding_oracles,
     recover_pkcs1_positive_padding,
 )
@@ -80,6 +81,10 @@ assert all(ver.verify(pow(r, ver.key.e, ver.key.n) * int(enc_flag, 16) % ver.key
 
 def test_source_recognizes_public_key_and_positive_transcript():
     docs, representative, plaintext = fixture()
+    assert _source_names(docs[0].text) is not None, "source AST oracle detection failed"
+    assert len(pem_rsa_public_keys(docs[1].text)) == 1, "PEM parsing failed"
+    records = scalar_records(docs[2].text)
+    assert records and "enc_flag" in records[0] and "r" in records[0], "transcript parse failed"
     matches = discover_positive_padding_oracles(docs)
     assert len(matches) == 1
     oracle = matches[0]

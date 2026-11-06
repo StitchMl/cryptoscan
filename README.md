@@ -338,6 +338,37 @@ and a genuine repeating-key XOR ciphertext.
 cryptoscan .\\output.txt .\\source.sage --assist
 ```
 
+## Optional complete NTRU key recovery (experimental)
+
+When the source establishes sparse binary NTRU private polynomials and a
+matching public key/ciphertext, selecting `NTRU-X1-HAMMING-LEAK` now
+offers a **separate, opt-in lattice key-recovery attempt**. It is not just
+the x=1 bit-weight projection.
+
+The attack constructs an integer lattice from the public polynomial h and
+the source-derived secret key weights df/dg. The constraints force
+f(1)=df and g(1)=dg; candidate short vectors must independently verify
+f*h=g modulo (x^n-1,q), binary coefficients and the exact weights.
+For p=2, the decoder inverts f modulo (x^n-1,2), computes centered
+f*c modulo q and maps recovered binary polynomial coefficients to
+big-endian bytes in the same order as the source's integer-to-polynomial
+encoder. Only a fully verified and printable plaintext is shown.
+
+**Computational limits:** SymPy LLL supports small degrees up to n=32
+(included automatically for testing). For larger NTRU instances, including
+n=512, optional `fpylll` and `cysignals` are required. Install them
+under Linux/WSL or SageMath if they are not available on your Windows
+Python installation. A 1023-dimensional LLL and optional BKZ may require
+considerable memory/time and might still find no private key.
+The menu asks before starting and optionally accepts a BKZ block size
+(0 for LLL only, 2–60 for BKZ). It never invents a flag from the
+Hamming-weight leak.
+
+This is a deterministic mathematical method derived from the analyzed
+source. It does not contain challenge-specific keys, flag strings or
+hardcoded ciphertexts; it is not guaranteed to solve every NTRU
+instance or avoid decryption failures.
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

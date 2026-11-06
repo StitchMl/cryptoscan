@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from .parser import Document
+from .ntru_workflow import ntru_lattice_workflow
 from .mlwe_workflow import interactive_mlwe_workflow
 from .gcm_overlap_workflow import guided_overlap_workflow
 from .guided import selected_finding_workflow, existing_verified_result, rsa_factors_workflow, cbc_iv_workflow
@@ -308,7 +309,10 @@ def assistant_session(
                     if not finding.evidence["public_relation_verified"]:
                         write("Warning: public evaluation disagrees with sparse-key source assumptions.")
                 write("The x=1 projection alone is insufficient to decrypt the flag.")
-                write("Full decryption would require an independently supported NTRU key-recovery method.")
+                if finding.rule == "NTRU-X1-HAMMING-LEAK":
+                    ntru_lattice_workflow(finding, documents, read, write)
+                else:
+                    write("Provide matching polynomial evidence for full NTRU key recovery.")
                 continue
             if finding.rule == "MLWE-REDUCIBLE-RING-QUOTIENT":
                 interactive_mlwe_workflow(finding, documents, read, write)

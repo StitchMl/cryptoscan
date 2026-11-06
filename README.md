@@ -313,6 +313,31 @@ environment with `py -3.12 -m venv .venv` and install this repository
 using `.\\.venv\\Scripts\\python.exe -m pip install -e .`. Run
 `.\\.venv\\Scripts\\cryptoscan.exe` to use exactly that environment.
 
+## Polynomial NTRU inputs (not XOR ciphertext bytes)
+
+For Sage NTRU sources that establish sparse f/g/r polynomials and
+c = p*h*r + m in Z_q[x]/(x^n-1), CryptoScan recognizes the public key
+and ciphertext as **coefficient vectors**, not byte strings. It does not
+run XOR brute force or generate a CyberChef XOR recipe from such vectors.
+
+With matching public-key and ciphertext coefficient arrays, it can
+compute an exact x=1 projection: the source-proven message Hamming
+weight modulo q, along with possible integer weights in [0,n].
+The finding is `NTRU-X1-HAMMING-LEAK` and remains
+**validation-only**: knowing the weight does not reveal the bit positions
+or recover the flag. Without matching arrays it emits an NTRU source
+diagnostic instead.
+
+The same guard tightens generic repeating-key XOR recognition: a
+forged flag-shaped substring embedded in control characters is not
+sufficient to label a random byte sequence `flag-recovered`.
+Tests cover independent NTRU parameters, the false-positive case,
+and a genuine repeating-key XOR ciphertext.
+
+```powershell
+cryptoscan .\\output.txt .\\source.sage --assist
+```
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

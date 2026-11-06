@@ -298,6 +298,18 @@ def assistant_session(
             for context in relevant_source(finding, documents):
                 write(f"Analyzed source: {context.path}:{context.line} in {context.function}")
                 write(f"  {context.excerpt}")
+            if finding.rule.startswith("NTRU-"):
+                write("Polynomial NTRU data detected. Public key and ciphertext are NOT byte-XOR inputs.")
+                if finding.rule == "NTRU-X1-HAMMING-LEAK":
+                    write("Computed Hamming-weight residue mod q: " +
+                          str(finding.evidence["message_weight_mod_q"]))
+                    write("Possible bit weights: " +
+                          str(finding.evidence["possible_message_weights"]))
+                    if not finding.evidence["public_relation_verified"]:
+                        write("Warning: public evaluation disagrees with sparse-key source assumptions.")
+                write("The x=1 projection alone is insufficient to decrypt the flag.")
+                write("Full decryption would require an independently supported NTRU key-recovery method.")
+                continue
             if finding.rule == "MLWE-REDUCIBLE-RING-QUOTIENT":
                 interactive_mlwe_workflow(finding, documents, read, write)
                 continue

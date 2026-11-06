@@ -21,6 +21,7 @@ from .mathutil import (
     wiener_private_exponent,
 )
 from .model import Finding
+from .ntru import recognize_ntru, is_polynomial_coefficients, analyze_ntru_vectors, pair_ntru_records
 from .mlwe import recognize_weak_mlwe_ring
 from .gcm_overlap_detector import counter_overlap_lines
 from .aead_diagnostics import unused_validation_flags
@@ -77,13 +78,16 @@ def _rsa_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def _bytes_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _bytes_records(records: list[dict[str, Any]], ntru_contexts=()) -> list[dict[str, Any]]:
     result = []
     for record in records:
         obj = record["object"]
         for key, value in sorted(obj.items(), key=lambda item: str(item[0])):
             name = str(key).casefold()
             if any(token in name for token in ("cipher", "ct", "encrypted", "payload", "data")):
+                if any(record["scope"] == ctx.scope and is_polynomial_coefficients(value, ctx)
+                       for ctx in ntru_contexts):
+                    continue  # Ring coefficients are not serialized ciphertext bytes.
                 parsed = parse_bytes(value)
                 if parsed and len(parsed) >= 4:
                     encoding, encoded_input = _cyberchef_input(value, parsed)
@@ -282,10 +286,10 @@ def _repeating_xor_candidate(data: bytes) -> tuple[bytes, bytes, float] | None:
                     keys.append(bytes(candidate))
         for key in keys:
             plain = bytes(value ^ key[index % key_size] for index, value in enumerate(data))
-            if not re.search(rb"(?:flag|ctf|key)\{[^\r\n]{1,200}\}", plain, re.IGNORECASE):
+            if not re.search(rb"(?:flag|ctf|key)\{[A-Za-z0-9_!@#$%+.,:/=\\-]{4,120}\}", plain, re.IGNORECASE):
                 continue
             printable = sum(value in (9, 10, 13) or 32 <= value <= 126 for value in plain) / len(plain)
-            if printable < 0.90:
+            if printable < 0.98:
                 continue
             score = _language_score(plain) - 0.015 * key_size
             if best is None or (score, bytes(key)) > (best[0], best[1]):
@@ -295,8 +299,9 @@ def _repeating_xor_candidate(data: bytes) -> tuple[bytes, bytes, float] | None:
 
 def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding]:
     records = _records(documents)
+    ntru_contexts = recognize_ntru(documents)
     rsa = _rsa_records(records)
-    byte_records = _bytes_records(records)
+    byte_records = _bytes_records(records, ntru_contexts)
     findings: list[Finding] = []
 
     # RSA pairwise shared factors.
@@ -1019,6 +1024,69 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                 "Check the modular relation and classify a short residual as MLWE.",
             ],
         ))
+
+    for context in ntru_contexts:
+        matched_pairs = pair_ntru_records(records, context)
+        if not matched_pairs:
+            findings.append(Finding(
+                rule="NTRU-POLYNOMIAL-RING",
+                title="NTRU sparse-polynomial encryption recognized; ciphertext is not XOR byte data",
+                severity="low",
+                confidence="high",
+                location=f"{context.path}:{context.line}",
+                evidence={
+                    "n": context.degree, "p": context.plaintext_modulus,
+                    "q": context.ciphertext_modulus,
+                    "df": context.f_weight, "dg": context.g_weight,
+                    "dr": context.r_weight,
+                },
+                preconditions=["The source constructs an NTRU public key and ciphertext in a quotient polynomial ring."],
+                attack="Inspect coefficient vectors and test source-derived algebraic relations; do not apply byte XOR.",
+                solver={"kind": "ntru_source_guidance"},
+                patch="Review NTRU parameter selection and the intended polynomial-ring security assumptions.",
+                playbook=["Provide the matching public polynomial and ciphertext coefficients.",
+                          "Analyze quotient-ring projections or a specialized NTRU lattice attack."],
+            ))
+        for public, ciphertext in matched_pairs:
+            try:
+                projection = analyze_ntru_vectors(public["value"], ciphertext["value"], context)
+            except ValueError:
+                continue
+            findings.append(Finding(
+                rule="NTRU-X1-HAMMING-LEAK",
+                title="NTRU polynomial evaluation at x=1 leaks plaintext Hamming weight modulo q",
+                severity="medium",
+                confidence="high" if projection.public_relation_verified else "low",
+                location=f"{ciphertext['record']['location']}.ct",
+                evidence={
+                    "source_path": context.path,
+                    "n": context.degree, "p": context.plaintext_modulus,
+                    "q": context.ciphertext_modulus,
+                    "public_at_one": projection.public_evaluation,
+                    "expected_public_at_one": projection.expected_public_evaluation,
+                    "ciphertext_at_one": projection.ciphertext_evaluation,
+                    "message_weight_mod_q": projection.message_weight_residue,
+                    "possible_message_weights": list(projection.possible_weights),
+                    "public_relation_verified": projection.public_relation_verified,
+                },
+                preconditions=[
+                    "NTRU ciphertext c = p*h*r + m in the ring Z_q[x]/(x^n-1).",
+                    "Public key h = g/f and f,g,r have the observed fixed numbers of unit coefficients.",
+                    "Plaintext is encoded as a binary polynomial.",
+                ],
+                attack="Evaluate c and h at x=1 and infer sum(m_i) modulo q; this alone does not recover the message.",
+                solver={
+                    "kind": "ntru_x1_projection",
+                    "message_weight_mod_q": projection.message_weight_residue,
+                    "possible_message_weights": list(projection.possible_weights),
+                },
+                patch="Do not use ad-hoc sparse-polynomial NTRU parameters without proven security.",
+                playbook=[
+                    "Verify public-key evaluation matches g(1)/f(1) modulo q.",
+                    "Calculate sum(c) - p*sum(h)*dr modulo q.",
+                    "Treat the result as a limited Hamming-weight leak, not plaintext recovery.",
+                ],
+            ))
 
     unique = {finding.id: finding for finding in findings}
     return sorted(unique.values(), key=lambda finding: (finding.location.casefold(), finding.rule, finding.id))

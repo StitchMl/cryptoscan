@@ -454,6 +454,35 @@ source recognizer currently targets the observed family of base-B,
 block-XOR, matrix-hash constructions; it does not solve every linear
 code or arbitrary Sage script.
 
+## RSA PKCS#1 v1.5 positive padding-oracle transcripts
+
+The scanner recognizes a source-proven RSA PKCS#1 v1.5 verifier that
+returns padding validity, and a matching public RSA key plus a list of
+**known-positive** blinded-ciphertext multipliers. Positive results
+restrict `m*r mod n` to the interval `[2B,3B)`, where
+`B=2^(8*(key_bytes-2))`. These simultaneous modular constraints form
+an offline hidden-number/lattice problem. This is **not** a traditional
+small-factor or private-exponent RSA attack.
+
+The finding `RSA-PKCS1-V15-POSITIVE-PADDING-LEAK` opens an opt-in
+offline solver. It builds a Kannan embedding, applies LLL, and checks
+candidate representatives by RSA re-encryption, PKCS#1 v1.5 padding
+parsing and all published positive interval constraints. Only
+cryptographically validated results are printed as candidate plaintexts.
+There is no network access and no hardcoded challenge key or flag.
+
+```powershell
+cryptoscan .\\output.txt .\\pubkey.pem .\\source.py --assist
+```
+
+The Windows installation already includes `python-flint`; it is the
+default lattice backend for substantial transcripts. The attack may
+still fail if there are too few positive samples or if LLL does not
+expose a close vector; large lattices can require significant CPU/RAM.
+The scanner does **not** claim `flag-recovered` merely because the
+source contains a padding oracle. It is a separately verified,
+opt-in computational step.
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

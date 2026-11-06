@@ -45,7 +45,11 @@ def ntru_lattice_workflow(
         "This is expensive and not guaranteed to recover the key."
     )
     if context.degree > 32:
-        write("Large-degree lattice backend: fpylll (optional; Linux/WSL/Sage recommended).")
+        import sys
+        if sys.platform == "win32":
+            write("Native Windows lattice backend: python-flint (FLINT LLL, no BKZ).")
+        else:
+            write("Lattice backend: fpylll when installed, otherwise python-flint.")
     if read("Attempt lattice private-key recovery? [y/N]: ").strip().lower() not in {"y", "yes"}:
         write("No computation started.")
         return

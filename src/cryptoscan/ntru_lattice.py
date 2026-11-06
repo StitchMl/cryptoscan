@@ -7,6 +7,7 @@ spurious candidate keys.
 from __future__ import annotations
 
 import re
+import sys
 from typing import Any, Callable
 
 
@@ -83,22 +84,63 @@ def reduce_basis(
 ) -> list[list[int]]:
     n = len(h)
     if backend == "auto":
-        backend = "sympy" if n <= 32 else "fpylll"
+        if n <= 32:
+            backend = "sympy"
+        elif sys.platform == "win32":
+            backend = "flint"
+        else:
+            # Prefer an installed fpylll (supports BKZ), then python-flint.
+            try:
+                import fpylll  # noqa: F401
+            except ImportError:
+                backend = "flint"
+            else:
+                backend = "fpylll"
+    if backend not in {"sympy", "fpylll", "flint"}:
+        raise ValueError("backend must be auto, sympy, flint or fpylll")
+    if bkz and backend != "fpylll":
+        raise RuntimeError(
+            "BKZ is available only with the fpylll backend. "
+            "Use BKZ block size 0 for native Windows FLINT LLL."
+        )
     if backend == "sympy" and n > 32:
-        raise RuntimeError("SymPy lattice backend limited to degree <=32; use fpylll")
+        raise RuntimeError(
+            "SymPy lattice backend limited to degree <=32; "
+            "install python-flint for native Windows LLL"
+        )
+    if backend == "flint":
+        try:
+            from flint import fmpz_mat
+        except ImportError as exc:
+            raise RuntimeError(
+                "Native LLL backend python-flint is unavailable in "
+                + sys.executable
+                + '. Install using: "' + sys.executable
+                + '" -m pip install --upgrade python-flint'
+            ) from exc
+        rows = constrained_basis(h, q, df, dg)
+        progress(
+            f"FLINT native LLL, lattice dimension {len(rows)} "
+            f"({len(rows[0])} columns); may require significant RAM/CPU"
+        )
+        matrix = fmpz_mat(rows).lll()
+        if matrix.nrows() != len(rows) or matrix.ncols() != len(rows[0]):
+            raise ValueError("FLINT returned unexpected lattice dimensions")
+        return [
+            [int(matrix[i, j]) for j in range(matrix.ncols())]
+            for i in range(matrix.nrows())
+        ]
     rows = constrained_basis(h, q, df, dg)
     if backend == "sympy":
         from sympy import Matrix
         progress(f"SymPy LLL, lattice dimension {len(rows)}")
         return [[int(value) for value in row] for row in Matrix(rows).lll().tolist()]
-    if backend != "fpylll":
-        raise ValueError("backend must be auto, sympy, or fpylll")
     try:
         from fpylll import IntegerMatrix, LLL, BKZ
     except ImportError as exc:
         raise RuntimeError(
-            "Large NTRU lattices require optional fpylll and cysignals. "
-            "Install them under Linux/WSL or SageMath; this operation is not XOR."
+            "The optional fpylll backend is not installed. "
+            "Use the flint backend on Windows (python -m pip install python-flint)."
         ) from exc
     count, width = len(rows), len(rows[0])
     matrix = IntegerMatrix(count, width)
@@ -106,7 +148,7 @@ def reduce_basis(
         for j, value in enumerate(row):
             if value:
                 matrix[i, j] = int(value)
-    progress(f"LLL reduction in dimension {count}: this may be very expensive")
+    progress(f"fpylll LLL reduction in dimension {count}: this may be expensive")
     LLL.reduction(matrix)
     if bkz:
         if not 2 <= bkz <= min(60, count):

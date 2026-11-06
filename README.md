@@ -356,7 +356,8 @@ encoder. Only a fully verified and printable plaintext is shown.
 
 **Computational limits:** SymPy LLL supports small degrees up to n=32
 (included automatically for testing). For larger NTRU instances, including
-n=512, optional `fpylll` and `cysignals` are required. Install them
+n=512, the native Windows backend uses `python-flint` for LLL; optional
+`fpylll` and `cysignals` are available on supported systems for BKZ. Install them
 under Linux/WSL or SageMath if they are not available on your Windows
 Python installation. A 1023-dimensional LLL and optional BKZ may require
 considerable memory/time and might still find no private key.
@@ -368,6 +369,33 @@ This is a deterministic mathematical method derived from the analyzed
 source. It does not contain challenge-specific keys, flag strings or
 hardcoded ciphertexts; it is not guaranteed to solve every NTRU
 instance or avoid decryption failures.
+
+## Native Windows NTRU lattice backend
+
+CryptoScan installs `python-flint` automatically on Windows x64
+(`python -m pip install -e .`). It supplies compiled Windows wheels and
+can run native FLINT LLL for NTRU degrees above 32 without WSL, SageMath
+or attempting to build `fpylll` from source.
+
+The assistant selects this backend automatically on Windows. Select
+`NTRU-X1-HAMMING-LEAK`, agree to try the lattice recovery, and enter
+`0` at the optional BKZ prompt for the Windows FLINT LLL backend.
+BKZ is **not implemented** by this Windows backend: a positive BKZ
+block size is rejected *before* starting a large reduction.
+
+```powershell
+cd C:\\ctf\\cryptoscan
+git pull --ff-only origin main
+py -3.12 -m pip install --upgrade -e .
+py -3.12 -c "from flint import fmpz_mat; print(fmpz_mat([[11,17],[13,19]]).lll())"
+cryptoscan doctor
+cryptoscan "..\\path\\to\\output.txt" "..\\path\\to\\source.sage" --assist
+```
+
+NTRU instances with n=512 still require a 1023-dimensional lattice
+reduction; native Windows compatibility is *not* a guarantee of a quick
+solution or successful private-key recovery. Missing or rejected keys
+are never presented as a recovered flag.
 
 ## Offline CyberChef recipes
 

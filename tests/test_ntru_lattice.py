@@ -133,3 +133,44 @@ def test_native_windows_auto_selects_flint_and_rejects_bkz(monkeypatch):
     assert any("FLINT native LLL" in line for line in lines)
     with pytest.raises(RuntimeError, match="BKZ is available only"):
         ntru_lattice.reduce_basis([0] * 64, 127, 3, 3, backend="auto", bkz=20)
+
+
+def test_isolated_ntru_worker_recovers_small_synthetic_plaintext():
+    from cryptoscan.ntru_isolation import solve_isolated
+    degree, p, q, df, dg, dr, h, ct, plaintext, _ = synthetic(n=16, seed=83)
+    output = []
+    found = solve_isolated(
+        h, ct, degree, p, q, df, dg,
+        timeout_seconds=120, progress=output.append,
+    )
+    assert any(item["plaintext"] == plaintext for item in found)
+    assert any("process exited" in line for line in output)
+
+
+def test_isolated_worker_timeout_releases_child_process(monkeypatch):
+    import subprocess
+    from cryptoscan.ntru_isolation import solve_isolated
+
+    def timeout(*args, **kwargs):
+        assert kwargs["timeout"] == 1
+        raise subprocess.TimeoutExpired(args[0], timeout=1)
+
+    monkeypatch.setattr("cryptoscan.ntru_isolation.subprocess.run", timeout)
+    with pytest.raises(RuntimeError, match="resources released"):
+        solve_isolated([1]*64, [2]*64, 64, 2, 127, 3, 3,
+                       timeout_seconds=1, progress=lambda _: None)
+
+
+def test_isolated_worker_error_is_propagated(monkeypatch):
+    import subprocess
+    from cryptoscan.ntru_isolation import solve_isolated
+
+    monkeypatch.setattr(
+        "cryptoscan.ntru_isolation.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 2, "", "NTRU worker error: invalid lattice"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="invalid lattice"):
+        solve_isolated([1]*64, [2]*64, 64, 2, 127, 3, 3,
+                       progress=lambda _: None)

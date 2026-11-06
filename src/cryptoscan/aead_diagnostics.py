@@ -16,6 +16,9 @@ def unused_validation_flags(source: str) -> list[int]:
         for index, statement in enumerate(function.body):
             if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
                 continue
+            if not (isinstance(statement.value, ast.Call) and isinstance(statement.value.func, ast.Attribute)
+                    and statement.value.func.attr == "decrypt"):
+                continue
             destination = statement.targets[0]
             if not isinstance(destination, ast.Tuple) or len(destination.elts) != 2:
                 continue

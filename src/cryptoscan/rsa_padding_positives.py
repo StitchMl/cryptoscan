@@ -131,10 +131,12 @@ def discover_positive_padding_oracles(documents: Sequence[Document]) -> list[Ora
             if document.path == doc.path:
                 continue
             for obj in scalar_records(document.text):
-                if cipher_name not in obj or multiplier_name not in obj:
+                cipher_key = cipher_name.casefold()
+                multiplier_key = multiplier_name.casefold()
+                if cipher_key not in obj or multiplier_key not in obj:
                     continue
-                raw_cipher = obj[cipher_name]
-                multipliers = obj[multiplier_name]
+                raw_cipher = obj[cipher_key]
+                multipliers = obj[multiplier_key]
                 if not isinstance(raw_cipher, str) or not re.fullmatch(
                     r"[0-9a-fA-F]+", raw_cipher
                 ):

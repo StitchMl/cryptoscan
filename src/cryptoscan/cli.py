@@ -7,6 +7,7 @@ import sys
 
 from . import __version__
 from .cookie import main as cookie_main
+from .assistant import assistant_session
 from .parser import collect_documents
 from .scanner import scan
 
@@ -19,6 +20,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("targets", nargs="+", help="files or directories to scan; use cryptoscan cookie --help for cookie tools")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument("--no-color", action="store_true", help="disable ANSI colors")
+    parser.add_argument("--assist", action="store_true", help="start guided CLI after scanning, including in non-TTY sessions")
+    parser.add_argument("--no-assist", action="store_true", help="never start guided CLI")
     parser.add_argument("--fermat-steps", type=int, default=100_000, help="maximum Fermat iterations per RSA modulus")
     parser.add_argument("--fail-on-findings", action="store_true", help="return exit status 1 when findings exist")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -54,9 +57,18 @@ def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments and arguments[0] == "cookie":
         return cookie_main(arguments[1:])
+    if arguments and arguments[0] == "assist":
+        if len(arguments) == 1:
+            assistant_session()
+            return 0
+        arguments = arguments[1:] + ["--assist"]
     args = _parser().parse_args(arguments)
     if args.fermat_steps < 0:
         _parser().error("--fermat-steps must be non-negative")
+    if args.assist and args.no_assist:
+        _parser().error("--assist and --no-assist cannot be combined")
+    if args.assist and args.format == "json":
+        _parser().error("--assist cannot be combined with --format json")
     documents = collect_documents(args.targets)
     findings = scan(documents, args.fermat_steps)
     if args.format == "json":
@@ -64,4 +76,6 @@ def main(argv: list[str] | None = None) -> int:
     else:
         color = not args.no_color and sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
         print(_text(findings, color))
+    if not args.no_assist and args.format == "text" and (args.assist or (findings and sys.stdin.isatty() and sys.stdout.isatty())):
+        assistant_session(findings)
     return 1 if args.fail_on_findings and findings else 0

@@ -53,6 +53,8 @@ def test_source_recipe_derived_from_real_builder_and_verifier():
     assert len(recipes) == 1
     recipe = recipes[0]
     assert recipe.fields == ("username", "role")
+    assert recipe.required_fields == ("role",)
+    assert recipe.required_values == (("role", "super_admin"),)
     assert recipe.ignore_authentication
     assert linked_recipe(fake_finding(), recipes) == recipe
 
@@ -80,18 +82,22 @@ def test_source_line_is_grounded():
     assert "decrypt" in contexts[0].excerpt
 
 
-def test_assistant_uses_source_recipe_and_rejects_insufficient_known_bytes():
+def test_assistant_uses_minimal_required_fields_from_source():
     output = []
-    choices = iter([
-        "1", "y", "demo", "guest", "00;"+ "00"*16,
-        "super_admin", "", "q",
-    ])
+    original_hex = (
+        "afbbb704b5f8af60f155aa7dfe5c9ec7b5e91228430226bd1f382815e044f6f4daf7d18412"
+    )
+    tag = "a2f8064887d8e6529fe3df5058058418"
+    choices = iter(["1", "y", "demo", "guest", original_hex + ";" + tag, "q"])
     finding = fake_finding()
     assistant_session([finding], lambda _prompt: next(choices), output.append, docs())
     report = "\n".join(output)
-    assert "Source-verified token construction" in report
-    assert "Cannot derive token from current evidence" in report
-    assert "Password is NOT a token plaintext field" in report
+    assert "Verifier-required fields: role" in report
+    assert 'Minimal plaintext: {"role": "super_admin"}' in report
+    assert (
+        "afbbb018bcefe33bbc12fb32ae1b88fdb9e25d6d0d0229;" + tag
+    ) in report
+    assert "Cannot derive token" not in report
 
 
 def test_no_documents_disables_recipe():
@@ -115,4 +121,17 @@ def test_different_gcm_iv_is_not_an_approved_recipe():
 
 def test_non_default_json_serialization_is_not_assumed():
     changed = SOURCE.replace("}).encode()", "}, separators=(',', ':')).encode()")
+    assert discover_token_recipes(docs(changed)) == []
+
+
+def test_verifier_reading_multiple_fields_produces_no_unjustified_minimization():
+    changed = SOURCE.replace(
+        'if loads(pt.decode())["role"] != "super_admin":',
+        'if loads(pt.decode())["role"] != "super_admin" or loads(pt.decode())["username"] != "admin":',
+    )
+    assert discover_token_recipes(docs(changed)) == []
+
+
+def test_verifier_with_non_boolean_success_does_not_claim_recipe():
+    changed = SOURCE.replace('    return True', '    return loads(pt.decode())["role"]')
     assert discover_token_recipes(docs(changed)) == []

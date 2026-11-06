@@ -158,6 +158,31 @@ not prove runtime reachability, nor can it infer unknown passwords, keys,
 algorithms or remote acceptance. `cryptoscan assist` without an input file
 has no source-grounding and remains a manual worksheet.
 
+### Automatic minimal token payloads
+
+When source analysis demonstrates a JSON token builder and a verifier that
+rejects a precise inequality (for example `role != "super_admin"`) but ignores
+the authentication status, the guided CLI determines which plaintext fields are
+actually required by the verifier. It constructs only those fields rather than
+retaining optional fields such as a username.
+
+```powershell
+cryptoscan "challenge.zip" --assist
+```
+
+Select the corresponding `AEAD-AUTH-RESULT-IGNORED` finding, accept the
+source-derived workflow, and enter the **observed** plaintext field values and
+the complete `ciphertext_hex;tag_hex` cookie. CryptoScan derives the minimum
+plaintext dictated by the source and checks whether the known keystream covers
+it. It does not ask for unknown admin credentials if the verifier doesn't
+read them.
+
+The resulting cookie is a local **candidate**, not a verified remote exploit;
+the original tag no longer authenticates the altered ciphertext. This
+technique is limited to the observed serialization and source-verified
+unchecked-authentication path. With unsupported conditions, the tool will
+not guess a token or invent missing bytes.
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

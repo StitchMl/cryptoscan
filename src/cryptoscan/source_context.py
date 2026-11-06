@@ -25,6 +25,8 @@ class TokenRecipe:
     build: SourceContext
     verify: SourceContext
     fields: tuple[str, ...]
+    required_fields: tuple[str, ...]
+    required_values: tuple[tuple[str, str], ...]
     cookie_name: str | None
     ignore_authentication: bool
     format: str
@@ -157,6 +159,55 @@ def _verification_signature(node: ast.FunctionDef) -> bool:
     return not uses_auth
 
 
+def _required_equality_checks(node: ast.FunctionDef) -> tuple[tuple[str, str], ...] | None:
+    """Prove the simple deny-on-inequality, allow-on-success verifier pattern.
+
+    This intentionally declines complex conditions rather than assuming a
+    field is optional. Exact AST recognition prevents the assistant from
+    crafting arbitrary formats for unrelated challenges.
+    """
+    checks: list[tuple[str, str]] = []
+    subscript_keys: set[str] = set()
+    for item in ast.walk(node):
+        if isinstance(item, ast.Subscript) and isinstance(item.slice, ast.Constant):
+            if isinstance(item.slice.value, str):
+                subscript_keys.add(item.slice.value)
+    if not subscript_keys:
+        return None
+    for item in node.body:
+        if not isinstance(item, ast.If) or len(item.body) != 1 or item.orelse:
+            continue
+        expr = item.test
+        if not (isinstance(expr, ast.Compare) and len(expr.ops) == 1
+                and isinstance(expr.ops[0], ast.NotEq)
+                and len(expr.comparators) == 1):
+            continue
+        denial = item.body[0]
+        if not (isinstance(denial, ast.Return)
+                and isinstance(denial.value, ast.Constant)
+                and denial.value.value is False):
+            continue
+        left, right = expr.left, expr.comparators[0]
+        if isinstance(right, ast.Subscript) and isinstance(left, ast.Constant):
+            left, right = right, left
+        if not (isinstance(left, ast.Subscript)
+                and isinstance(left.slice, ast.Constant)
+                and isinstance(left.slice.value, str)
+                and isinstance(right, ast.Constant)
+                and isinstance(right.value, str)):
+            continue
+        checks.append((left.slice.value, right.value))
+    if not checks or set(name for name, _ in checks) != subscript_keys:
+        return None
+    if len({name for name, _ in checks}) != len(checks):
+        return None
+    if not (isinstance(node.body[-1], ast.Return)
+            and isinstance(node.body[-1].value, ast.Constant)
+            and node.body[-1].value.value is True):
+        return None
+    return tuple(checks)
+
+
 def _gcm_iv_signature(node: ast.AST) -> str | None:
     initializers = [
         call for call in ast.walk(node)
@@ -179,7 +230,9 @@ def discover_token_recipes(documents: Sequence[Document]) -> list[TokenRecipe]:
         if fields:
             builders.append((doc, function, fields))
         if _verification_signature(function):
-            verifiers.append((doc, function))
+            checks = _required_equality_checks(function)
+            if checks:
+                verifiers.append((doc, function, checks))
     cookie_names: dict[str, str] = {}
     for document in documents:
         if not document.path.lower().endswith(".py"):
@@ -202,7 +255,7 @@ def discover_token_recipes(documents: Sequence[Document]) -> list[TokenRecipe]:
             cookie_names[document.scope] = matches[0]
     recipes = []
     for doc, function, fields in builders:
-        for other, verifier in verifiers:
+        for other, verifier, checks in verifiers:
             if doc.scope != other.scope:
                 continue
             if doc.path != other.path or function.name == verifier.name:
@@ -211,8 +264,11 @@ def discover_token_recipes(documents: Sequence[Document]) -> list[TokenRecipe]:
             verifier_iv = _gcm_iv_signature(verifier)
             if builder_iv is None or builder_iv != verifier_iv:
                 continue
+            if not all(name in fields for name, _ in checks):
+                continue
             recipes.append(TokenRecipe(
                 _context(doc, function), _context(other, verifier), fields,
+                tuple(name for name, _ in checks), checks,
                 cookie_names.get(doc.scope), True, "json-utf8/hex-ct-semicolon-hex-tag"
             ))
     return recipes

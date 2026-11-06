@@ -91,7 +91,7 @@ def test_assistant_uses_minimal_required_fields_from_source():
     choices = iter(["1", "y", "demo", "guest", original_hex + ";" + tag, "q"])
     finding = fake_finding()
     assistant_session([finding], lambda _prompt: next(choices), output.append, docs())
-    report = "\\n".join(output)
+    report = "\n".join(output)
     assert "Verifier-required fields: role" in report
     assert 'Minimal plaintext: {"role": "super_admin"}' in report
     assert (

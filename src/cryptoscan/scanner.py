@@ -21,6 +21,7 @@ from .mathutil import (
     wiener_private_exponent,
 )
 from .model import Finding
+from .rsa_padding_positives import discover_positive_padding_oracles
 from .modular_linear_hash import recognize_linear_hash, solve_linear_hash
 from .ntru import recognize_ntru, is_polynomial_coefficients, analyze_ntru_vectors, pair_ntru_records
 from .mlwe import recognize_weak_mlwe_ring
@@ -1147,6 +1148,44 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
                 solver={"kind": "source_guidance"},
                 patch="Use a cryptographic hash instead of a linear encoding.",
             ))
+
+    # A source-proven PKCS#1 v1.5 padding oracle with a transcript of
+    # positive blinded ciphertexts is an offline hidden-number problem.
+    # Do not run a potentially expensive lattice reduction during scanning.
+    for oracle in discover_positive_padding_oracles(documents):
+        findings.append(Finding(
+            rule="RSA-PKCS1-V15-POSITIVE-PADDING-LEAK",
+            title="PKCS#1 v1.5 padding oracle positive transcripts constrain RSA plaintext",
+            severity="critical",
+            confidence="high",
+            location=f"{oracle.source_path}:{oracle.source_line}",
+            evidence={
+                "n_bits": oracle.modulus.bit_length(),
+                "public_exponent": oracle.exponent,
+                "positive_multiplier_count": len(oracle.positive_multipliers),
+                "ciphertext_hex": format(oracle.ciphertext, "x"),
+                "source_verified": True,
+            },
+            preconditions=[
+                "The verifier reports PKCS#1 v1.5 decryption success via a sentinel.",
+                "The source asserts each published multiplier produces a valid padded blinded ciphertext.",
+                "The supplied ciphertext, positive multipliers and public key share one RSA key.",
+            ],
+            attack=(
+                "Each known-positive multiplier restricts the decrypted integer to "
+                "the PKCS#1 00 02 interval; solve the simultaneous modular "
+                "inequalities by lattice reduction and verify by RSA re-encryption."
+            ),
+            solver={"kind": "rsa_pkcs1_positive_padding_lattice",
+                    "sample_count": len(oracle.positive_multipliers)},
+            patch="Replace PKCS#1 v1.5 encryption with RSA-OAEP; remove decryption validity oracles.",
+            playbook=[
+                "Parse the matching public key, ciphertext and positive multipliers.",
+                "Translate the known-positive oracle outputs into modular intervals.",
+                "Use a bounded LLL/Kannan embedding offline.",
+                "Require byte-correct PKCS#1 padding, all interval checks and exact RSA re-encryption.",
+            ],
+        ))
 
     unique = {finding.id: finding for finding in findings}
     return sorted(unique.values(), key=lambda finding: (finding.location.casefold(), finding.rule, finding.id))

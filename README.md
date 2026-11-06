@@ -74,6 +74,57 @@ when a Python function appears to discard the authentication status returned
 alongside decrypted plaintext. Confirm the actual method semantics and call path
 before treating this result as exploitable.
 
+## Interactive, finding-guided analysis
+
+Run a normal scan in an interactive terminal and, when findings exist, cryptoscan
+automatically offers a guided menu. The menu shows each finding's preconditions,
+the current solver evidence, and compatible calculations. For scripts, CI, and
+redirected output, the menu is disabled by default. Use `--no-assist` to
+suppress it in terminals; use `--assist` to request it explicitly:
+
+```powershell
+cryptoscan challenge.zip
+cryptoscan challenge.zip --assist
+cryptoscan challenge.zip --no-assist
+cryptoscan assist challenge.zip
+cryptoscan assist
+```
+
+The standalone `cryptoscan assist` mode works without a scan or a finding.
+Its reusable workflows include:
+
+- **t**: inspect semicolon-delimited records without assuming that a field is a
+  hash, key, password or GCM tag. It reports the number of fields and whether a
+  hexadecimal field has a conventional digest length.
+- **r**: rewrite selected delimited fields, then recompute a digest or MAC
+  using an *explicitly provided* algorithm, signed-field order, encoding, and
+  secret (when required).
+- **h**: compute or compare plain digests, secret-prefix/suffix hashes and HMAC
+  from known inputs.
+- **x**: perform a known-plaintext XOR/stream transformation with aligned
+  ciphertext; it does not manufacture an authentication tag.
+
+Selecting a finding displays the corresponding preconditions and existing
+scanner solver; for compatible source findings it offers the XOR or digest
+workflow. No generic transform is silently assumed valid.
+
+Example of a captured record:
+
+```text
+demo;demo;guest;afbbb704b5f8af60f155aa7dfe5c9ec7b5e91228430226bd1f382815e044f6f4daf7d18412
+```
+
+The final field is 74 hex characters, not the length of a standard complete
+SHA-256 digest. The assistant can inspect its structure and request an exact
+digest formula, but it **cannot** derive unknown credentials or a secret MAC
+key from this record. Knowing that the desired fields include
+`admin` and `super_admin` does not determine the missing values.
+
+Guided workflows are **extensible, not universal**: a finding can be heuristic,
+and different CTFs need different solvers, oracles, and evidence. The tool never
+claims a verified payload merely because an interactive calculation ran.
+The standalone Authentification-1 cookie commands remain available separately.
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

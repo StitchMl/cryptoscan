@@ -200,6 +200,30 @@ recognizes only specific JSON + GCM + hex/ciphertext/tag constructions. It is
 not a universal solver for other crypto systems, and tests for that recognized
 construction do not imply the target endpoint has accepted the token.
 
+## Additional source-independent guided workflows
+
+The interactive assistant now exposes general-purpose calculations independently
+of any particular CTF challenge:
+
+- **RSA (`f`)**: given verified factors `p` and `q`, exponent `e`
+  and ciphertext integer `c`, calculate `d`, decrypt and verify
+  `pow(m,e,n)==c`. On suitable RSA findings, the assistant also offers
+  this path automatically. Factor primality and challenge acceptance still
+  need independent validation.
+- **CBC IV manipulation (`b`)**: given an original IV, known first
+  plaintext block and desired first plaintext block (all 8 or 16 bytes),
+  calculate the modified IV and check the XOR identity. Only applies when
+  the target has no effective ciphertext authentication.
+- **Verified scanner results**: when a finding already contains a
+  mathematically verified computed payload, show its hex and, when valid,
+  UTF-8 interpretation without asking for values again. This does not
+  turn a source-pattern finding into a verified exploit.
+
+The workflows are deterministic and offline. The tool will not invent
+missing exponents, prime factors, ciphertexts, keys, plaintext encodings,
+authentication tags or remote responses. Each crypto family needs explicit
+solver support; arbitrary CTFs are **not guaranteed solvable**.
+
 ## Offline CyberChef recipes
 
 Compatible XOR findings include a structured `cyberchef` object in JSON and a compact recipe in text output. The recipe preserves `From Hex` or `From Base64`, then applies the calculated XOR key. It contains no URL and does not open a browser or transmit data.

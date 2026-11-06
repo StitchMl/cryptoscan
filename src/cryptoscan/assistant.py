@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from .parser import Document
+from .guided import selected_finding_workflow, existing_verified_result, rsa_factors_workflow, cbc_iv_workflow
 from .source_context import discover_token_recipes, linked_recipe, relevant_source, TokenRecipe
 
 HEX = re.compile(r"^[0-9a-fA-F]+$")
@@ -265,6 +266,8 @@ def assistant_session(
         write("  h. Calculate / compare a digest (plain, secret prefix/suffix, HMAC)")
         write("  x. Known-plaintext XOR transformation")
         write("  r. Rewrite delimited record with declared digest/MAC formula")
+        write("  f. RSA decrypt using verified factors p/q")
+        write("  b. CBC first-block IV modification")
         write("  q. Quit")
         try:
             selection = _ask("Choose a finding or operation: ", read).lower()
@@ -283,6 +286,10 @@ def assistant_session(
             xor_workflow(read, write)
         elif selection == "r":
             rewrite_record_workflow(read, write)
+        elif selection == "f":
+            rsa_factors_workflow(read, write)
+        elif selection == "b":
+            cbc_iv_workflow(read, write)
         elif selection.isdecimal() and 1 <= int(selection) <= len(findings):
             finding = findings[int(selection) - 1]
             _show_finding(finding, write)
@@ -296,6 +303,11 @@ def assistant_session(
                 if choice.casefold() in {"y", "yes"}:
                     source_verified_token_workflow(recipe, read, write)
                 continue
+            if finding.rule.startswith("RSA-") or finding.rule == "CBC-FIRST-BLOCK-BITFLIP":
+                selected_finding_workflow(finding, read, write)
+                continue
+            if finding.recovery_status in {"payload-ready", "flag-recovered"}:
+                existing_verified_result(finding, write)
             if finding.rule in {"CTR-NONCE-REUSE", "GCM-NONCE-REUSE", "NONCE-CONSTANT", "XOR-REPEATING-KEY"}:
                 write("Source did not establish a compatible token format or verifier.")
                 choice = _ask("Run a generic XOR worksheet anyway (not source-verified)? [y/N]: ", read)

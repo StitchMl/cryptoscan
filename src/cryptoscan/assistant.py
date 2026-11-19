@@ -263,16 +263,14 @@ def assistant_session(
         write("No analyzed source loaded. Provide a scan target to enable source-derived workflows.")
     write("Findings are evidence, not guarantees. Never assume the MAC/key or token format.")
     while True:
+        write("")
+        write("FINDINGS" if findings else "NO FINDINGS")
         for index, finding in enumerate(findings, 1):
-            write(f"  {index}. [{finding.severity.upper()}] {finding.rule}: {finding.title}")
-        write("  e. Enter separate authentication evidence (username/password/role/cookie)")
-        write("  t. Inspect a captured token or delimited record")
-        write("  h. Calculate / compare a digest (plain, secret prefix/suffix, HMAC)")
-        write("  x. Known-plaintext XOR transformation")
-        write("  r. Rewrite delimited record with declared digest/MAC formula")
-        write("  f. RSA decrypt using verified factors p/q")
-        write("  b. CBC first-block IV modification")
-        write("  q. Quit")
+            write(f"  {index:>2}. [{finding.severity.upper()}] {finding.rule}")
+            write(f"      {finding.title}")
+        write("TOOLS")
+        write("  [e] Auth  [t] Token  [h] Hash  [x] XOR  [r] Rewrite")
+        write("  [f] RSA   [b] CBC    [q] Quit  [?] Help")
         try:
             selection = _ask("Choose a finding or operation: ", read).lower()
         except (EOFError, KeyboardInterrupt):
@@ -280,7 +278,15 @@ def assistant_session(
             return
         if selection in {"q", "quit", "0", ""}:
             return
-        if selection == "e":
+        if selection in {"?", "help"}:
+            write("  e: Enter independent authentication observations")
+            write("  t: Inspect a captured token or structured record")
+            write("  h: Compare plain, prefix/suffix and HMAC digests")
+            write("  x: Transform known-plaintext XOR")
+            write("  r: Rewrite a record with a declared digest formula")
+            write("  f: RSA decryption with verified factors")
+            write("  b: CBC first-block IV transformation")
+        elif selection == "e":
             auth_evidence_workflow(read, write)
         elif selection == "t":
             inspect_record(_ask("Captured token/record: ", read), write)

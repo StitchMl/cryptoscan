@@ -270,43 +270,60 @@ def _sha1_length_extend(digest: bytes, message: bytes, secret_length: int, suffi
     return forged_message, struct.pack(">5I", *state)
 
 
+def _repeating_xor_keys(data: bytes, key_size: int) -> list[bytes]:
+    baseline = bytearray()
+    for offset in range(key_size):
+        column = data[offset::key_size]
+        candidates = [
+            (_single_byte_score(bytes(value ^ guess for value in column)), guess)
+            for guess in range(256)
+        ]
+        baseline.append(max(candidates, key=lambda row: (row[0], -row[1]))[1])
+    keys = [bytes(baseline)]
+    for crib in (b"flag{", b"ctf{"):
+        for start in range(len(data) - len(crib) + 1):
+            candidate = bytearray(baseline)
+            fixed: dict[int, int] = {}
+            valid = True
+            for index, expected in enumerate(crib):
+                position = (start + index) % key_size
+                value = data[start + index] ^ expected
+                if position in fixed and fixed[position] != value:
+                    valid = False
+                    break
+                fixed[position] = value
+                candidate[position] = value
+            if valid:
+                keys.append(bytes(candidate))
+    return keys
+
+
+def _repeating_xor_plaintext(data: bytes, key: bytes) -> bytes | None:
+    plain = bytes(value ^ key[index % len(key)] for index, value in enumerate(data))
+    if not re.search(
+        rb"(?:flag|ctf|key)\{[A-Za-z0-9_!@#$%+.,:/=\\-]{4,120}\}",
+        plain, re.IGNORECASE,
+    ):
+        return None
+    printable = sum(
+        value in (9, 10, 13) or 32 <= value <= 126
+        for value in plain
+    ) / len(plain)
+    return plain if printable >= 0.98 else None
+
+
 def _repeating_xor_candidate(data: bytes) -> tuple[bytes, bytes, float] | None:
-    """Return a conservative repeating-key XOR solution when it exposes a flag token."""
+    """Return a conservative repeating-key XOR solution with a verified flag token."""
     best: tuple[float, bytes, bytes] | None = None
     for key_size in range(2, min(40, len(data) // 2) + 1):
-        baseline = bytearray()
-        for offset in range(key_size):
-            column = data[offset::key_size]
-            candidates = [(_single_byte_score(bytes(value ^ candidate for value in column)), candidate) for candidate in range(256)]
-            baseline.append(max(candidates, key=lambda row: (row[0], -row[1]))[1])
-        keys = [bytes(baseline)]
-        for crib in (b"flag{", b"ctf{"):
-            for start in range(len(data) - len(crib) + 1):
-                candidate = bytearray(baseline)
-                fixed: dict[int, int] = {}
-                valid = True
-                for index, expected in enumerate(crib):
-                    position = (start + index) % key_size
-                    value = data[start + index] ^ expected
-                    if position in fixed and fixed[position] != value:
-                        valid = False
-                        break
-                    fixed[position] = value
-                    candidate[position] = value
-                if valid:
-                    keys.append(bytes(candidate))
-        for key in keys:
-            plain = bytes(value ^ key[index % key_size] for index, value in enumerate(data))
-            if not re.search(rb"(?:flag|ctf|key)\{[A-Za-z0-9_!@#$%+.,:/=\\-]{4,120}\}", plain, re.IGNORECASE):
+        for key in _repeating_xor_keys(data, key_size):
+            plaintext = _repeating_xor_plaintext(data, key)
+            if plaintext is None:
                 continue
-            printable = sum(value in (9, 10, 13) or 32 <= value <= 126 for value in plain) / len(plain)
-            if printable < 0.98:
-                continue
-            score = _language_score(plain) - 0.015 * key_size
+            score = _language_score(plaintext) - 0.015 * key_size
             if best is None or (score, bytes(key)) > (best[0], best[1]):
-                best = score, bytes(key), plain
+                best = score, bytes(key), plaintext
     return (best[1], best[2], best[0]) if best else None
-
 
 
 def _scan_phase_01(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):

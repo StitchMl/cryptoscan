@@ -1365,6 +1365,61 @@ _SOURCE_PLAYBOOKS: dict[str, list[str]] = {
 }
 
 
+def _source_pattern_findings(doc: Document, rules, findings: list[Finding]) -> None:
+    for rule, title, severity, pattern, attack, patch in rules:
+        # A saved nonce in an output artifact is not evidence of reuse.
+        # Match nonce construction only in source code, not result dumps.
+        if rule == "NONCE-CONSTANT" and not doc.path.split("!/", 1)[-1].casefold().endswith(
+            (".py", ".sage", ".sage.py", ".js", ".ts", ".go", ".rs", ".c", ".cpp")
+        ):
+            continue
+        regex = re.compile(pattern, re.IGNORECASE)
+        for match in regex.finditer(doc.text):
+            line = doc.text.count("\n", 0, match.start()) + 1
+            excerpt = doc.text.splitlines()[line - 1].strip()[:200]
+            if excerpt.startswith(("#", "//", "/*", "*")):
+                continue
+            if rule == "HASH-WEAK" and not re.search(
+                r"(?:digest|hash|signature|sign|verify|password|token|flag|secret|mac|checksum)\s*=|==|!=|return\s+",
+                excerpt,
+                re.IGNORECASE,
+            ):
+                continue
+            if rule == "HASH-WEAK" and re.search(r"(?:secret|key)\s*\+", excerpt, re.IGNORECASE):
+                continue
+            findings.append(Finding(
+                rule, title, severity, "medium", f"{doc.path}:{line}",
+                {"match": match.group(0), "line": excerpt},
+                ["Matched code executes in the challenge cryptographic path."], attack,
+                {"kind": "source_guidance", "matched_pattern": rule}, patch,
+                _SOURCE_PLAYBOOKS.get(rule, []),
+            ))
+
+
+def _cbc_source_finding(doc: Document, findings: list[Finding]) -> None:
+    # An oracle requires both CBC/unpadding and an externally distinguishable
+    # padding failure. Either signal alone is too common to report.
+    cbc = re.search(r"(?:MODE_CBC|AES[-_]?CBC|\bcbc\b)", doc.text, re.IGNORECASE)
+    unpad = re.search(r"\bunpad\s*\(|padding(?:error|exception)|invalid\s+padding", doc.text, re.IGNORECASE)
+    signal = re.search(
+        r"(?:return|abort|send|jsonify|raise)[^\r\n]{0,100}(?:padding|decrypt|invalid)|"
+        r"except\s+(?:ValueError|PaddingError)[^:]*:",
+        doc.text,
+        re.IGNORECASE,
+    )
+    authenticated = re.search(r"(?:MODE_GCM|MODE_EAX|ChaCha20_Poly1305|verify\s*\(\s*tag|decrypt_and_verify)", doc.text, re.IGNORECASE)
+    if cbc and unpad and signal and not authenticated:
+        line = doc.text.count("\n", 0, signal.start()) + 1
+        findings.append(Finding(
+            "CBC-PADDING-ORACLE", "Potential distinguishable CBC padding failure", "critical", "medium", f"{doc.path}:{line}",
+            {"cbc_match": cbc.group(0), "unpad_match": unpad.group(0), "signal_match": signal.group(0)[:200], "aead_check_seen": False},
+            ["The matched failure reaches a client-visible status, body, timing class, or exception path.", "The ciphertext is attacker-controlled."],
+            "Modify the preceding ciphertext block and classify padding-valid responses to decrypt blocks or forge a flag-authorized plaintext.",
+            {"kind": "cbc_padding_oracle", "block_size": 16},
+            "Authenticate ciphertexts before decryption, use one indistinguishable failure response, and migrate to an AEAD mode."
+        ))
+
+
 def _source_findings(documents: list[Document]) -> list[Finding]:
     rules = [
         ("HASH-WEAK", "Weak hash primitive", "medium", r"\b(?:md5|sha1)\s*\(",
@@ -1546,53 +1601,6 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                  "Run cryptoscan server.py --solve --host HOST --port PORT.",
                  "Verify that CRT uniquely determines the 128-bit modulus and recover flag bytes."],
             ))
-        for rule, title, severity, pattern, attack, patch in rules:
-            # A saved nonce in an output artifact is not evidence of reuse.
-            # Match nonce construction only in source code, not result dumps.
-            if rule == "NONCE-CONSTANT" and not doc.path.split("!/", 1)[-1].casefold().endswith(
-                (".py", ".sage", ".sage.py", ".js", ".ts", ".go", ".rs", ".c", ".cpp")
-            ):
-                continue
-            regex = re.compile(pattern, re.IGNORECASE)
-            for match in regex.finditer(doc.text):
-                line = doc.text.count("\n", 0, match.start()) + 1
-                excerpt = doc.text.splitlines()[line - 1].strip()[:200]
-                if excerpt.startswith(("#", "//", "/*", "*")):
-                    continue
-                if rule == "HASH-WEAK" and not re.search(
-                    r"(?:digest|hash|signature|sign|verify|password|token|flag|secret|mac|checksum)\s*=|==|!=|return\s+",
-                    excerpt,
-                    re.IGNORECASE,
-                ):
-                    continue
-                if rule == "HASH-WEAK" and re.search(r"(?:secret|key)\s*\+", excerpt, re.IGNORECASE):
-                    continue
-                findings.append(Finding(
-                    rule, title, severity, "medium", f"{doc.path}:{line}",
-                    {"match": match.group(0), "line": excerpt},
-                    ["Matched code executes in the challenge cryptographic path."], attack,
-                    {"kind": "source_guidance", "matched_pattern": rule}, patch,
-                    _SOURCE_PLAYBOOKS.get(rule, []),
-                ))
-        # An oracle requires both CBC/unpadding and an externally distinguishable
-        # padding failure. Either signal alone is too common to report.
-        cbc = re.search(r"(?:MODE_CBC|AES[-_]?CBC|\bcbc\b)", doc.text, re.IGNORECASE)
-        unpad = re.search(r"\bunpad\s*\(|padding(?:error|exception)|invalid\s+padding", doc.text, re.IGNORECASE)
-        signal = re.search(
-            r"(?:return|abort|send|jsonify|raise)[^\r\n]{0,100}(?:padding|decrypt|invalid)|"
-            r"except\s+(?:ValueError|PaddingError)[^:]*:",
-            doc.text,
-            re.IGNORECASE,
-        )
-        authenticated = re.search(r"(?:MODE_GCM|MODE_EAX|ChaCha20_Poly1305|verify\s*\(\s*tag|decrypt_and_verify)", doc.text, re.IGNORECASE)
-        if cbc and unpad and signal and not authenticated:
-            line = doc.text.count("\n", 0, signal.start()) + 1
-            findings.append(Finding(
-                "CBC-PADDING-ORACLE", "Potential distinguishable CBC padding failure", "critical", "medium", f"{doc.path}:{line}",
-                {"cbc_match": cbc.group(0), "unpad_match": unpad.group(0), "signal_match": signal.group(0)[:200], "aead_check_seen": False},
-                ["The matched failure reaches a client-visible status, body, timing class, or exception path.", "The ciphertext is attacker-controlled."],
-                "Modify the preceding ciphertext block and classify padding-valid responses to decrypt blocks or forge a flag-authorized plaintext.",
-                {"kind": "cbc_padding_oracle", "block_size": 16},
-                "Authenticate ciphertexts before decryption, use one indistinguishable failure response, and migrate to an AEAD mode."
-            ))
+        _source_pattern_findings(doc, rules, findings)
+        _cbc_source_finding(doc, findings)
     return findings

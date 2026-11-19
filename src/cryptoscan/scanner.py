@@ -320,7 +320,7 @@ def _repeating_xor_keys(data: bytes, key_size: int) -> list[bytes]:
 def _repeating_xor_plaintext(data: bytes, key: bytes) -> bytes | None:
     plain = bytes(value ^ key[index % len(key)] for index, value in enumerate(data))
     if not re.search(
-        rb"(?:flag|ctf|key)\{[A-Za-z0-9_!@#$%+.,:/=\\-]{4,120}\}",
+        rb"(?:flag|ctf|key)\{[a-z0-9_!@#$%+.,:/=\\-]{4,120}\}",
         plain, re.IGNORECASE,
     ):
         return None

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import operator
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -19,7 +20,15 @@ from .lfsr_correlation import (
 )
 from .parser import Document
 
-FLAG = re.compile(rb"[a-zA-Z0-9_]{2,32}\{[\x20-\x7e]{1,180}\}")
+FLAG = re.compile(rb"\w{2,32}\{[\x20-\x7e]{1,180}\}")
+
+
+_BINARY_OPERATIONS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.BitXor: operator.xor,
+}
 
 
 def _integer_expression(node: ast.expr, variables: dict[str, int]) -> int:
@@ -33,14 +42,9 @@ def _integer_expression(node: ast.expr, variables: dict[str, int]) -> int:
     if isinstance(node, ast.BinOp):
         left = _integer_expression(node.left, variables)
         right = _integer_expression(node.right, variables)
-        if isinstance(node.op, ast.Add):
-            return left + right
-        if isinstance(node.op, ast.Sub):
-            return left - right
-        if isinstance(node.op, ast.Mult):
-            return left * right
-        if isinstance(node.op, ast.BitXor):
-            return left ^ right
+        operation = _BINARY_OPERATIONS.get(type(node.op))
+        if operation is not None:
+            return operation(left, right)
     raise ValueError("Unsupported SHA combiner arithmetic")
 
 
@@ -83,6 +87,41 @@ def _constants(tree: ast.Module) -> dict[str, int]:
     return result
 
 
+def _register_assignment(
+    node: ast.AST, constants: dict[str, int],
+) -> tuple[int, str, int] | None:
+    """Match ``self.reg = Lfsr(degree, ..., CONSTANT)`` assignments."""
+    if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+        return None
+    target, value = node.targets[0], node.value
+    if not (isinstance(target, ast.Attribute)
+            and isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and len(value.args) == 3
+            and isinstance(value.args[0], ast.Constant)
+            and isinstance(value.args[2], ast.Name)
+            and value.args[2].id in constants):
+        return None
+    return value.args[0].value, target.attr, constants[value.args[2].id]
+
+
+def _init_registers(
+    method: ast.FunctionDef, constants: dict[str, int],
+) -> tuple[int, dict[str, int]] | None:
+    regs: dict[str, int] = {}
+    degrees: set[int] = set()
+    for node in ast.walk(method):
+        assignment = _register_assignment(node, constants)
+        if assignment is None:
+            continue
+        degree, name, mask = assignment
+        degrees.add(degree)
+        regs[name] = mask
+    if len(regs) >= 2 and len(degrees) == 1:
+        return degrees.pop(), regs
+    return None
+
+
 def _registers(tree: ast.Module) -> tuple[int, dict[str, int]] | None:
     constants = _constants(tree)
     for cls in tree.body:
@@ -91,24 +130,9 @@ def _registers(tree: ast.Module) -> tuple[int, dict[str, int]] | None:
         for method in cls.body:
             if not isinstance(method, ast.FunctionDef) or method.name != "__init__":
                 continue
-            regs: dict[str, int] = {}
-            degrees: set[int] = set()
-            for node in ast.walk(method):
-                if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-                    continue
-                target, value = node.targets[0], node.value
-                if not (isinstance(target, ast.Attribute)
-                        and isinstance(value, ast.Call)
-                        and isinstance(value.func, ast.Name)
-                        and len(value.args) == 3
-                        and isinstance(value.args[0], ast.Constant)
-                        and isinstance(value.args[2], ast.Name)
-                        and value.args[2].id in constants):
-                    continue
-                degrees.add(value.args[0].value)
-                regs[target.attr] = constants[value.args[2].id]
-            if len(regs) >= 2 and len(degrees) == 1:
-                return degrees.pop(), regs
+            found = _init_registers(method, constants)
+            if found is not None:
+                return found
     return None
 
 
@@ -175,6 +199,15 @@ def _combiner_from_method(
                           tuple(symbols), expression, path)
 
 
+def _bit_methods(tree: ast.Module):
+    for cls in tree.body:
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        for method in cls.body:
+            if isinstance(method, ast.FunctionDef) and method.name == "bit":
+                yield method
+
+
 def parse_stream_combiner(source: str, path: str) -> StreamCombiner | None:
     """Inspect Python AST without importing or executing challenge code."""
     try:
@@ -193,14 +226,10 @@ def parse_stream_combiner(source: str, path: str) -> StreamCombiner | None:
         for node in ast.walk(tree)
     ):
         return None
-    for cls in tree.body:
-        if not isinstance(cls, ast.ClassDef):
-            continue
-        for method in cls.body:
-            if isinstance(method, ast.FunctionDef) and method.name == "bit":
-                result = _combiner_from_method(method, registers, degree, path)
-                if result is not None:
-                    return result
+    for method in _bit_methods(tree):
+        result = _combiner_from_method(method, registers, degree, path)
+        if result is not None:
+            return result
     return None
 
 
@@ -223,6 +252,22 @@ def _known_zero_input(source: str) -> bool:
                and node.value == b"\0" for node in ast.walk(tree))
 
 
+def _instances_for(
+    doc: Document, model: StreamCombiner, documents: Sequence[Document],
+) -> list[StreamCipherInstance]:
+    found = []
+    for output in documents:
+        if output.scope != doc.scope or output.path == doc.path:
+            continue
+        pair = _hex_pair(output)
+        if pair is None:
+            continue
+        known, encrypted = pair
+        if len(known) * 8 >= 16 * model.degree:
+            found.append(StreamCipherInstance(model, known, encrypted))
+    return found
+
+
 def recognize_stream_cipher(documents: Sequence[Document]) -> list[StreamCipherInstance]:
     """Pair a recognizable public stream cipher with same-scope hex output."""
     found = []
@@ -232,15 +277,7 @@ def recognize_stream_cipher(documents: Sequence[Document]) -> list[StreamCipherI
         model = parse_stream_combiner(doc.text, doc.path)
         if model is None or len(model.masks) != 4:
             continue
-        for output in documents:
-            if output.scope != doc.scope or output.path == doc.path:
-                continue
-            pair = _hex_pair(output)
-            if pair is None:
-                continue
-            known, encrypted = pair
-            if len(known) * 8 >= 16 * model.degree:
-                found.append(StreamCipherInstance(model, known, encrypted))
+        found.extend(_instances_for(doc, model, documents))
     return found
 
 
@@ -344,16 +381,9 @@ def _full_keystream(
     ]
 
 
-def recover_stream_cipher(
-    instance: StreamCipherInstance, *,
-    progress: Callable[[str], None] = print,
-    max_iterations: int = 100,
-) -> str:
-    """Recover a flag only after exact full-keystream reconstruction."""
-    model = instance.model
-    observed = unpack_bits(instance.known_stream)
-    if len(model.masks) != 4 or len(observed) < 16 * model.degree:
-        raise ValueError("Unsupported short or non-four-register instance")
+def _biased_candidates(
+    model: StreamCombiner, observed: list[int],
+) -> list[tuple[int, int, float, tuple[int, int]]]:
     candidates = []
     for probability, index in _affinities(model):
         if abs(probability - 0.5) < 0.05:
@@ -365,24 +395,43 @@ def recover_stream_cipher(
         if multiples:
             candidates.append((min(pair[0] for pair in multiples),
                                index, probability, multiples[0]))
+    return candidates
+
+
+def _correlate_with_schedules(
+    observed: list[int], model: StreamCombiner, index: int, probability: float,
+    triple: tuple[int, int], max_iterations: int, progress: Callable[[str], None],
+):
+    for correction_rate in (32, 24, 16, 40, 64):
+        try:
+            return correlation_recover(
+                observed, model.masks[index], model.degree, probability, triple,
+                max_iterations=max_iterations, flip_divisor=correction_rate,
+                progress=progress,
+            )
+        except RuntimeError:
+            continue
+    raise RuntimeError("Fast correlation did not converge under available noise schedules")
+
+
+def recover_stream_cipher(
+    instance: StreamCipherInstance, *,
+    progress: Callable[[str], None] = print,
+    max_iterations: int = 100,
+) -> str:
+    """Recover a flag only after exact full-keystream reconstruction."""
+    model = instance.model
+    observed = unpack_bits(instance.known_stream)
+    if len(model.masks) != 4 or len(observed) < 16 * model.degree:
+        raise ValueError("Unsupported short or non-four-register instance")
+    candidates = _biased_candidates(model, observed)
     if len(candidates) < 2:
         raise RuntimeError("Not enough biased LFSR outputs with sparse feedback multiples")
     seeds: dict[int, int] = {}
     recovered: dict[int, list[int]] = {}
     for _, index, probability, triple in sorted(candidates)[:2]:
-        correlation = None
-        for correction_rate in (32, 24, 16, 40, 64):
-            try:
-                correlation = correlation_recover(
-                    observed, model.masks[index], model.degree, probability, triple,
-                    max_iterations=max_iterations, flip_divisor=correction_rate,
-                    progress=progress,
-                )
-                break
-            except RuntimeError:
-                continue
-        if correlation is None:
-            raise RuntimeError("Fast correlation did not converge under available noise schedules")
+        correlation = _correlate_with_schedules(
+            observed, model, index, probability, triple, max_iterations, progress)
         seeds[index] = correlation.initial_state
         recovered[index] = lfsr_bits(
             correlation.initial_state, model.masks[index],

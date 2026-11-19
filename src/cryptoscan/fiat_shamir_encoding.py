@@ -74,8 +74,14 @@ def resegment_row(
 def _search_hamiltonian_cycle(options: Sequence[dict[int, list[int]]]) -> tuple[int, ...] | None:
     """Find a cycle in the *resegmentable* edge graph with bounded DFS."""
     n = len(options)
+    visits = 0
+    max_visits = 200_000
     for first in range(n):
         def extend(path: list[int], visited: int) -> tuple[int, ...] | None:
+            nonlocal visits
+            visits += 1
+            if visits > max_visits:
+                return None
             current = path[-1]
             if len(path) == n:
                 return tuple(path) if first in options[current] else None
@@ -85,10 +91,14 @@ def _search_hamiltonian_cycle(options: Sequence[dict[int, list[int]]]) -> tuple[
                 answer = extend(path + [nxt], visited | (1 << nxt))
                 if answer is not None:
                     return answer
+                if visits > max_visits:
+                    return None
             return None
         found = extend([first], 1 << first)
         if found is not None:
             return found
+        if visits > max_visits:
+            return None
     return None
 
 

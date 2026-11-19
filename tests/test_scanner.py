@@ -431,3 +431,19 @@ def test_padding_oracle_requires_compound_source_evidence(tmp_path):
     safe = tmp_path / "safe_cbc.py"
     safe.write_text("cipher = AES.new(key, AES.MODE_CBC, iv)\nvalue = unpad(cipher.decrypt(data), 16)\n", encoding="utf-8")
     assert "CBC-PADDING-ORACLE" not in rules_for(safe)
+
+
+def test_identical_templates_in_independent_ctf_scopes_survive_deduplication(tmp_path):
+    """The same server template can accompany different per-CTF artifacts."""
+    for challenge in ("competition_a", "competition_b"):
+        folder = tmp_path / challenge
+        folder.mkdir()
+        (folder / "challenge.py").write_text("import random\\nx = random.getrandbits(1024)\\n",
+                                            encoding="utf-8")
+        (folder / "output.txt").write_text(f"nonce = '{challenge}'\\n",
+                                         encoding="utf-8")
+
+    documents = collect_documents([str(tmp_path)])
+    python_sources = [doc for doc in documents if doc.path.endswith("challenge.py")]
+    assert len(python_sources) == 2
+    assert {doc.scope for doc in python_sources} == {"competition_a", "competition_b"}

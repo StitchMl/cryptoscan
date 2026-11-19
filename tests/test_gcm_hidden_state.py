@@ -116,6 +116,8 @@ def test_gcm_detector_survives_renamed_commands_and_variables():
               .replace('"u1"', '"replace_block"')
               .replace('"u2"', '"extend_block"')
               .replace("s[randbit()]", "data[randbit()]")
+              .replace("s[0]", "data[0]")
+              .replace("s[1]", "data[1]")
               .replace("s = [gen(), gen()]", "data = [gen(), gen()]")
               .replace("new = lambda:", "make_cipher = lambda:")
               .replace("cipher = new()", "context = make_cipher()")

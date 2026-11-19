@@ -70,7 +70,7 @@ def recover_flag(
             context.f_weight, context.g_weight,
             method="fold", backend=backend, bkz=bkz,
             initial_degree=initial_degree, timeout_seconds=timeout_seconds,
-            progress=progress,
+            stream=True, progress=progress,
         )
         for candidate in results:
             plaintext = candidate["plaintext"]

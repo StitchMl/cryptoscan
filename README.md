@@ -63,6 +63,31 @@ fabricate a flag.
 
 
 
+## Batch Fiat-Shamir serialization equivocation
+
+CryptoScan also detects a different, **batch** Fiat-Shamir failure mode:
+the verifier hashes all commitments before deriving its challenges, but
+serializes integer matrices with a delimiter-free concatenation of decimal
+strings. The hash input is not injective. With a modular Pedersen commitment
+verifier that accepts noncanonical integer representatives, an adversary
+can construct two distinct commitments with exactly the same hash preimage:
+one opens completely to the public graph, and the other opens a
+Hamiltonian cycle. The terminal hash bits determine which valid opening
+to send for each of the batch rounds. This is not a preimage attack on
+SHA-256 and does not work for securely framed transcripts.
+
+```powershell
+cryptoscan . --no-assist
+cryptoscan . --solve --host archive.cryptohack.org --port 34597
+```
+
+The generic decimal resegmentation and cycle-search primitive is
+independently tested; the network adapter activates only after source
+verification of batch hashing, ambiguous serialization, absent range checks,
+and the two Pedersen verification branches. This supports Hamiltonicity 2,
+but the detector is not tied to the name or known flag. A remote result
+must be verified before a flag can be claimed.
+
 ## Fiat-Shamir low-entropy challenge grinding
 
 CryptoScan detects a class of noninteractive proof flaws in which a prover

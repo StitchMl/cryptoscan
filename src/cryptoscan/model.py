@@ -32,6 +32,74 @@ class Finding:
         )
         return hashlib.sha256(body.encode()).hexdigest()[:12]
 
+    def _verify_rsa(self) -> bool:
+        """Verify RSA results by exact factors, modular equations or re-encryption."""
+        if self.rule == "RSA-SHARED-PRIME":
+            factor = int(self.evidence["gcd"])
+            return factor * int(self.evidence["q1"]) == int(self.evidence["n1"]) and factor * int(self.evidence["q2"]) == int(self.evidence["n2"])
+        if self.rule == "RSA-CRT-FAULT":
+            return self.evidence.get("factorization_verified") is True and (
+                int(self.evidence["p"]) * int(self.evidence["q"]) == int(self.evidence["n"])
+            )
+        if self.rule == "RSA-PARAMETER-LEAK":
+            return self.evidence.get("factorization_verified") is True and (
+                "result_hex" not in self.solver or self.evidence.get("reencryption_verified") is True
+            )
+        if self.rule == "RSA-PRIVATE-EXPONENT-LEAK":
+            return self.evidence.get("reencryption_verified") is True
+        if self.rule == "RSA-E3-EXACT-ROOT":
+            return int(self.evidence["m"]) ** 3 == int(self.evidence["c"])
+        if self.rule == "RSA-LOW-EXPONENT-SMALL-MESSAGE":
+            return self.evidence.get("reencryption_verified") is True and pow(
+                int(self.evidence["m"]), int(self.evidence["e"]), int(self.evidence["n"])
+            ) == int(self.evidence["c"])
+        if self.rule in {"RSA-WIENER-SMALL-D", "RSA-FERMAT-CLOSE-PRIMES", "RSA-SMALL-FACTOR"}:
+            factors_match = int(self.evidence["p"]) * int(self.evidence["q"]) == int(self.evidence["n"])
+            return factors_match and ("result_hex" not in self.solver or self.evidence.get("reencryption_verified") is True)
+        if self.rule == "RSA-COMMON-MODULUS":
+            return self.evidence.get("reencryption_verified") is True
+        if self.rule == "RSA-HASTAD-BROADCAST":
+            return int(self.evidence["m"]) ** int(self.evidence["e"]) == int(self.evidence["crt_value"])
+        return False
+
+    def _verify_other_attacks(self) -> bool:
+        """Verify non-RSA arithmetic and ciphertext transformations."""
+        if self.rule == "SIGNATURE-NONCE-REUSE":
+            q, r = int(self.evidence["q"]), int(self.evidence["r"])
+            nonce, private = int(self.evidence["nonce_k"]), int(self.evidence["private_key_x"])
+            return all(
+                (int(self.evidence[s]) * nonce - int(self.evidence[z]) - r * private) % q == 0
+                for s, z in (("s1", "z1"), ("s2", "z2"))
+            )
+        if self.rule == "SIGNATURE-NONCE-DISCLOSURE":
+            return self.evidence.get("signature_equation_verified") is True
+        if self.rule == "SHA1-LENGTH-EXTENSION":
+            return self.evidence.get("compression_calculated") is True and (
+                self.solver.get("message_hex") == self.evidence.get("forged_message_hex")
+                and self.solver.get("digest_hex") == self.evidence.get("forged_digest_hex")
+            )
+        if self.rule == "LCG-STATE-RECOVERY":
+            return self.evidence.get("recurrence_verified") is True
+        if self.rule == "MT19937-STATE-CLONE":
+            return self.evidence.get("state_roundtrip_verified") is True and (
+                "prediction_verified" not in self.evidence or self.evidence.get("prediction_verified") is True
+            )
+        if self.rule == "DH-DEGENERATE-GENERATOR":
+            return int(self.evidence["g"]) % int(self.evidence["p"]) in (0, 1, int(self.evidence["p"]) - 1)
+        if self.rule == "DH-SMALL-GROUP":
+            return self.evidence.get("discrete_log_verified") is True
+        if self.rule == "CBC-FIRST-BLOCK-BITFLIP":
+            iv = bytes.fromhex(self.evidence["iv_hex"])
+            known = bytes.fromhex(self.evidence["known_block_hex"])
+            target = bytes.fromhex(self.evidence["target_block_hex"])
+            expected = bytes(left ^ old ^ new for left, old, new in zip(iv, known, target, strict=False))
+            return expected.hex() == self.solver.get("modified_iv_hex")
+        if self.rule in {"XOR-SINGLE-BYTE", "XOR-REPEATING-KEY"}:
+            return self.evidence.get("flag_shape") is True and self.evidence.get("roundtrip_verified") is True
+        if self.rule in {"CTR-NONCE-REUSE", "GCM-NONCE-REUSE"}:
+            return "result_hex" in self.solver and self.evidence.get("known_plaintext_roundtrip_verified") is True
+        return False
+
     def _verified_solver(self) -> bool:
         """Accept only rule-specific, reproducible proof as an actionable result."""
         try:
@@ -43,69 +111,11 @@ class Finding:
                     and self.solver.get("result_hex") == flag.encode().hex()
                     and self.solver.get("candidates") == [flag]
                 )
-            if self.rule == "RSA-SHARED-PRIME":
-                factor = int(self.evidence["gcd"])
-                return factor * int(self.evidence["q1"]) == int(self.evidence["n1"]) and factor * int(self.evidence["q2"]) == int(self.evidence["n2"])
-            if self.rule == "RSA-CRT-FAULT":
-                return self.evidence.get("factorization_verified") is True and (
-                    int(self.evidence["p"]) * int(self.evidence["q"]) == int(self.evidence["n"])
-                )
-            if self.rule == "RSA-PARAMETER-LEAK":
-                return self.evidence.get("factorization_verified") is True and (
-                    "result_hex" not in self.solver or self.evidence.get("reencryption_verified") is True
-                )
-            if self.rule == "RSA-PRIVATE-EXPONENT-LEAK":
-                return self.evidence.get("reencryption_verified") is True
-            if self.rule == "RSA-E3-EXACT-ROOT":
-                return int(self.evidence["m"]) ** 3 == int(self.evidence["c"])
-            if self.rule == "RSA-LOW-EXPONENT-SMALL-MESSAGE":
-                return self.evidence.get("reencryption_verified") is True and pow(
-                    int(self.evidence["m"]), int(self.evidence["e"]), int(self.evidence["n"])
-                ) == int(self.evidence["c"])
-            if self.rule in {"RSA-WIENER-SMALL-D", "RSA-FERMAT-CLOSE-PRIMES", "RSA-SMALL-FACTOR"}:
-                factors_match = int(self.evidence["p"]) * int(self.evidence["q"]) == int(self.evidence["n"])
-                return factors_match and ("result_hex" not in self.solver or self.evidence.get("reencryption_verified") is True)
-            if self.rule == "RSA-COMMON-MODULUS":
-                return self.evidence.get("reencryption_verified") is True
-            if self.rule == "RSA-HASTAD-BROADCAST":
-                return int(self.evidence["m"]) ** int(self.evidence["e"]) == int(self.evidence["crt_value"])
-            if self.rule == "SIGNATURE-NONCE-REUSE":
-                q, r = int(self.evidence["q"]), int(self.evidence["r"])
-                nonce, private = int(self.evidence["nonce_k"]), int(self.evidence["private_key_x"])
-                return all(
-                    (int(self.evidence[s]) * nonce - int(self.evidence[z]) - r * private) % q == 0
-                    for s, z in (("s1", "z1"), ("s2", "z2"))
-                )
-            if self.rule == "SIGNATURE-NONCE-DISCLOSURE":
-                return self.evidence.get("signature_equation_verified") is True
-            if self.rule == "SHA1-LENGTH-EXTENSION":
-                return self.evidence.get("compression_calculated") is True and (
-                    self.solver.get("message_hex") == self.evidence.get("forged_message_hex")
-                    and self.solver.get("digest_hex") == self.evidence.get("forged_digest_hex")
-                )
-            if self.rule == "LCG-STATE-RECOVERY":
-                return self.evidence.get("recurrence_verified") is True
-            if self.rule == "MT19937-STATE-CLONE":
-                return self.evidence.get("state_roundtrip_verified") is True and (
-                    "prediction_verified" not in self.evidence or self.evidence.get("prediction_verified") is True
-                )
-            if self.rule == "DH-DEGENERATE-GENERATOR":
-                return int(self.evidence["g"]) % int(self.evidence["p"]) in (0, 1, int(self.evidence["p"]) - 1)
-            if self.rule == "DH-SMALL-GROUP":
-                return self.evidence.get("discrete_log_verified") is True
-            if self.rule == "CBC-FIRST-BLOCK-BITFLIP":
-                iv = bytes.fromhex(self.evidence["iv_hex"])
-                known = bytes.fromhex(self.evidence["known_block_hex"])
-                target = bytes.fromhex(self.evidence["target_block_hex"])
-                expected = bytes(left ^ old ^ new for left, old, new in zip(iv, known, target, strict=False))
-                return expected.hex() == self.solver.get("modified_iv_hex")
-            if self.rule in {"XOR-SINGLE-BYTE", "XOR-REPEATING-KEY"}:
-                return self.evidence.get("flag_shape") is True and self.evidence.get("roundtrip_verified") is True
-            if self.rule in {"CTR-NONCE-REUSE", "GCM-NONCE-REUSE"}:
-                return "result_hex" in self.solver and self.evidence.get("known_plaintext_roundtrip_verified") is True
+            if self.rule.startswith("RSA-"):
+                return self._verify_rsa()
+            return self._verify_other_attacks()
         except (KeyError, TypeError, ValueError):
             return False
-        return False
 
     @property
     def recovery_status(self) -> str:

@@ -12,8 +12,7 @@ import os
 import socket
 
 
-def connect_authorized(host: str, port: int, timeout: float) -> socket.socket:
-    """Connect only to a globally routable address unless explicitly opted in."""
+def _validate_arguments(host: str, port: int, timeout: float) -> None:
     if not isinstance(host, str) or not host or len(host) > 253:
         raise ValueError("Invalid CTF host")
     if not isinstance(port, int) or not 1 <= port <= 65535:
@@ -21,11 +20,8 @@ def connect_authorized(host: str, port: int, timeout: float) -> socket.socket:
     if not 0 < timeout <= 120:
         raise ValueError("Invalid socket timeout")
 
-    addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    if not addresses or len(addresses) > 64:
-        raise ValueError("CTF host did not resolve to a bounded address set")
 
-    permitted_private = os.environ.get("CRYPTOSCAN_ALLOW_PRIVATE_NETWORK") == "1"
+def _validated_destinations(addresses: list, permitted_private: bool) -> list[tuple]:
     validated = []
     for family, socktype, protocol, _canonical, sockaddr in addresses:
         if family not in (socket.AF_INET, socket.AF_INET6):
@@ -37,6 +33,19 @@ def connect_authorized(host: str, port: int, timeout: float) -> socket.socket:
                 "CRYPTOSCAN_ALLOW_PRIVATE_NETWORK=1 only for your own lab"
             )
         validated.append((family, socktype, protocol, sockaddr))
+    return validated
+
+
+def connect_authorized(host: str, port: int, timeout: float) -> socket.socket:
+    """Connect only to a globally routable address unless explicitly opted in."""
+    _validate_arguments(host, port, timeout)
+
+    addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not addresses or len(addresses) > 64:
+        raise ValueError("CTF host did not resolve to a bounded address set")
+
+    permitted_private = os.environ.get("CRYPTOSCAN_ALLOW_PRIVATE_NETWORK") == "1"
+    validated = _validated_destinations(addresses, permitted_private)
 
     last_error: OSError | None = None
     for family, socktype, protocol, sockaddr in validated:

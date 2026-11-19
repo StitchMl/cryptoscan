@@ -14,7 +14,7 @@ from .ntru import recognize_ntru, pair_ntru_records
 from .ntru_isolation import solve_isolated
 from .parser import Document, scalar_records
 
-FLAG_RE = re.compile(rb"[A-Za-z0-9_]{2,30}\{[\x20-\x7e]{1,180}\}")
+FLAG_RE = re.compile(rb"\w{2,30}\{[\x20-\x7e]{1,180}\}")
 
 
 def instances(documents: Sequence[Document]) -> list[tuple]:
@@ -34,6 +34,16 @@ def instances(documents: Sequence[Document]) -> list[tuple]:
                 continue
             result.append((context, public["value"], encrypted["value"]))
     return result
+
+
+def _flag_from_results(results: Sequence[dict]) -> str | None:
+    for candidate in results:
+        plaintext = candidate["plaintext"]
+        if not candidate["public_relation_verified"]:
+            continue
+        if FLAG_RE.fullmatch(plaintext):
+            return plaintext.decode("ascii")
+    return None
 
 
 def recover_flag(
@@ -72,12 +82,8 @@ def recover_flag(
             initial_degree=initial_degree, timeout_seconds=timeout_seconds,
             stream=True, progress=progress,
         )
-        for candidate in results:
-            plaintext = candidate["plaintext"]
-            if not candidate["public_relation_verified"]:
-                continue
-            match = FLAG_RE.fullmatch(plaintext)
-            if match:
-                progress("[NTRU-FOLD] Binary private key and plaintext independently verified")
-                return plaintext.decode("ascii")
+        flag = _flag_from_results(results)
+        if flag is not None:
+            progress("[NTRU-FOLD] Binary private key and plaintext independently verified")
+            return flag
     raise RuntimeError("No verified flag recovered; try stronger BKZ or another fold degree")

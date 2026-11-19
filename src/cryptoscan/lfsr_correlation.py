@@ -57,6 +57,19 @@ def lfsr_bits(initial_state: int, mask: int, degree: int, length: int) -> list[i
     return bits
 
 
+def _insert_equation(pivots: dict[int, tuple[int, int]], row: int, bit: int) -> bool:
+    """Reduce one row into the pivot table; False when it is inconsistent."""
+    while row:
+        pivot = row.bit_length() - 1
+        if pivot not in pivots:
+            pivots[pivot] = (row, bit)
+            return True
+        old_row, old_bit = pivots[pivot]
+        row ^= old_row
+        bit ^= old_bit
+    return not bit
+
+
 def solve_gf2(equations: Sequence[tuple[int, int]], unknowns: int) -> int | None:
     """Solve an overdetermined binary linear system using packed integers."""
     if not 1 <= unknowns <= 1024:
@@ -65,17 +78,7 @@ def solve_gf2(equations: Sequence[tuple[int, int]], unknowns: int) -> int | None
     for coefficients, right in equations:
         if coefficients < 0 or coefficients >> unknowns or right not in (0, 1):
             raise ValueError("Malformed binary equation")
-        row, bit = coefficients, right
-        while row:
-            pivot = row.bit_length() - 1
-            if pivot in pivots:
-                old_row, old_bit = pivots[pivot]
-                row ^= old_row
-                bit ^= old_bit
-            else:
-                pivots[pivot] = (row, bit)
-                break
-        if not row and bit:
+        if not _insert_equation(pivots, coefficients, right):
             return None
     if len(pivots) != unknowns:
         return None
@@ -113,6 +116,37 @@ def _attempt_state(
     )
 
 
+def _validate_recovery(
+    observed: Sequence[int], degree: int, probability: float,
+    triple: tuple[int, int], max_iterations: int, flip_divisor: int,
+) -> None:
+    if not 0.55 <= max(probability, 1 - probability) < 1:
+        raise ValueError("Insufficient LFSR correlation")
+    if not 1 <= max_iterations <= 1000 or not 8 <= flip_divisor <= 256 or len(observed) <= 2 * degree:
+        raise ValueError("Invalid recovery budget or keystream length")
+    a, b = triple
+    if not (a > b > 0 and a < len(observed)):
+        raise ValueError("Invalid sparse feedback multiple")
+
+
+def _verified_result(
+    candidate: int, mask: int, degree: int, original, p: float, iteration: int,
+    progress: Callable[[str], None] | None,
+) -> CorrelationResult | None:
+    length = len(original)
+    recovered = lfsr_bits(candidate, mask, degree, length)
+    # Unmodified symbols are the independent verification
+    # reference. Denoised symbols are not evidence.
+    matches = sum(left == right for left, right in zip(recovered, original))
+    agreement = matches / length
+    if abs(agreement - p) > 0.035:
+        return None
+    if progress is not None:
+        progress(f"[FCA] Recovered {degree}-bit output state; "
+                 f"agreement={agreement:.4f}, iterations={iteration}")
+    return CorrelationResult(candidate, agreement, iteration)
+
+
 def correlation_recover(
     observed: Sequence[int], mask: int, degree: int,
     probability: float, triple: tuple[int, int], *,
@@ -129,13 +163,8 @@ def correlation_recover(
         import numpy as np
     except ImportError as exc:
         raise RuntimeError("Fast correlation recovery requires numpy") from exc
-    if not 0.55 <= max(probability, 1 - probability) < 1:
-        raise ValueError("Insufficient LFSR correlation")
-    if not 1 <= max_iterations <= 1000 or not 8 <= flip_divisor <= 256 or len(observed) <= 2 * degree:
-        raise ValueError("Invalid recovery budget or keystream length")
-    a, b = triple
-    if not (a > b > 0 and a < len(observed)):
-        raise ValueError("Invalid sparse feedback multiple")
+    _validate_recovery(observed, degree, probability, triple,
+                       max_iterations, flip_divisor)
     length = len(observed)
     original = np.asarray(observed, dtype=np.uint8)
     if np.any(original > 1):
@@ -160,17 +189,10 @@ def correlation_recover(
             candidate = _attempt_state(np.argsort(-likelihoods),
                                        adjusted, linear_rows, degree)
             if candidate is not None:
-                recovered = lfsr_bits(candidate, mask, degree, length)
-                # Unmodified symbols are the independent verification
-                # reference. Denoised symbols are not evidence.
-                matches = sum(left == right for left, right in
-                              zip(recovered, original))
-                agreement = matches / length
-                if abs(agreement - p) <= 0.035:
-                    if progress is not None:
-                        progress(f"[FCA] Recovered {degree}-bit output state; "
-                                 f"agreement={agreement:.4f}, iterations={iteration}")
-                    return CorrelationResult(candidate, agreement, iteration)
+                result = _verified_result(candidate, mask, degree, original,
+                                          p, iteration, progress)
+                if result is not None:
+                    return result
         count = max(1, length // flip_divisor)
         least_likely = np.argpartition(likelihoods, count)[:count]
         adjusted[least_likely] ^= 1

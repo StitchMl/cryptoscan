@@ -243,13 +243,16 @@ def source_verified_token_workflow(
 
 
 def _show_finding(finding: Any, write: Callable[[str], Any]) -> None:
-    write(f"Rule: {finding.rule} | severity: {finding.severity} | recovery: {finding.recovery_status}")
-    write("Location: " + finding.location)
-    for line in finding.preconditions:
-        write("Precondition: " + line)
-    for step in finding.playbook:
-        write("  - " + step)
-    write("Existing solver: " + json.dumps(finding.solver, ensure_ascii=False, sort_keys=True))
+    """Selection is for launching an attack, not reprinting the scan report."""
+    color = write is print and sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+    write(paint("SELECTED FINDING", "title", color))
+    write("  " + paint(finding.rule, finding.severity, color))
+    write("  " + finding.title)
+    write("  " + paint("Recovery", "muted", color) + ": "
+          + paint(finding.recovery_status, "warning", color))
+    write("  " + paint("Source", "muted", color) + ": " + finding.location)
+    write("  " + paint("Next", "muted", color)
+          + ": run the applicable workflow, or use --verbose for detailed evidence.")
 
 
 def assistant_session(
@@ -265,7 +268,8 @@ def assistant_session(
         write(f"Source context loaded: {len(documents)} analyzed documents; {len(recipes)} verified token recipe(s).")
     else:
         write("No analyzed source loaded. Provide a scan target to enable source-derived workflows.")
-    write("Findings are evidence, not guarantees. Never assume the MAC/key or token format.")
+    write(paint("Findings are evidence, not guarantees. Recoveries require independent verification.",
+                "muted", color))
     while True:
         write("")
         write(paint("FINDINGS" if findings else "NO FINDINGS", "title", color))

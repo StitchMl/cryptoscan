@@ -84,9 +84,11 @@ cryptoscan . --solve --host archive.cryptohack.org --port 34597
 The generic decimal resegmentation and cycle-search primitive is
 independently tested; the network adapter activates only after source
 verification of batch hashing, ambiguous serialization, absent range checks,
-and the two Pedersen verification branches. This supports Hamiltonicity 2,
-but the detector is not tied to the name or known flag. A remote result
-must be verified before a flag can be claimed.
+and the two Pedersen verification branches. This supports Hamiltonicity 2, but the detector is not tied to the
+name or known flag. The public verifier accepted the complete 128-proof
+batch and returned the flag in GitHub Actions run 44545924933. The
+full protocol adapter was verified on this specific authorized service;
+other challenge instances require their own independent verification.
 
 ## Fiat-Shamir low-entropy challenge grinding
 

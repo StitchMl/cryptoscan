@@ -344,7 +344,7 @@ def _repeating_xor_candidate(data: bytes) -> tuple[bytes, bytes, float] | None:
     return (best[1], best[2], best[0]) if best else None
 
 
-def _scan_phase_01(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_01(records, rsa, findings, fermat_steps):
     """Collect a coherent cryptographic attack family without side effects."""
     # RSA pairwise shared factors.
     for left_index, left in enumerate(rsa):
@@ -569,7 +569,7 @@ def _rsa_small_factor(item, findings):
                     "Use two large (>=1024-bit) independent primes from a maintained library; never a smooth or small modulus."
                 ))
 
-def _scan_phase_02(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_02(rsa, findings, fermat_steps):
     """Collect a coherent cryptographic attack family without side effects."""
     for item in rsa:
         _rsa_from_parameters(item, findings)
@@ -608,7 +608,7 @@ def _scan_phase_02(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_03(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_03(rsa, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     # Hastad broadcast: same small-exponent plaintext under independent moduli.
     e3 = [item for item in rsa if item["e"] == 3 and item["c"] is not None and 0 <= item["c"] < item["n"]]
@@ -666,7 +666,7 @@ def _scan_phase_03(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_04(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_04(records, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     # Reused DSA/ECDSA nonce: equal r exposes k and private key x.
     signatures: list[dict[str, Any]] = []
@@ -728,7 +728,7 @@ def _scan_phase_04(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_05(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_05(records, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     # Exact SHA-1 secret-prefix length-extension vector when all public inputs and
     # the candidate secret length are structured. The original secret is not needed.
@@ -784,7 +784,7 @@ def _scan_phase_05(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_06(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_06(records, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     # Full-output MT19937 state cloning. Require an explicit generator label to
     # avoid interpreting arbitrary integer arrays as PRNG state.
@@ -819,7 +819,7 @@ def _scan_phase_06(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_07(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_07(records, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     # Structured finite-field Diffie-Hellman only; generic p/q records are ignored.
     for record in records:
@@ -865,7 +865,7 @@ def _scan_phase_07(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_08(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_08(records, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     # Calculated CBC first-block bit flip, emitted only with explicit known and target plaintext.
     for record in records:
@@ -894,7 +894,7 @@ def _scan_phase_08(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_09(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_09(byte_records, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     # Byte-level attacks.
     for record in byte_records:
@@ -953,7 +953,7 @@ def _scan_phase_09(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_10(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_10(byte_records, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     stream_records = [item for item in byte_records if any(token in item["field"].casefold() for token in ("xor", "stream", "otp"))]
     for i, left in enumerate(stream_records[:512]):
@@ -979,7 +979,7 @@ def _scan_phase_10(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_11(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_11(records, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     # Explicit nonce reuse in structured records.
     nonce_groups: dict[tuple[str, str, bytes], list[dict[str, Any]]] = defaultdict(list)
@@ -1029,7 +1029,7 @@ def _scan_phase_11(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_12(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_12(records, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     # Reusing a CBC IV under one explicit key leaks equality of first plaintext
     # blocks. This is diagnosis only: IV reuse alone does not decrypt a flag.
@@ -1059,7 +1059,7 @@ def _scan_phase_12(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_13(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_13(documents, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     findings.extend(_source_findings(documents))
     for document in documents:
@@ -1116,7 +1116,7 @@ def _scan_phase_13(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_14(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_14(documents, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     for context in recognize_weak_mlwe_ring(documents):
         findings.append(Finding(
@@ -1152,7 +1152,7 @@ def _scan_phase_14(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_15(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_15(records, ntru_contexts, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     for context in ntru_contexts:
         matched_pairs = pair_ntru_records(records, context)
@@ -1219,7 +1219,7 @@ def _scan_phase_15(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_16(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_16(documents, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     for context in recognize_linear_hash(documents):
         try:
@@ -1280,7 +1280,7 @@ def _scan_phase_16(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_17(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+def _scan_phase_17(documents, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     # A source-proven PKCS#1 v1.5 padding oracle with a transcript of
     # positive blinded ciphertexts is an offline hidden-number problem.
@@ -1329,23 +1329,23 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
     byte_records = _bytes_records(records, ntru_contexts)
     findings: list[Finding] = []
 
-    _scan_phase_01(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_02(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_03(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_04(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_05(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_06(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_07(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_08(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_09(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_10(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_11(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_12(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_13(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_14(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_15(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_16(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
-    _scan_phase_17(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps)
+    _scan_phase_01(records, rsa, findings, fermat_steps)
+    _scan_phase_02(rsa, findings, fermat_steps)
+    _scan_phase_03(rsa, findings)
+    _scan_phase_04(records, findings)
+    _scan_phase_05(records, findings)
+    _scan_phase_06(records, findings)
+    _scan_phase_07(records, findings)
+    _scan_phase_08(records, findings)
+    _scan_phase_09(byte_records, findings)
+    _scan_phase_10(byte_records, findings)
+    _scan_phase_11(records, findings)
+    _scan_phase_12(records, findings)
+    _scan_phase_13(documents, findings)
+    _scan_phase_14(documents, findings)
+    _scan_phase_15(records, ntru_contexts, findings)
+    _scan_phase_16(documents, findings)
+    _scan_phase_17(documents, findings)
     unique = {finding.id: finding for finding in findings}
     return sorted(unique.values(), key=lambda finding: (finding.location.casefold(), finding.rule, finding.id))
 

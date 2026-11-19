@@ -101,7 +101,7 @@ def _solve_pow(greeting: bytes) -> int:
     challenge = ast.literal_eval(match.group(1).decode("ascii"))
     target = bytes.fromhex(match.group(2).decode("ascii"))
     for n in range(1 << 26):
-        if hashlib.md5(str(n).encode("ascii") + challenge).digest() == target:
+        if hashlib.md5(str(n).encode("ascii") + challenge, usedforsecurity=False).digest() == target:
             return n
     raise RuntimeError("Proof of work has no matching value")
 

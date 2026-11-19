@@ -35,10 +35,10 @@ def test_compact_report_is_scannable():
 def test_detailed_report_preserves_information():
     finding = sample()
     report = render_findings([finding], color=False, verbose=True)
-    assert "Evidence:" in report
+    assert "EVIDENCE" in report
     assert "plaintext_weight_mod_q" in report
     assert "Flag path:" in report
-    assert "Preconditions:" in report
+    assert "PRECONDITIONS" in report
     assert "Step 1:" in report
     assert "Patch:" in report
     assert "--verbose" not in report
@@ -62,7 +62,7 @@ def test_cli_verbose_force_color_and_json(tmp_path, capsys, monkeypatch):
     assert "HASH-WEAK" in compact
     assert main([str(path), "--no-assist", "--verbose", "--no-color"]) == 0
     detailed = capsys.readouterr().out
-    assert "Evidence:" in detailed
+    assert "EVIDENCE" in detailed
     assert "Step 1:" in detailed
     assert main([str(path), "--no-assist", "--color"]) == 0
     assert "\x1b[" in capsys.readouterr().out
@@ -71,3 +71,25 @@ def test_cli_verbose_force_color_and_json(tmp_path, capsys, monkeypatch):
     assert "\x1b[" not in capsys.readouterr().out
     assert main([str(path), "--format", "json"]) == 0
     assert json.loads(capsys.readouterr().out)["findings"][0]["rule"] == "HASH-WEAK"
+
+def test_verbose_does_not_repeat_flag_path():
+    report = render_findings([sample()], verbose=True)
+    assert report.count("Flag path:") == 1
+    assert "RECOVERY STEPS" in report
+    assert "SOLVER" in report
+
+
+def test_report_ansi_does_not_change_visible_text():
+    from cryptoscan.terminal_report import visible_width
+    result = render_findings([sample()], color=True, verbose=True)
+    clean = re.sub(r"\\x1b\\[[0-9;]*m", "", result)
+    assert clean == render_findings([sample()], color=False, verbose=True)
+    assert all(visible_width(line) <= 100 for line in result.splitlines())
+
+
+def test_multiple_severities_keep_distinct_colors():
+    from dataclasses import replace
+    critical = replace(sample(), severity="critical", rule="NTRU-CRITICAL")
+    report = render_findings([critical, sample()], color=True)
+    assert "\x1b[1;91m" in report
+    assert "\x1b[1;33m" in report

@@ -42,9 +42,12 @@ A Windows system with no WSL distro must first install and configure
 WSL Ubuntu. The worker shows each folding stage, enforces a timeout,
 and prints a flag only if a binary sparse private key is validated by
 `f*h == g (mod q)` and its plaintext decodes to a flag. Native
-`python-flint` provides LLL but not BKZ. The full original Origami
-instance is covered by an optional native-BKZ benchmark; until that
-benchmark passes, recovery from the public ciphertext is not confirmed.
+`python-flint` provides LLL but not BKZ. The original Origami public-key/ciphertext instance was successfully
+recovered and decrypted by the optional BKZ-20 `fplll` integration
+benchmark on Ubuntu (GitHub Actions run 44540926120, approximately 4m12s).
+This verifies the original instance on that backend, but it does not
+guarantee the recovery of arbitrary NTRU challenges or equivalent
+performance on native Windows/WSL systems.
 
 ## NTRU folding (experimental)
 

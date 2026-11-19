@@ -370,10 +370,19 @@ def recover_stream_cipher(
     seeds: dict[int, int] = {}
     recovered: dict[int, list[int]] = {}
     for _, index, probability, triple in sorted(candidates)[:2]:
-        correlation = correlation_recover(
-            observed, model.masks[index], model.degree, probability, triple,
-            max_iterations=max_iterations, progress=progress,
-        )
+        correlation = None
+        for correction_rate in (32, 24, 16, 40, 64):
+            try:
+                correlation = correlation_recover(
+                    observed, model.masks[index], model.degree, probability, triple,
+                    max_iterations=max_iterations, flip_divisor=correction_rate,
+                    progress=progress,
+                )
+                break
+            except RuntimeError:
+                continue
+        if correlation is None:
+            raise RuntimeError("Fast correlation did not converge under available noise schedules")
         seeds[index] = correlation.initial_state
         recovered[index] = lfsr_bits(
             correlation.initial_state, model.masks[index],

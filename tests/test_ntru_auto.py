@@ -60,8 +60,8 @@ def test_fplll_backend_isolated_protocol(monkeypatch):
     rows = [[1, 2], [3, 4]]
     monkeypatch.setattr(ntru_folding, "_fplll_command", lambda: ["fplll"])
     def mock_run(args, **kwargs):
-        assert args == ["fplll", "-a", "bkz", "-b", "20", "-bkzmaxloops", "4"]
+        assert args == ["fplll", "-a", "bkz", "-b", "2", "-bkzmaxloops", "4"]
         assert kwargs["input"].startswith("[[1 2]")
         return subprocess.CompletedProcess(args, 0, "[[1 2]\n[3 4]]", "")
     monkeypatch.setattr(ntru_folding.subprocess, "run", mock_run)
-    assert ntru_folding._reduce(rows, backend="fplll", bkz=20, progress=lambda _: None) == rows
+    assert ntru_folding._reduce(rows, backend="fplll", bkz=2, progress=lambda _: None) == rows

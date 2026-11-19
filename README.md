@@ -1,5 +1,30 @@
 # cryptoscan
 
+## Hidden-state GCM tag oracle (CODEGATE Greatest Common Multiple)
+
+CryptoScan detects a specific fixed-key/fixed-nonce GCM oracle whose
+`tag` command authenticates hidden AAD and ciphertext, and whose `u1` /
+`u2` commands mutate one of the two hidden fields. Ordinary scans stay
+offline and report `GCM-HIDDEN-STATE-TAG-ORACLE` as validation-only.
+
+To explicitly run the **authorized** CryptoHack service attack:
+
+```powershell
+cryptoscan chall.py --solve --host archive.cryptohack.org --port 2762
+```
+
+The workflow solves the service's 26-bit MD5 proof of work, collects
+fixed-length GCM tag differences, recovers GHASH subkey H using bit-packed
+GF(2) nullspaces, and uses length extensions and linear algebra to
+enumerate candidates for the empty-message authentication tag. It sends
+one candidate per connection and prints `FLAG: ...` only when the
+server actually returns a flag. State guesses and PoW are reattempted
+on new sessions as needed. This solver is **experimental**: the
+mathematical primitives and simulated protocol are regression-tested,
+but the public service has not been end-to-end verified from this
+environment. A tag candidate alone is never a recovered flag.
+
+
 ## Source-verified Fischlin witness-discrimination CTF workflow
 
 For the CryptoHack **Fischlin's Transformation** CTF (with its original

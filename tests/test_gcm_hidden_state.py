@@ -68,7 +68,7 @@ def test_ghash_matches_pycryptodome_gcm():
     nonce = b"0123456789ab"
     cipher_key = AES.new(key, AES.MODE_ECB)
     h = int.from_bytes(cipher_key.encrypt(bytes(16)), "big")
-    pad = int.from_bytes(cipher_key.encrypt(nonce+b"\\x00\\x00\\x00\\x01"), "big")
+    pad = int.from_bytes(cipher_key.encrypt(nonce+bytes.fromhex("00000001")), "big")
     for aad, pt in ((b"",b""), (b"abcdefghijkl",b"mnopqrstuvwx"),
                     (b"A"*20,b"B"*38), (b"X"*48,b"Y"*7)):
         cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)

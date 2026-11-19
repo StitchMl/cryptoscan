@@ -208,62 +208,64 @@ def _mutated_states(tree: ast.Module) -> set[str]:
 
 
 def _empty_tag_targets(tree: ast.Module, factories: set[str]) -> bool:
+    return any(
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "digest"
+        and isinstance(call.func.value, ast.Call)
+        and _call_name(call.func.value) in factories
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Compare)
+        for call in ast.walk(node)
+    )
+
+
+def _oracle_parameters(tree: ast.Module) -> tuple[int | None, int | None]:
+    timeout = pow_bits = None
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Compare):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.args and node.func.id in {"alarm", "PoW"}):
             continue
-        for call in ast.walk(node):
-            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
-                continue
-            if call.func.attr != "digest":
-                continue
-            receiver = call.func.value
-            if isinstance(receiver, ast.Call) and _call_name(receiver) in factories:
-                return True
-    return False
+        try:
+            value = ast.literal_eval(node.args[0])
+        except (ValueError, TypeError):
+            continue
+        if type(value) is not int or value <= 0:
+            continue
+        if node.func.id == "alarm":
+            timeout = value
+        else:
+            pow_bits = value
+    return timeout, pow_bits
+
+
+def _qualifying_gcm_source(text: str) -> ast.Module | None:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    factories = _gcm_factories(tree)
+    if not factories:
+        return None
+    if not (_authentication_states(tree, factories) & _mutated_states(tree)):
+        return None
+    return tree if _empty_tag_targets(tree, factories) else None
 
 
 def recognize_gcm_tag_oracle(documents: Sequence[Document]) -> list[GCMTagOracle]:
-    """Recognize the source-level weakness without assuming challenge command names.
-
-    Only the combination of a persistent nonce, an authenticated hidden
-    two-field state, replacement and extension of that state, an exposed
-    digest, and an empty-message tag comparison is actionable evidence.
-    """
+    """Find source-level GCM tag oracles without matching command names."""
     matches = []
     for doc in documents:
         if not doc.path.casefold().endswith(".py"):
             continue
-        try:
-            tree = ast.parse(doc.text)
-        except SyntaxError:
+        tree = _qualifying_gcm_source(doc.text)
+        if tree is None:
             continue
-        factories = _gcm_factories(tree)
-        if not factories:
-            continue
-        states = _authentication_states(tree, factories) & _mutated_states(tree)
-        if not states or not _empty_tag_targets(tree, factories):
-            continue
-        timeout = pow_bits = None
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                if node.func.id == "alarm" and node.args:
-                    try:
-                        timeout = ast.literal_eval(node.args[0])
-                    except (ValueError, TypeError):
-                        pass
-                if node.func.id == "PoW" and node.args:
-                    try:
-                        pow_bits = ast.literal_eval(node.args[0])
-                    except (ValueError, TypeError):
-                        pass
+        timeout, pow_bits = _oracle_parameters(tree)
         line = next((node.lineno for node in ast.walk(tree)
                      if isinstance(node, ast.Attribute)
                      and node.attr == "MODE_GCM"), 1)
-        matches.append(GCMTagOracle(
-            doc.path, line,
-            timeout if type(timeout) is int and timeout > 0 else None,
-            pow_bits if type(pow_bits) is int and pow_bits > 0 else None,
-        ))
+        matches.append(GCMTagOracle(doc.path, line, timeout, pow_bits))
     return matches
 
 
@@ -312,6 +314,31 @@ def _one_dimensional_gf2_kernel(rows: list[int]) -> int | None:
     return solution
 
 
+def _find_compatible_ghash_key(
+    possible_inverses: set[int], deltas: list[int],
+) -> int | None:
+    """Validate H^-2/H^-3 pairings against every observed difference."""
+    pairs = list(possible_inverses)
+    for i, u in enumerate(pairs):
+        for j, v in enumerate(pairs):
+            if i == j:
+                continue
+            h = gf128_mul(u, gf128_pow(v, (1 << 128) - 2))
+            if not h:
+                continue
+            if gf128_pow(h, (1 << 128) - 3) != u:
+                continue
+            if gf128_pow(h, (1 << 128) - 4) != v:
+                continue
+            if all(
+                (gf128_mul(delta, u) & ((1 << 32) - 1)) == 0
+                or (gf128_mul(delta, v) & ((1 << 32) - 1)) == 0
+                for delta in deltas
+            ):
+                return h
+    return None
+
+
 def recover_ghash_key_from_u1_tag_differences(
     tag_differences: Sequence[bytes], *,
     max_trials: int = 1500, seed: int = 0
@@ -344,22 +371,7 @@ def recover_ghash_key_from_u1_tag_differences(
             found.add(candidate)
         if len(found) < 2:
             continue
-        # H^-2 and H^-3, respectively, reveal H by their quotient.
-        pairs = list(found)
-        for i in range(len(pairs)):
-            for j in range(len(pairs)):
-                if i == j:
-                    continue
-                u, v = pairs[i], pairs[j]
-                h = gf128_mul(u, gf128_pow(v, (1 << 128)-2))
-                if (not h or
-                        gf128_pow(h, (1 << 128)-1-2) != u or
-                        gf128_pow(h, (1 << 128)-1-3) != v):
-                    continue
-                if all(
-                    (gf128_mul(delta, u) & ((1 << 32)-1)) == 0 or
-                    (gf128_mul(delta, v) & ((1 << 32)-1)) == 0
-                    for delta in deltas
-                ):
-                    return h
+        recovered = _find_compatible_ghash_key(found, deltas)
+        if recovered is not None:
+            return recovered
     raise RuntimeError("Not enough linearly independent single-state changes to recover GHASH key")

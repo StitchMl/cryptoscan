@@ -21,6 +21,7 @@ from .mathutil import (
     wiener_private_exponent,
 )
 from .model import Finding
+from .dghv_workflow import supported_source as supported_dghv_source
 from .rsa_padding_positives import discover_positive_padding_oracles
 from .modular_linear_hash import recognize_linear_hash, solve_linear_hash
 from .ntru import recognize_ntru, is_polynomial_coefficients, analyze_ntru_vectors, pair_ntru_records
@@ -1276,6 +1277,23 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
     ]
     findings: list[Finding] = []
     for doc in documents:
+        if supported_dghv_source([doc]):
+            findings.append(Finding(
+                "DGHV-NOISE-OVERFLOW", "DGHV positive-noise overflow leaks private modulus",
+                "critical", "high", f"{doc.path}:dghv_encrypt",
+                {"model": "c=p*q+N*r+m, decrypt=(c%p)%N", "p_bits": 128,
+                 "chosen_N": [128, 255], "noise": "nonnegative, bounded"},
+                ["Challenge exposes chosen-N encryption/addition and decryption under the same p.",
+                 "Network target is an authorized CTF service explicitly supplied to --solve."],
+                "Add encryptions of zero until the first modular overflow, infer p mod N, "
+                "combine coprime residues by CRT, and decrypt the published flag ciphertexts.",
+                {"kind": "dghv_positive_noise_crt", "requires": ["host", "port"]},
+                "Use standard authenticated encryption; do not expose decryption oracles or a "
+                "noise distribution that exposes modular wraparound.",
+                ["Supply the original challenge source and authorized TCP host/port.",
+                 "Run cryptoscan server.py --solve --host HOST --port PORT.",
+                 "Verify that CRT uniquely determines the 128-bit modulus and recover flag bytes."],
+            ))
         for rule, title, severity, pattern, attack, patch in rules:
             regex = re.compile(pattern, re.IGNORECASE)
             for match in regex.finditer(doc.text):

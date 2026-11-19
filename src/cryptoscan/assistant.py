@@ -9,10 +9,13 @@ import hashlib
 import hmac
 import json
 import re
+import os
+import sys
 from collections.abc import Callable, Sequence
 from typing import Any
 
 from .parser import Document
+from .terminal_report import paint
 from .rsa_padding_workflow import positive_padding_workflow
 from .ntru_workflow import ntru_lattice_workflow
 from .mlwe_workflow import interactive_mlwe_workflow
@@ -256,7 +259,8 @@ def assistant_session(
     documents: Sequence[Document] = (),
 ) -> None:
     recipes = discover_token_recipes(documents)
-    write("Offline CryptoScan assistant (CTF/authorized tasks).")
+    color = write is print and sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+    write(paint("Offline CryptoScan assistant  /  authorized CTFs", "title", color))
     if documents:
         write(f"Source context loaded: {len(documents)} analyzed documents; {len(recipes)} verified token recipe(s).")
     else:
@@ -264,11 +268,12 @@ def assistant_session(
     write("Findings are evidence, not guarantees. Never assume the MAC/key or token format.")
     while True:
         write("")
-        write("FINDINGS" if findings else "NO FINDINGS")
+        write(paint("FINDINGS" if findings else "NO FINDINGS", "title", color))
         for index, finding in enumerate(findings, 1):
-            write(f"  {index:>2}. [{finding.severity.upper()}] {finding.rule}")
+            level = paint(f"[{finding.severity.upper()}]", finding.severity, color)
+            write(f"  {index:>2}. {level} {finding.rule}")
             write(f"      {finding.title}")
-        write("TOOLS")
+        write(paint("TOOLS", "title", color))
         write("  [e] Auth  [t] Token  [h] Hash  [x] XOR  [r] Rewrite")
         write("  [f] RSA   [b] CBC    [q] Quit  [?] Help")
         try:

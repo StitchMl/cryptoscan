@@ -52,7 +52,7 @@ def test_codegate_source_reproduces_finding():
 def test_no_false_positive_on_independent_nonce_or_missing_mutations():
     for changed in (SOURCE.replace("new = lambda: AES.new(key, AES.MODE_GCM, nonce)",
                                    "new = lambda: AES.new(key, AES.MODE_GCM, urandom(12))"),
-                    SOURCE.replace('elif cmd == "u2":', 'elif cmd == "unused":'),
+                    SOURCE.replace('s[randbit()] += gen()', 'pass'),
                     SOURCE.replace('cipher.update(s[0])', 'cipher.update(b"known")')):
         assert recognize_gcm_tag_oracle([Document("chall.py", changed, None)]) == []
 
@@ -108,3 +108,32 @@ def test_recover_ghash_key_from_real_aes_gcm_u1_tag_differences():
 
     recovered = recover_ghash_key_from_u1_tag_differences(differences)
     assert recovered == h
+
+
+def test_gcm_detector_survives_renamed_commands_and_variables():
+    altered = (SOURCE.replace("cmd", "operation")
+              .replace('"tag"', '"request_digest"')
+              .replace('"u1"', '"replace_block"')
+              .replace('"u2"', '"extend_block"')
+              .replace("s[randbit()]", "data[randbit()]")
+              .replace("s = [gen(), gen()]", "data = [gen(), gen()]")
+              .replace("new", "make_cipher")
+              .replace("cipher", "context"))
+    results = recognize_gcm_tag_oracle([Document("renamed.py", altered, None)])
+    assert len(results) == 1
+    assert results[0].pow_difficulty == 26
+    assert results[0].timeout_seconds == 20
+
+
+def test_gcm_detector_ignores_new_nonce_on_each_factory_call():
+    altered = SOURCE.replace(
+        "new = lambda: AES.new(key, AES.MODE_GCM, nonce)",
+        "def new():\\n    fresh_nonce = urandom(12)\\n"
+        "    return AES.new(key, AES.MODE_GCM, fresh_nonce)"
+    )
+    assert not recognize_gcm_tag_oracle([Document("fresh.py", altered, None)])
+
+
+def test_gcm_detector_needs_empty_message_tag_target():
+    altered = SOURCE.replace("new().digest().hex()", "b'invalid'.hex()")
+    assert not recognize_gcm_tag_oracle([Document("bad.py", altered, None)])

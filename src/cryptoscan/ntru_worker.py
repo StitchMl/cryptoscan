@@ -18,7 +18,7 @@ def main() -> int:
         if len(raw) > 131072:
             raise ValueError("NTRU input exceeds process safety limit")
         data = json.loads(raw)
-        required = {"h", "ct", "n", "p", "q", "df", "dg", "bkz", "method"}
+        required = {"h", "ct", "n", "p", "q", "df", "dg", "bkz", "method", "backend", "initial_degree"}
         if not isinstance(data, dict) or set(data) != required:
             raise ValueError("invalid NTRU worker input")
         n = data["n"]
@@ -30,12 +30,21 @@ def main() -> int:
         method = data["method"]
         if method not in {"full", "fold"}:
             raise ValueError("invalid NTRU solver strategy")
-        solver = solve_folded if method == "fold" else solve
-        results = solver(
-            h, ct, n, data["p"], data["q"], data["df"], data["dg"],
-            bkz=data["bkz"],
+        common = dict(
+            bkz=data["bkz"], backend=data["backend"],
             progress=lambda message: print(message, file=sys.stderr, flush=True),
         )
+        if method == "fold":
+            results = solve_folded(
+                h, ct, n, data["p"], data["q"], data["df"], data["dg"],
+                initial_degree=data["initial_degree"], **common,
+            )
+        else:
+            if data["backend"] == "fplll":
+                raise ValueError("fplll backend currently supported only for folding")
+            results = solve(
+                h, ct, n, data["p"], data["q"], data["df"], data["dg"], **common,
+            )
         safe = [
             {
                 "plaintext_hex": result["plaintext"].hex(),

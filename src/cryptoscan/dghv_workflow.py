@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import ast
 import re
-import socket
 from collections.abc import Callable, Sequence
 
+from .network_policy import connect_authorized
 from .parser import Document
 
 # Pairwise-coprime choices accepted by the server's 128 <= N < 256 restriction.
+HEX_INPUT_PROMPT = b"Message to encode (converted to hexadecimal): "
+
 MODULI = (131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181,
           191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251)
 
@@ -40,7 +42,7 @@ def supported_source(documents: Sequence[Document]) -> bool:
 
 class _LineConnection:
     def __init__(self, host: str, port: int, timeout: float) -> None:
-        self.sock = socket.create_connection((host, port), timeout=timeout)
+        self.sock = connect_authorized(host, port, timeout)
         self.sock.settimeout(timeout)
         self.buffer = b""
 
@@ -85,7 +87,7 @@ def recover_flag(
     session = _LineConnection(host, port, timeout)
     try:
         intro = session.until(b"Choose N: ")
-        match = re.search(rb"encrypted our secret flag with it:\s*\n(.*?)\n\s*\n", intro, re.S)
+        match = re.search(rb"encrypted our secret flag with it:[ \t]*\r?\n((?:[ \t]*[0-9]+[ \t]*\r?\n){1,4096})", intro)
         if match is None:
             raise ValueError("Encrypted flag not found in challenge greeting")
         ciphertexts = [int(line.strip()) for line in match.group(1).splitlines() if line.strip()]
@@ -95,7 +97,7 @@ def recover_flag(
 
         # The first round starts in 'new' state automatically.
         session.send(128)
-        session.until(b"Message to encode (converted to hexadecimal): ")
+        session.until(HEX_INPUT_PROMPT)
         session.send("00")
         session.until(b"> ")
 
@@ -104,13 +106,13 @@ def recover_flag(
             session.send(1)
             session.until(b"Choose N: ")
             session.send(n)
-            session.until(b"Message to encode (converted to hexadecimal): ")
+            session.until(HEX_INPUT_PROMPT)
             session.send("00")
             session.until(b"> ")
             residue = None
-            for index in range(max_adds):
+            for _ in range(max_adds):
                 session.send(2)
-                session.until(b"Message to encode (converted to hexadecimal): ")
+                session.until(HEX_INPUT_PROMPT)
                 session.send("00")
                 session.until(b"> ")
                 session.send(3)

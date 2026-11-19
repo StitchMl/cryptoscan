@@ -35,7 +35,8 @@ def _functions(doc: Document) -> list[ast.FunctionDef]:
     return [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
 
 
-def _builder_fields(function: ast.FunctionDef) -> tuple[str, ...] | None:
+def _json_payload_fields(function: ast.FunctionDef) -> tuple[str, ...] | None:
+    """Return the JSON payload's fields if every assignment agrees on them."""
     fields = None
     for node in ast.walk(function):
         if isinstance(node, ast.Assign):
@@ -44,14 +45,15 @@ def _builder_fields(function: ast.FunctionDef) -> tuple[str, ...] | None:
                 if fields is not None and parsed != fields:
                     return None
                 fields = parsed
-    if fields is None or _gcm_iv_signature(function) is None:
-        return None
-    calls = [
-        node for node in ast.walk(function)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    ]
-    encrypted = any(node.func.attr == "encrypt" and len(node.args) == 1 for node in calls)
-    serialized = any(
+    return fields
+
+
+def _is_encrypt_call(node: ast.Call) -> bool:
+    return node.func.attr == "encrypt" and len(node.args) == 1
+
+
+def _is_hex_join_call(node: ast.Call) -> bool:
+    return (
         node.func.attr == "join" and isinstance(node.func.value, ast.Constant)
         and node.func.value.value == ";"
         and len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple))
@@ -59,8 +61,20 @@ def _builder_fields(function: ast.FunctionDef) -> tuple[str, ...] | None:
         and all(
             isinstance(part, ast.Call) and isinstance(part.func, ast.Attribute)
             and part.func.attr == "hex" for part in node.args[0].elts
-        ) for node in calls
+        )
     )
+
+
+def _builder_fields(function: ast.FunctionDef) -> tuple[str, ...] | None:
+    fields = _json_payload_fields(function)
+    if fields is None or _gcm_iv_signature(function) is None:
+        return None
+    calls = [
+        node for node in ast.walk(function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    ]
+    encrypted = any(_is_encrypt_call(node) for node in calls)
+    serialized = any(_is_hex_join_call(node) for node in calls)
     return fields if encrypted and serialized else None
 
 

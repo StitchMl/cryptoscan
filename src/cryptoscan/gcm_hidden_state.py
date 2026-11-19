@@ -84,61 +84,117 @@ def _module_bound_names(tree: ast.Module) -> set[str]:
     return bound
 
 
-def _gcm_factories(tree: ast.Module) -> set[str]:
-    """Identify factories returning a GCM cipher under a module-scoped nonce.
+def _candidate_factories(node: ast.stmt) -> list[tuple[str, ast.expr, ast.FunctionDef | None]]:
+    """List (name, return-expression, enclosing function) triples for node."""
+    if isinstance(node, ast.Assign) and isinstance(node.value, ast.Lambda):
+        return [(target.id, node.value.body, None)
+                for target in node.targets if isinstance(target, ast.Name)]
+    if isinstance(node, ast.FunctionDef):
+        returns = [child.value for child in ast.walk(node)
+                   if isinstance(child, ast.Return)]
+        return [(node.name, expression, node) for expression in returns]
+    return []
+
+
+def _gcm_nonce_argument(expression: ast.expr, module_names: set[str]) -> ast.Name | None:
+    if not isinstance(expression, ast.Call):
+        return None
+    if not (isinstance(expression.func, ast.Attribute)
+            and expression.func.attr == "new"
+            and len(expression.args) >= 3
+            and isinstance(expression.args[1], ast.Attribute)
+            and expression.args[1].attr == "MODE_GCM"):
+        return None
+    nonce = expression.args[2]
+    if not isinstance(nonce, ast.Name) or nonce.id not in module_names:
+        return None
+    return nonce
+
+
+def _write_count(tree: ast.Module, name: str) -> int:
+    writes = 0
+    for assignment in ast.walk(tree):
+        if not isinstance(assignment, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            continue
+        targets = (assignment.targets if isinstance(assignment, ast.Assign)
+                   else (assignment.target,))
+        if any(isinstance(child, ast.Name) and child.id == name
+               for target in targets for child in ast.walk(target)):
+            writes += 1
+    return writes
+
+
+def _local_write_names(function: ast.FunctionDef) -> set[str]:
+    local_writes: set[str] = set()
+    for child in ast.walk(function):
+        if isinstance(child, (ast.Assign, ast.AnnAssign)):
+            targets = child.targets if isinstance(child, ast.Assign) else (child.target,)
+            for target in targets:
+                local_writes.update(inner.id for inner in ast.walk(target)
+                                    if isinstance(inner, ast.Name))
+    return local_writes
+
+
+def _is_persistent_nonce_factory(
+    expression: ast.expr, function: ast.FunctionDef | None,
+    tree: ast.Module, module_names: set[str],
+) -> bool:
+    """A factory qualifies only if its module-scoped nonce is never refreshed.
 
     This deliberately refuses nonces generated inline and nonces refreshed
     inside the cipher factory: they are not evidence of nonce reuse.
     """
+    nonce = _gcm_nonce_argument(expression, module_names)
+    if nonce is None:
+        return False
+    # An initial module-level nonce is not proof of reuse if the
+    # same variable is refreshed later (including inside a loop).
+    if _write_count(tree, nonce.id) != 1:
+        return False
+    if function is not None and nonce.id in _local_write_names(function):
+        return False
+    return True
+
+
+def _gcm_factories(tree: ast.Module) -> set[str]:
+    """Identify factories returning a GCM cipher under a module-scoped nonce."""
     module_names = _module_bound_names(tree)
     factory_names: set[str] = set()
     for node in tree.body:
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Lambda):
-            funcs = [(target.id, node.value.body, None)
-                     for target in node.targets if isinstance(target, ast.Name)]
-        elif isinstance(node, ast.FunctionDef):
-            returns = [child.value for child in ast.walk(node)
-                       if isinstance(child, ast.Return)]
-            funcs = [(node.name, expression, node) for expression in returns]
-        else:
-            continue
-        for name, expression, function in funcs:
-            if not isinstance(expression, ast.Call):
-                continue
-            if not (isinstance(expression.func, ast.Attribute)
-                    and expression.func.attr == "new"
-                    and len(expression.args) >= 3
-                    and isinstance(expression.args[1], ast.Attribute)
-                    and expression.args[1].attr == "MODE_GCM"):
-                continue
-            nonce = expression.args[2]
-            if not isinstance(nonce, ast.Name) or nonce.id not in module_names:
-                continue
-            # An initial module-level nonce is not proof of reuse if the
-            # same variable is refreshed later (including inside a loop).
-            writes = 0
-            for assignment in ast.walk(tree):
-                if not isinstance(assignment, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-                    continue
-                targets = (assignment.targets if isinstance(assignment, ast.Assign)
-                           else (assignment.target,))
-                if any(isinstance(child, ast.Name) and child.id == nonce.id
-                       for target in targets for child in ast.walk(target)):
-                    writes += 1
-            if writes != 1:
-                continue
-            if function is not None:
-                local_writes = set()
-                for child in ast.walk(function):
-                    if isinstance(child, (ast.Assign, ast.AnnAssign)):
-                        targets = child.targets if isinstance(child, ast.Assign) else (child.target,)
-                        for target in targets:
-                            local_writes.update(inner.id for inner in ast.walk(target)
-                                                if isinstance(inner, ast.Name))
-                if nonce.id in local_writes:
-                    continue
-            factory_names.add(name)
+        for name, expression, function in _candidate_factories(node):
+            if _is_persistent_nonce_factory(expression, function, tree, module_names):
+                factory_names.add(name)
     return factory_names
+
+
+def _cipher_calls(tree: ast.Module, cipher_names: set[str]) -> tuple[dict[str, set[tuple[str, str]]], bool]:
+    called: dict[str, set[tuple[str, str]]] = {"update": set(), "encrypt": set()}
+    digest_seen = False
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
+            continue
+        receiver = call.func.value
+        if not isinstance(receiver, ast.Name) or receiver.id not in cipher_names:
+            continue
+        if call.func.attr in called and call.args:
+            state = _subscript_state(call.args[0])
+            if state is not None:
+                called[call.func.attr].add(state)
+        elif call.func.attr == "digest":
+            digest_seen = True
+    return called, digest_seen
+
+
+def _states_for_cipher(tree: ast.Module, node: ast.Assign) -> set[str]:
+    cipher_names = {target.id for target in node.targets
+                    if isinstance(target, ast.Name)}
+    if not cipher_names:
+        return set()
+    called, digest_seen = _cipher_calls(tree, cipher_names)
+    if not digest_seen:
+        return set()
+    return {aad for aad, _ in called["update"]
+            if any(state == aad for state, _ in called["encrypt"])}
 
 
 def _authentication_states(tree: ast.Module, factories: set[str]) -> set[str]:
@@ -149,30 +205,25 @@ def _authentication_states(tree: ast.Module, factories: set[str]) -> set[str]:
             continue
         if _call_name(node.value) not in factories:
             continue
-        cipher_names = {target.id for target in node.targets
-                        if isinstance(target, ast.Name)}
-        if not cipher_names:
-            continue
-        called: dict[str, set[tuple[str, str]]] = {"update": set(), "encrypt": set()}
-        digest_seen = False
-        for call in ast.walk(tree):
-            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
-                continue
-            receiver = call.func.value
-            if not isinstance(receiver, ast.Name) or receiver.id not in cipher_names:
-                continue
-            if call.func.attr in called and call.args:
-                state = _subscript_state(call.args[0])
-                if state is not None:
-                    called[call.func.attr].add(state)
-            elif call.func.attr == "digest":
-                digest_seen = True
-        if not digest_seen:
-            continue
-        for aad, _ in called["update"]:
-            if any(state == aad for state, _ in called["encrypt"]):
-                states.add(aad)
+        states |= _states_for_cipher(tree, node)
     return states
+
+
+def _dynamic_subscript_targets(node: ast.stmt) -> tuple[list[ast.expr], bool] | None:
+    """Return (targets, is_increment) for an assignment, or None if N/A."""
+    if isinstance(node, ast.Assign):
+        return node.targets, False
+    if isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add):
+        return [node.target], True
+    return None
+
+
+def _has_static_index(target: ast.Subscript) -> bool:
+    try:
+        ast.literal_eval(target.slice)
+        return True
+    except (ValueError, TypeError):
+        return False
 
 
 def _mutated_states(tree: ast.Module) -> set[str]:
@@ -180,38 +231,78 @@ def _mutated_states(tree: ast.Module) -> set[str]:
     resets: set[str] = set()
     extensions: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            targets, increment = node.targets, False
-        elif isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add):
-            targets, increment = (node.target,), True
-        else:
+        parsed = _dynamic_subscript_targets(node)
+        if parsed is None:
             continue
+        targets, increment = parsed
         for target in targets:
             if not isinstance(target, ast.Subscript) or not isinstance(target.value, ast.Name):
                 continue
             # Random/unknown index: not one statically known selected slot.
-            try:
-                ast.literal_eval(target.slice)
+            if _has_static_index(target):
                 continue
-            except (ValueError, TypeError):
-                pass
             (extensions if increment else resets).add(target.value.id)
     return resets & extensions
 
 
-def _empty_tag_targets(tree: ast.Module, factories: set[str]) -> bool:
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Compare):
+def _is_empty_tag_compare(node: ast.Compare, factories: set[str]) -> bool:
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
             continue
-        for call in ast.walk(node):
-            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
-                continue
-            if call.func.attr != "digest":
-                continue
-            receiver = call.func.value
-            if isinstance(receiver, ast.Call) and _call_name(receiver) in factories:
-                return True
+        if call.func.attr != "digest":
+            continue
+        receiver = call.func.value
+        if isinstance(receiver, ast.Call) and _call_name(receiver) in factories:
+            return True
     return False
+
+
+def _empty_tag_targets(tree: ast.Module, factories: set[str]) -> bool:
+    return any(
+        _is_empty_tag_compare(node, factories)
+        for node in ast.walk(tree) if isinstance(node, ast.Compare)
+    )
+
+
+def _literal_call_arg(node: ast.Call) -> int | None:
+    try:
+        value = ast.literal_eval(node.args[0])
+    except (ValueError, TypeError):
+        return None
+    return value
+
+
+def _timeout_and_pow(tree: ast.Module) -> tuple[int | None, int | None]:
+    timeout = pow_bits = None
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.args):
+            continue
+        if node.func.id == "alarm":
+            timeout = _literal_call_arg(node)
+        if node.func.id == "PoW":
+            pow_bits = _literal_call_arg(node)
+    return (
+        timeout if type(timeout) is int and timeout > 0 else None,
+        pow_bits if type(pow_bits) is int and pow_bits > 0 else None,
+    )
+
+
+def _oracle_for_document(doc: Document) -> GCMTagOracle | None:
+    try:
+        tree = ast.parse(doc.text)
+    except SyntaxError:
+        return None
+    factories = _gcm_factories(tree)
+    if not factories:
+        return None
+    states = _authentication_states(tree, factories) & _mutated_states(tree)
+    if not states or not _empty_tag_targets(tree, factories):
+        return None
+    timeout, pow_bits = _timeout_and_pow(tree)
+    line = next((node.lineno for node in ast.walk(tree)
+                 if isinstance(node, ast.Attribute)
+                 and node.attr == "MODE_GCM"), 1)
+    return GCMTagOracle(doc.path, line, timeout, pow_bits)
 
 
 def recognize_gcm_tag_oracle(documents: Sequence[Document]) -> list[GCMTagOracle]:
@@ -225,37 +316,9 @@ def recognize_gcm_tag_oracle(documents: Sequence[Document]) -> list[GCMTagOracle
     for doc in documents:
         if not doc.path.casefold().endswith(".py"):
             continue
-        try:
-            tree = ast.parse(doc.text)
-        except SyntaxError:
-            continue
-        factories = _gcm_factories(tree)
-        if not factories:
-            continue
-        states = _authentication_states(tree, factories) & _mutated_states(tree)
-        if not states or not _empty_tag_targets(tree, factories):
-            continue
-        timeout = pow_bits = None
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                if node.func.id == "alarm" and node.args:
-                    try:
-                        timeout = ast.literal_eval(node.args[0])
-                    except (ValueError, TypeError):
-                        pass
-                if node.func.id == "PoW" and node.args:
-                    try:
-                        pow_bits = ast.literal_eval(node.args[0])
-                    except (ValueError, TypeError):
-                        pass
-        line = next((node.lineno for node in ast.walk(tree)
-                     if isinstance(node, ast.Attribute)
-                     and node.attr == "MODE_GCM"), 1)
-        matches.append(GCMTagOracle(
-            doc.path, line,
-            timeout if type(timeout) is int and timeout > 0 else None,
-            pow_bits if type(pow_bits) is int and pow_bits > 0 else None,
-        ))
+        oracle = _oracle_for_document(doc)
+        if oracle is not None:
+            matches.append(oracle)
     return matches
 
 
@@ -304,6 +367,35 @@ def _one_dimensional_gf2_kernel(rows: list[int]) -> int | None:
     return solution
 
 
+def _candidate_key_from_pair(u: int, v: int, deltas: list[int]) -> int | None:
+    """Check whether (u, v) are H^-2 and H^-3 for a common H, and return H."""
+    h = gf128_mul(u, gf128_pow(v, (1 << 128)-2))
+    if (not h or
+            gf128_pow(h, (1 << 128)-1-2) != u or
+            gf128_pow(h, (1 << 128)-1-3) != v):
+        return None
+    if all(
+        (gf128_mul(delta, u) & ((1 << 32)-1)) == 0 or
+        (gf128_mul(delta, v) & ((1 << 32)-1)) == 0
+        for delta in deltas
+    ):
+        return h
+    return None
+
+
+def _search_key_pairs(found: set[int], deltas: list[int]) -> int | None:
+    # H^-2 and H^-3, respectively, reveal H by their quotient.
+    pairs = list(found)
+    for i in range(len(pairs)):
+        for j in range(len(pairs)):
+            if i == j:
+                continue
+            key = _candidate_key_from_pair(pairs[i], pairs[j], deltas)
+            if key is not None:
+                return key
+    return None
+
+
 def recover_ghash_key_from_u1_tag_differences(
     tag_differences: Sequence[bytes], *,
     max_trials: int = 1500, seed: int = 0
@@ -336,22 +428,7 @@ def recover_ghash_key_from_u1_tag_differences(
             found.add(candidate)
         if len(found) < 2:
             continue
-        # H^-2 and H^-3, respectively, reveal H by their quotient.
-        pairs = list(found)
-        for i in range(len(pairs)):
-            for j in range(len(pairs)):
-                if i == j:
-                    continue
-                u, v = pairs[i], pairs[j]
-                h = gf128_mul(u, gf128_pow(v, (1 << 128)-2))
-                if (not h or
-                        gf128_pow(h, (1 << 128)-1-2) != u or
-                        gf128_pow(h, (1 << 128)-1-3) != v):
-                    continue
-                if all(
-                    (gf128_mul(delta, u) & ((1 << 32)-1)) == 0 or
-                    (gf128_mul(delta, v) & ((1 << 32)-1)) == 0
-                    for delta in deltas
-                ):
-                    return h
+        key = _search_key_pairs(found, deltas)
+        if key is not None:
+            return key
     raise RuntimeError("Not enough linearly independent single-state changes to recover GHASH key")

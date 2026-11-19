@@ -161,8 +161,9 @@ def test_no_fabricated_flag_after_accepted_rounds(monkeypatch):
         def rest(self): return b"no flag disclosed"
         def close(self): pass
     monkeypatch.setattr(workflow, "_Connection", FakeServer)
+    documents = docs()
     with pytest.raises(RuntimeError, match="did not return"):
-        recover_flag(docs(), "example.test", 14635, progress=lambda _: None)
+        recover_flag(documents, "example.test", 14635, progress=lambda _: None)
 
 
 def test_does_not_mix_sources_from_separate_ctfs():

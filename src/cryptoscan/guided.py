@@ -109,32 +109,62 @@ def existing_verified_result(finding: Any, write: Write = print) -> bool:
     return True
 
 
-def selected_finding_workflow(finding: Any, read: Read = input, write: Write = print) -> None:
+def _handle_rsa_finding(rule: str, verified: bool, read: Read, write: Write) -> None:
+    factorizable = {
+        "RSA-SHARED-PRIME", "RSA-CRT-FAULT", "RSA-PARAMETER-LEAK",
+        "RSA-WIENER-SMALL-D", "RSA-FERMAT-CLOSE-PRIMES", "RSA-SMALL-FACTOR",
+    }
+    if rule in factorizable:
+        choice = read("Calculate RSA decryption using known p/q/e/c? [y/N]: ").strip().lower()
+        if choice in {"y", "yes"}:
+            rsa_factors_workflow(read, write)
+    elif not verified:
+        write(
+            "No verified RSA plaintext yet. Supply artifacts with modulus, "
+            "exponent and ciphertext."
+        )
+
+
+def _handle_cbc_finding(read: Read, write: Write) -> None:
+    choice = read(
+        "Recalculate first-block IV modification with known values? [y/N]: "
+    ).strip().lower()
+    if choice in {"y", "yes"}:
+        cbc_iv_workflow(read, write)
+
+
+def selected_finding_workflow(
+    finding: Any, read: Read = input, write: Write = print,
+) -> None:
     """Offer only computations justified by the finding's family and evidence."""
     verified = existing_verified_result(finding, write)
     rule = finding.rule
     if rule.startswith("RSA-"):
-        if rule in {"RSA-SHARED-PRIME", "RSA-CRT-FAULT", "RSA-PARAMETER-LEAK",
-                    "RSA-WIENER-SMALL-D", "RSA-FERMAT-CLOSE-PRIMES", "RSA-SMALL-FACTOR"}:
-            choice = read("Calculate RSA decryption using known p/q/e/c? [y/N]: ").strip().lower()
-            if choice in {"y", "yes"}:
-                rsa_factors_workflow(read, write)
-        elif not verified:
-            write("No verified RSA plaintext yet. Supply artifacts with modulus, exponent and ciphertext.")
-    elif rule == "CBC-FIRST-BLOCK-BITFLIP":
-        choice = read("Recalculate first-block IV modification with known values? [y/N]: ").strip().lower()
-        if choice in {"y", "yes"}:
-            cbc_iv_workflow(read, write)
-    elif rule in {"CTR-NONCE-REUSE", "GCM-NONCE-REUSE"}:
-        if not verified:
-            write("Only nonce-reuse evidence. Need same key and aligned known plaintext to recover bytes.")
-        else:
+        _handle_rsa_finding(rule, verified, read, write)
+        return
+    if rule == "CBC-FIRST-BLOCK-BITFLIP":
+        _handle_cbc_finding(read, write)
+        return
+    if rule in {"CTR-NONCE-REUSE", "GCM-NONCE-REUSE"}:
+        if verified:
             write("Confirmed nonce-reuse computation shown above; GCM tag validity is separate.")
-    elif rule in {"SIGNATURE-NONCE-REUSE", "SIGNATURE-NONCE-DISCLOSURE",
-                  "LCG-STATE-RECOVERY", "MT19937-STATE-CLONE", "DH-SMALL-GROUP",
-                  "DH-DEGENERATE-GENERATOR", "SHA1-LENGTH-EXTENSION",
-                  "XOR-SINGLE-BYTE", "XOR-REPEATING-KEY"}:
+        else:
+            write(
+                "Only nonce-reuse evidence. Need same key and aligned known "
+                "plaintext to recover bytes."
+            )
+        return
+    other_attacks = {
+        "SIGNATURE-NONCE-REUSE", "SIGNATURE-NONCE-DISCLOSURE",
+        "LCG-STATE-RECOVERY", "MT19937-STATE-CLONE", "DH-SMALL-GROUP",
+        "DH-DEGENERATE-GENERATOR", "SHA1-LENGTH-EXTENSION",
+        "XOR-SINGLE-BYTE", "XOR-REPEATING-KEY",
+    }
+    if rule in other_attacks:
         if not verified:
             write("Insufficient evidence for a verified solver. See finding preconditions.")
     elif not verified:
-        write("No mathematically verified solver for this rule; source match alone is not an exploit.")
+        write(
+            "No mathematically verified solver for this rule; source match alone "
+            "is not an exploit."
+        )

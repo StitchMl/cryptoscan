@@ -28,87 +28,130 @@ class OracleEvidence:
     positive_multipliers: tuple[int, ...]
 
 
+def _is_sentinel_padding_oracle(tree: ast.Module) -> bool:
+    """A verifier compares the outcome of decrypt() against a sentinel."""
+    for function in ast.walk(tree):
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        if function.name not in {"verify", "check", "valid", "is_valid"}:
+            continue
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Compare):
+                continue
+            compares_sentinel = any(
+                isinstance(op, (ast.NotEq, ast.Eq)) for op in node.ops
+            )
+            checks_decrypt = any(
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "decrypt"
+                for call in ast.walk(node)
+            )
+            if compares_sentinel and checks_decrypt:
+                return True
+    return False
+
+
+def _extract_positive_assertion(node: ast.Assert) -> tuple[str, str] | None:
+    for call in ast.walk(node.test):
+        if not (isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "all" and len(call.args) == 1
+                and isinstance(call.args[0], ast.GeneratorExp)):
+            continue
+        generator = call.args[0]
+        if not (len(generator.generators) == 1
+                and isinstance(generator.generators[0].iter, ast.Name)):
+            continue
+        expression = generator.elt
+        calls = [part for part in ast.walk(expression)
+                 if isinstance(part, ast.Call)]
+        has_oracle = any(
+            isinstance(part.func, ast.Attribute)
+            and part.func.attr in {"verify", "check", "valid", "is_valid"}
+            for part in calls
+        )
+        has_pow = any(
+            isinstance(part.func, ast.Name)
+            and part.func.id == "pow" and len(part.args) == 3
+            for part in calls
+        )
+        has_exponent = any(
+            isinstance(part, ast.Attribute) and part.attr == "e"
+            for part in ast.walk(expression)
+        )
+        if not (has_oracle and has_pow and has_exponent):
+            continue
+        candidates = [
+            part.args[0].id for part in calls
+            if isinstance(part.func, ast.Name)
+            and part.func.id == "int" and len(part.args) == 2
+            and isinstance(part.args[0], ast.Name)
+            and isinstance(part.args[1], ast.Constant)
+            and part.args[1].value == 16
+        ]
+        if len(set(candidates)) == 1 and candidates:
+            return candidates[0], generator.generators[0].iter.id
+    return None
+
+
 def _source_names(source: str) -> tuple[str, str, int] | None:
+    if not all(token in source for token in (
+            "PKCS1_v1_5.new", "RSA.import_key", ".decrypt(")):
+        return None
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return None
-    if not ("PKCS1_v1_5.new" in source
-            and "RSA.import_key" in source
-            and ".decrypt(" in source):
-        return None
-    # Require sentinel-based decrypt success as a Boolean padding oracle.
-    sentinel_check = False
-    for fn in (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)):
-        if fn.name not in {"verify", "check", "valid", "is_valid"}:
-            continue
-        for node in ast.walk(fn):
-            if isinstance(node, ast.Compare) and any(
-                isinstance(op, (ast.NotEq, ast.Eq)) for op in node.ops
-            ) and any(
-                isinstance(part, ast.Call)
-                and isinstance(part.func, ast.Attribute)
-                and part.func.attr == "decrypt"
-                for part in ast.walk(node)
-            ):
-                sentinel_check = True
-    if not sentinel_check:
+    if not _is_sentinel_padding_oracle(tree):
         return None
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assert):
-            continue
-        all_calls = [
-            call for call in ast.walk(node.test)
-            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
-            and call.func.id == "all"
-        ]
-        for call in all_calls:
-            if len(call.args) != 1 or not isinstance(call.args[0], ast.GeneratorExp):
-                continue
-            generator = call.args[0]
-            if len(generator.generators) != 1 or not isinstance(generator.generators[0].iter, ast.Name):
-                continue
-            multiplier_name = generator.generators[0].iter.id
-            expression = generator.elt
-            if not any(
-                isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
-                and sub.func.attr in {"verify", "check", "valid", "is_valid"}
-                for sub in ast.walk(expression)
-            ):
-                continue
-            if not any(
-                isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
-                and sub.func.id == "pow" and len(sub.args) == 3
-                for sub in ast.walk(expression)
-            ):
-                continue
-            if not any(
-                isinstance(sub, ast.Attribute) and sub.attr == "e"
-                for sub in ast.walk(expression)
-            ):
-                continue
-            candidates = []
-            for sub in ast.walk(expression):
-                if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
-                    and sub.func.id == "int" and len(sub.args) == 2
-                    and isinstance(sub.args[0], ast.Name)
-                    and isinstance(sub.args[1], ast.Constant)
-                    and sub.args[1].value == 16):
-                    candidates.append(sub.args[0].id)
-            if len(set(candidates)) == 1:
-                return candidates[0], multiplier_name, node.lineno
+        if isinstance(node, ast.Assert):
+            parameters = _extract_positive_assertion(node)
+            if parameters is not None:
+                return (*parameters, node.lineno)
     return None
 
 
-def discover_positive_padding_oracles(documents: Sequence[Document]) -> list[OracleEvidence]:
+def _positive_samples(
+    docs: Sequence[Document], source_path: str,
+    cipher_name: str, multiplier_name: str, modulus: int,
+) -> list[tuple[int, tuple[int, ...]]]:
+    transcripts: list[tuple[int, tuple[int, ...]]] = []
+    cipher_key, multiplier_key = cipher_name.casefold(), multiplier_name.casefold()
+    for document in docs:
+        if document.path == source_path:
+            continue
+        for item in scalar_records(document.text):
+            if cipher_key not in item or multiplier_key not in item:
+                continue
+            raw_cipher, multipliers = item[cipher_key], item[multiplier_key]
+            if not isinstance(raw_cipher, str) or not re.fullmatch(
+                    r"[0-9a-fA-F]+", raw_cipher):
+                continue
+            ciphertext = int(raw_cipher, 16)
+            if (not isinstance(multipliers, list)
+                    or not 4 <= len(multipliers) <= 256
+                    or any(type(v) is not int or not 0 < v < modulus
+                           for v in multipliers)
+                    or not 0 < ciphertext < modulus):
+                continue
+            transcripts.append((
+                ciphertext, tuple(dict.fromkeys(multipliers)),
+            ))
+    return transcripts
+
+
+def discover_positive_padding_oracles(
+    documents: Sequence[Document],
+) -> list[OracleEvidence]:
     by_scope: dict[str, list[Document]] = {}
     for document in documents:
         by_scope.setdefault(document.scope, []).append(document)
-    result = []
+    results = []
     for scope, docs in by_scope.items():
         sources = [
-            (doc, names)
-            for doc in docs
+            (doc, names) for doc in docs
             if doc.path.endswith(".py")
             if (names := _source_names(doc.text)) is not None
         ]
@@ -121,40 +164,20 @@ def discover_positive_padding_oracles(documents: Sequence[Document]) -> list[Ora
         ]
         if len(public) != 1:
             continue
-        n, e = public[0]["n"], public[0]["e"]
-        if not (256 <= n.bit_length() <= 4096 and e > 1 and e % 2):
-            # A tiny RSA modulus may still be used in tests, but is not the
-            # supported PKCS#1 padding-oracle cryptanalytic case.
+        modulus, exponent = public[0]["n"], public[0]["e"]
+        if not (256 <= modulus.bit_length() <= 4096
+                and exponent > 1 and exponent % 2):
             continue
-        transcripts = []
-        for document in docs:
-            if document.path == doc.path:
-                continue
-            for obj in scalar_records(document.text):
-                cipher_key = cipher_name.casefold()
-                multiplier_key = multiplier_name.casefold()
-                if cipher_key not in obj or multiplier_key not in obj:
-                    continue
-                raw_cipher = obj[cipher_key]
-                multipliers = obj[multiplier_key]
-                if not isinstance(raw_cipher, str) or not re.fullmatch(
-                    r"[0-9a-fA-F]+", raw_cipher
-                ):
-                    continue
-                try:
-                    ciphertext = int(raw_cipher, 16)
-                except ValueError:
-                    continue
-                if (not isinstance(multipliers, list)
-                    or not 4 <= len(multipliers) <= 256
-                    or any(type(v) is not int or not 0 < v < n for v in multipliers)
-                    or not 0 < ciphertext < n):
-                    continue
-                transcripts.append((ciphertext, tuple(dict.fromkeys(multipliers))))
+        transcripts = _positive_samples(
+            docs, doc.path, cipher_name, multiplier_name, modulus,
+        )
         if len(transcripts) == 1:
-            c, multipliers = transcripts[0]
-            result.append(OracleEvidence(doc.path, line, scope, n, e, c, multipliers))
-    return result
+            ciphertext, multipliers = transcripts[0]
+            results.append(OracleEvidence(
+                doc.path, line, scope, modulus, exponent,
+                ciphertext, multipliers,
+            ))
+    return results
 
 
 def _is_pkcs1_v15_em(encoded: bytes) -> bool:
@@ -203,12 +226,12 @@ def _embedding(evidence: OracleEvidence, count: int) -> tuple[list[list[int]], i
 
 
 def _extract(reduced: list[list[int]], evidence: OracleEvidence,
-             target: int, B: int) -> list[dict[str, Any]]:
+             target: int, block_scale: int) -> list[dict[str, Any]]:
     answers = []
     seen = set()
     # The embedding target coefficient must be +/-1. A reduced basis may
     # expose it directly or by adding a short zero-target row.
-    promising = [row for row in reduced if abs(row[-1]) == B]
+    promising = [row for row in reduced if abs(row[-1]) == block_scale]
     zero = sorted(
         (row for row in reduced if row[-1] == 0),
         key=lambda row: sum(x * x for x in row)
@@ -219,9 +242,9 @@ def _extract(reduced: list[list[int]], evidence: OracleEvidence,
             for sign in (-1, 1):
                 candidates.append([a + sign * b for a, b in zip(row, other)])
     for row in candidates:
-        if abs(row[-1]) != B:
+        if abs(row[-1]) != block_scale:
             continue
-        m = target - row[-2] * (row[-1] // B)
+        m = target - row[-2] * (row[-1] // block_scale)
         if m in seen:
             continue
         seen.add(m)
@@ -238,6 +261,28 @@ def _extract(reduced: list[list[int]], evidence: OracleEvidence,
     return answers
 
 
+def _reduce_positive_lattice(
+    lattice: list[list[int]], chosen: str,
+) -> list[list[int]]:
+    if chosen == "flint":
+        try:
+            from flint import fmpz_mat
+        except ImportError as exc:
+            raise RuntimeError(
+                "The large RSA positive-padding lattice needs python-flint. "
+                "On Windows install: py -3.12 -m pip install python-flint"
+            ) from exc
+        matrix = fmpz_mat(lattice).lll()
+        return [
+            [int(matrix[i, j]) for j in range(matrix.ncols())]
+            for i in range(matrix.nrows())
+        ]
+    if len(lattice) > 28:
+        raise RuntimeError("SymPy backend is bounded to dimension 28")
+    from sympy import Matrix
+    return [[int(v) for v in row] for row in Matrix(lattice).lll().tolist()]
+
+
 def recover_pkcs1_positive_padding(
     evidence: OracleEvidence, *, backend: str = "auto",
     progress: Callable[[str], Any] = print,
@@ -251,33 +296,16 @@ def recover_pkcs1_positive_padding(
     for count in counts:
         if not 4 <= count <= len(evidence.positive_multipliers):
             raise ValueError("invalid positive-multiplier count")
-        lattice, target, B = _embedding(evidence, count)
+        lattice, target, block_scale = _embedding(evidence, count)
         chosen = backend if backend != "auto" else (
             "flint" if len(lattice) > 28 else "sympy"
         )
-        progress(f"PKCS#1 v1.5 positive-sample lattice: {count} constraints, "
-                 f"dimension {len(lattice)}, backend {chosen}")
-        if chosen == "flint":
-            try:
-                from flint import fmpz_mat
-            except ImportError as exc:
-                raise RuntimeError(
-                    "The large RSA positive-padding lattice needs python-flint. "
-                    "On Windows install: py -3.12 -m pip install python-flint"
-                ) from exc
-            reduced_mat = fmpz_mat(lattice).lll()
-            reduced = [
-                [int(reduced_mat[i, j]) for j in range(reduced_mat.ncols())]
-                for i in range(reduced_mat.nrows())
-            ]
-        else:
-            if len(lattice) > 28:
-                raise RuntimeError("SymPy backend is bounded to dimension 28")
-            from sympy import Matrix
-            reduced = [
-                [int(v) for v in row] for row in Matrix(lattice).lll().tolist()
-            ]
-        answers = _extract(reduced, evidence, target, B)
+        progress(
+            f"PKCS#1 v1.5 positive-sample lattice: {count} constraints, "
+            f"dimension {len(lattice)}, backend {chosen}"
+        )
+        reduced = _reduce_positive_lattice(lattice, chosen)
+        answers = _extract(reduced, evidence, target, block_scale)
         if answers:
             return answers
     return []

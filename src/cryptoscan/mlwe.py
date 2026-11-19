@@ -40,6 +40,31 @@ def _scalar(source: str, name: str) -> int | None:
     return int(values[0])
 
 
+def _mlwe_source_parameters(source: str) -> tuple[int, int, int, int, int] | None:
+    fingerprints = (
+        r"\b(?:is_mlwe|mlwe|lwe)\b",
+        r"\b(?:rnd_vec|small_vector|small_poly|short_vector)\b",
+        r"\b(?:random_vector|uniform_vector)\s*\(",
+        r"\bt\s*=\s*A\s*\*\s*s\s*\+\s*e\b",
+    )
+    if not all(re.search(pattern, source, re.I) for pattern in fingerprints):
+        return None
+    modulus = _scalar(source, "q")
+    rank = _scalar(source, "RING_RANK")
+    eta = _scalar(source, "eta")
+    shape = re.search(
+        r"(?m)^\s*k\s*,\s*l\s*=\s*(\d+)\s*,\s*(\d+)\s*(?:#.*)?$",
+        source,
+    )
+    if not all((modulus, rank, eta, shape)):
+        return None
+    rows, columns = int(shape[1]), int(shape[2])
+    if not (2 <= rows <= 64 and 1 <= columns < rows
+            and 2 <= rank <= 8192 and 1 <= eta <= 100 and modulus > 2):
+        return None
+    return modulus, rank, eta, rows, columns
+
+
 def recognize_weak_mlwe_ring(documents: Sequence[Document]) -> list[MLWEContext]:
     """Require reducible x^N-1 modulus plus short-secret MLWE vs uniform code."""
     scopes: dict[str, list[Document]] = {}
@@ -48,26 +73,12 @@ def recognize_weak_mlwe_ring(documents: Sequence[Document]) -> list[MLWEContext]
             scopes.setdefault(document.scope, []).append(document)
     findings = []
     for scope, docs in scopes.items():
-        source = "\n".join(document.text for document in docs)
-        if not (
-            re.search(r"\b(?:is_mlwe|mlwe|lwe)\b", source, re.I)
-            and re.search(r"\b(?:rnd_vec|small_vector|small_poly|short_vector)\b", source)
-            and re.search(r"\b(?:random_vector|uniform_vector)\s*\(", source)
-            and re.search(r"\bt\s*=\s*A\s*\*\s*s\s*\+\s*e\b", source)
-        ):
+        parameters = _mlwe_source_parameters(
+            "\n".join(document.text for document in docs),
+        )
+        if parameters is None:
             continue
-        q = _scalar(source, "q")
-        rank = _scalar(source, "RING_RANK")
-        eta = _scalar(source, "eta")
-        shape = re.search(r"(?m)^\s*k\s*,\s*l\s*=\s*(\d+)\s*,\s*(\d+)\s*(?:#.*)?$", source)
-        if not all((q, rank, eta, shape)):
-            continue
-        rows, columns = int(shape[1]), int(shape[2])
-        if not (
-            2 <= rows <= 64 and 1 <= columns < rows
-            and 2 <= rank <= 8192 and 1 <= eta <= 100 and q > 2
-        ):
-            continue
+        modulus, rank, eta, rows, columns = parameters
         pattern = (
             rf"quotient_ring\s*\(\s*(?:x\s*\^\s*(?:RING_RANK|{rank})"
             rf"|x\s*\*\*\s*(?:RING_RANK|{rank}))\s*-\s*1\s*\)"
@@ -77,7 +88,7 @@ def recognize_weak_mlwe_ring(documents: Sequence[Document]) -> list[MLWEContext]
             if match:
                 findings.append(MLWEContext(
                     doc.path, doc.text.count("\n", 0, match.start()) + 1,
-                    scope, q, rank, rows, columns, eta
+                    scope, modulus, rank, rows, columns, eta,
                 ))
     return findings
 

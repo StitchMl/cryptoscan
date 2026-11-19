@@ -125,93 +125,109 @@ class _Connection:
         self.sock.close()
 
 
-def recover_flag(
-    documents: Sequence[Document], host: str, port: int, *,
-    timeout: float = 20.0, max_sessions: int = 16,
-    progress: Callable[[str], object] = print
-) -> str:
-    if not supported_source(documents):
-        raise ValueError("Source does not match the supported Fischlin first-hit protocol")
-    if not (1 <= port <= 65535 and 0 < timeout <= 120 and 1 <= max_sessions <= 100):
-        raise ValueError("Invalid networking or retry limits")
-    params = None
+def _group_parameters(documents: Sequence[Document]) -> tuple[int, int, int]:
+    """Extract integer group parameters without executing challenge source."""
     for doc in documents:
         try:
-            vals = {}
-            for node in ast.parse(doc.text).body:
-                if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-                    try:
-                        vals[node.targets[0].id] = ast.literal_eval(node.value)
-                    except (TypeError, ValueError, SyntaxError):
-                        pass
-            if all(isinstance(vals.get(x), int) for x in ("p", "q", "g")):
-                params = vals
-                break
+            tree = ast.parse(doc.text)
         except SyntaxError:
             continue
-    if params is None:
-        raise ValueError("Challenge group parameters p, q, g are required")
-    p, q, g = params["p"], params["q"], params["g"]
-    if p != 2*q+1 or g != 2 or not (2**500 < q < 2**520):
-        raise ValueError("Unexpected group parameters; unsupported attack instance")
+        values = {}
+        for node in tree.body:
+            if not (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)):
+                continue
+            try:
+                values[node.targets[0].id] = ast.literal_eval(node.value)
+            except (TypeError, ValueError, SyntaxError):
+                continue
+        if all(isinstance(values.get(name), int) for name in ("p", "q", "g")):
+            return values["p"], values["q"], values["g"]
+    raise ValueError("Challenge group parameters p, q, g are required")
 
+
+def _read_witness_transcript(response: bytes) -> tuple[int, dict]:
+    witness = re.search(rb"w0\s*=\s*(\d+)", response)
+    transcript = re.search(rb"\{[^\r\n]+\}", response)
+    if witness is None or transcript is None:
+        raise ValueError("Server changed the expected transcript format")
+    return int(witness.group(1)), json.loads(transcript.group(0))
+
+
+def _attempt_fischlin_round(
+    conn: _Connection, q: int, prompt: bytes,
+    follow: bytes, guess: bytes, failed: bytes,
+) -> bool:
+    """Submit only a proven branch; return False for inconclusive rounds."""
+    for attempt_no in range(16):
+        conn.send(0)
+        response, marker = conn.until_one((follow, failed))
+        if marker == failed:
+            return False
+        witness, transcript = _read_witness_transcript(response)
+        decision = identify_simulated_branch(transcript, witness, 0, q)
+        if decision is None:
+            conn.send("n")
+            if attempt_no < 15:
+                conn.until_one((prompt,))
+            continue
+        conn.send("y")
+        conn.until_one((guess,))
+        conn.send(decision)
+        return True
+    return False
+
+
+def _session_flag(
+    conn: _Connection, q: int, session_no: int,
+    progress: Callable[[str], object],
+) -> str | None:
     prompt = b"which witness do you want to see?"
     follow = b"do you think you can guess my witness? (y,n)"
     guess = b"which witness did the prover use?"
     successful = b"well done, you distinguished all the witnesses!"
     failed = b"you didn't guess the right witness"
 
+    _, marker = conn.until_one((prompt, failed))
+    if marker == failed:
+        return None
+    for round_no in range(64):
+        if not _attempt_fischlin_round(conn, q, prompt, follow, guess, failed):
+            progress(f"[FISCHLIN] Session {session_no}, round {round_no}: inconclusive; restarting")
+            return None
+        response, marker = conn.until_one((prompt, successful, failed))
+        if marker == failed:
+            progress(f"[FISCHLIN] Session {session_no}: wrong decision; restarting")
+            return None
+        if marker == successful:
+            match = re.search(rb"\w{2,32}\{[^\r\n{}]+\}", response + conn.read_tail())
+            if match is None:
+                raise RuntimeError("All rounds passed, but no parseable flag was returned")
+            progress("[FISCHLIN] All 64 witness challenges solved")
+            return match.group(0).decode("ascii")
+        progress(f"[FISCHLIN] Session {session_no}: solved round {round_no+1}/64")
+    return None
+
+
+def recover_flag(
+    documents: Sequence[Document], host: str, port: int, *,
+    timeout: float = 20.0, max_sessions: int = 16,
+    progress: Callable[[str], object] = print,
+) -> str:
+    if not supported_source(documents):
+        raise ValueError("Source does not match the supported Fischlin first-hit protocol")
+    if not (1 <= port <= 65535 and 0 < timeout <= 120 and 1 <= max_sessions <= 100):
+        raise ValueError("Invalid networking or retry limits")
+    p, q, g = _group_parameters(documents)
+    if p != 2*q+1 or g != 2 or not (2**500 < q < 2**520):
+        raise ValueError("Unexpected group parameters; unsupported attack instance")
+
     for session_no in range(1, max_sessions+1):
         conn = _Connection(host, port, timeout)
         try:
-            _, marker = conn.until_one((prompt, failed))
-            if marker == failed:
-                continue
-            for round_no in range(64):
-                committed = False
-                for attempt_no in range(16):
-                    # Always request w0. Source code proves both witnesses
-                    # satisfy y=g^w, so this revelation alone cannot tell b.
-                    conn.send(0)
-                    response, marker = conn.until_one((follow, failed))
-                    if marker == failed:
-                        break
-                    witness_match = re.search(rb"w0\s*=\s*(\d+)", response)
-                    transcript_match = re.search(rb"\{[^\r\n]+\}", response)
-                    if witness_match is None or transcript_match is None:
-                        raise ValueError("Server changed the expected transcript format")
-                    w0 = int(witness_match.group(1))
-                    proof = json.loads(transcript_match.group(0))
-                    decision = identify_simulated_branch(proof, w0, 0, q)
-                    if decision is None:
-                        conn.send("n")
-                        if attempt_no < 15:
-                            conn.until_one((prompt,))
-                        continue
-                    conn.send("y")
-                    conn.until_one((guess,))
-                    conn.send(decision)
-                    committed = True
-                    break
-                if not committed:
-                    # After all 16 rejections, the server is at its mandatory
-                    # guess prompt. Reconnect instead of sending an unproven guess.
-                    progress(f"[FISCHLIN] Session {session_no}, round {round_no}: inconclusive; restarting")
-                    break
-                response, marker = conn.until_one((prompt, successful, failed))
-                if marker == failed:
-                    progress(f"[FISCHLIN] Session {session_no}: wrong decision; restarting")
-                    break
-                if marker == successful:
-                    tail = conn.read_tail()
-                    combined = response + tail
-                    match = re.search(rb"\w{2,32}\{[^\r\n{}]+\}", combined)
-                    if match:
-                        flag = match.group(0).decode("ascii")
-                        progress("[FISCHLIN] All 64 witness challenges solved")
-                        return flag
-                    raise RuntimeError("All rounds passed, but no parseable flag was returned")
-                progress(f"[FISCHLIN] Session {session_no}: solved round {round_no+1}/64")
+            found = _session_flag(conn, q, session_no, progress)
+            if found is not None:
+                return found
         except OSError as exc:
             progress(f"[FISCHLIN] Session {session_no}: connection interrupted ({exc})")
         finally:

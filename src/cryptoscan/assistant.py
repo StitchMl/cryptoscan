@@ -255,6 +255,117 @@ def _show_finding(finding: Any, write: Callable[[str], Any]) -> None:
           + ": run the applicable workflow, or use --verbose for detailed evidence.")
 
 
+
+def _render_assistant_menu(findings, write, color) -> None:
+    write("")
+    write(paint("FINDINGS" if findings else "NO FINDINGS", "title", color))
+    for index, finding in enumerate(findings, 1):
+        level = paint(f"[{finding.severity.upper()}]", finding.severity, color)
+        write(f"  {index:>2}. {level} {finding.rule}")
+        write(f"      {finding.title}")
+    write(paint("TOOLS", "title", color))
+    write("  [e] Auth  [t] Token  [h] Hash  [x] XOR  [r] Rewrite")
+    write("  [f] RSA   [b] CBC    [q] Quit  [?] Help")
+
+
+def _handle_finding_selection(finding, recipes, documents, read, write) -> None:
+    _show_finding(finding, write)
+    for context in relevant_source(finding, documents):
+        write(f"Analyzed source: {context.path}:{context.line} in {context.function}")
+        write(f"  {context.excerpt}")
+    if finding.rule == "RSA-PKCS1-V15-POSITIVE-PADDING-LEAK":
+        positive_padding_workflow(finding, documents, read, write)
+        return
+    if finding.rule == "LINEAR-HASH-SMALL-ALPHABET":
+        if finding.recovery_status == "flag-recovered":
+            write("Source-derived modular inversion produced a unique verified flag:")
+            write(str(finding.evidence["recovered_flag"]))
+            write("Reconstruction and matrix-output roundtrip both verified.")
+        else:
+            write("Modular hash inversion is incomplete or ambiguous.")
+            write("Check the finding evidence for missing matrix/output or search bounds.")
+        return
+    if finding.rule.startswith("NTRU-"):
+        write("Polynomial NTRU data detected. Public key and ciphertext are NOT byte-XOR inputs.")
+        if finding.rule == "NTRU-X1-HAMMING-LEAK":
+            write("Computed Hamming-weight residue mod q: " +
+                  str(finding.evidence["message_weight_mod_q"]))
+            write("Possible bit weights: " +
+                  str(finding.evidence["possible_message_weights"]))
+            if not finding.evidence["public_relation_verified"]:
+                write("Warning: public evaluation disagrees with sparse-key source assumptions.")
+        write("The x=1 projection alone is insufficient to decrypt the flag.")
+        if finding.rule == "NTRU-X1-HAMMING-LEAK":
+            ntru_lattice_workflow(finding, documents, read, write)
+        else:
+            write("Provide matching polynomial evidence for full NTRU key recovery.")
+        return
+    if finding.rule == "MLWE-REDUCIBLE-RING-QUOTIENT":
+        interactive_mlwe_workflow(finding, documents, read, write)
+        return
+    if finding.rule == "GCM-COUNTER-OVERLAP":
+        answer = _ask("Run source-derived GCM workflow? [y/N]: ", read)
+        if answer.casefold() in {"y", "yes"}:
+            guided_overlap_workflow(finding, documents, read, write)
+        return
+    recipe = linked_recipe(finding, recipes)
+    if recipe:
+        write("Source-verified token construction and unchecked authentication path found.")
+        choice = _ask("Use this source-derived token workflow? [y/N]: ", read)
+        if choice.casefold() in {"y", "yes"}:
+            source_verified_token_workflow(recipe, read, write)
+        return
+    if finding.rule.startswith("RSA-") or finding.rule == "CBC-FIRST-BLOCK-BITFLIP":
+        selected_finding_workflow(finding, read, write)
+        return
+    if finding.recovery_status in {"payload-ready", "flag-recovered"}:
+        existing_verified_result(finding, write)
+    if finding.rule in {"CTR-NONCE-REUSE", "GCM-NONCE-REUSE", "NONCE-CONSTANT", "XOR-REPEATING-KEY"}:
+        write("Source did not establish a compatible token format or verifier.")
+        choice = _ask("Run a generic XOR worksheet anyway (not source-verified)? [y/N]: ", read)
+        if choice.casefold() in {"y", "yes"}:
+            xor_workflow(read, write)
+    elif finding.rule in {"MAC-PREFIX-HASH", "HASH-WEAK", "SHA1-LENGTH-EXTENSION"}:
+        write("No source-verified digest serialization for this finding.")
+        choice = _ask("Run a generic digest worksheet anyway? [y/N]: ", read)
+        if choice.casefold() in {"y", "yes"}:
+            digest_workflow(read, write)
+    else:
+        write("No verified interactive calculator for this rule yet; inspect the solver and preconditions.")
+
+
+def _run_assistant_option(selection, findings, recipes, documents, read, write) -> None:
+    if selection in {"?", "help"}:
+        for message in (
+            "e: Enter independent authentication observations",
+            "t: Inspect a captured token or structured record",
+            "h: Compare plain, prefix/suffix and HMAC digests",
+            "x: Transform known-plaintext XOR",
+            "r: Rewrite a record with a declared digest formula",
+            "f: RSA decryption with verified factors",
+            "b: CBC first-block IV transformation",
+        ):
+            write("  " + message)
+        return
+    actions = {
+        "e": lambda: auth_evidence_workflow(read, write),
+        "t": lambda: inspect_record(_ask("Captured token/record: ", read), write),
+        "h": lambda: digest_workflow(read, write),
+        "x": lambda: xor_workflow(read, write),
+        "r": lambda: rewrite_record_workflow(read, write),
+        "f": lambda: rsa_factors_workflow(read, write),
+        "b": lambda: cbc_iv_workflow(read, write),
+    }
+    if selection in actions:
+        actions[selection]()
+    elif selection.isdecimal() and 1 <= int(selection) <= len(findings):
+        _handle_finding_selection(
+            findings[int(selection) - 1], recipes, documents, read, write,
+        )
+    else:
+        write("Unrecognized option.")
+
+
 def assistant_session(
     findings: Sequence[Any] = (),
     read: Callable[[str], str] = input,
@@ -271,15 +382,7 @@ def assistant_session(
     write(paint("Findings are evidence, not guarantees. Recoveries require independent verification.",
                 "muted", color))
     while True:
-        write("")
-        write(paint("FINDINGS" if findings else "NO FINDINGS", "title", color))
-        for index, finding in enumerate(findings, 1):
-            level = paint(f"[{finding.severity.upper()}]", finding.severity, color)
-            write(f"  {index:>2}. {level} {finding.rule}")
-            write(f"      {finding.title}")
-        write(paint("TOOLS", "title", color))
-        write("  [e] Auth  [t] Token  [h] Hash  [x] XOR  [r] Rewrite")
-        write("  [f] RSA   [b] CBC    [q] Quit  [?] Help")
+        _render_assistant_menu(findings, write, color)
         try:
             selection = _ask("Choose a finding or operation: ", read).lower()
         except (EOFError, KeyboardInterrupt):
@@ -287,92 +390,4 @@ def assistant_session(
             return
         if selection in {"q", "quit", "0", ""}:
             return
-        if selection in {"?", "help"}:
-            write("  e: Enter independent authentication observations")
-            write("  t: Inspect a captured token or structured record")
-            write("  h: Compare plain, prefix/suffix and HMAC digests")
-            write("  x: Transform known-plaintext XOR")
-            write("  r: Rewrite a record with a declared digest formula")
-            write("  f: RSA decryption with verified factors")
-            write("  b: CBC first-block IV transformation")
-        elif selection == "e":
-            auth_evidence_workflow(read, write)
-        elif selection == "t":
-            inspect_record(_ask("Captured token/record: ", read), write)
-        elif selection == "h":
-            digest_workflow(read, write)
-        elif selection == "x":
-            xor_workflow(read, write)
-        elif selection == "r":
-            rewrite_record_workflow(read, write)
-        elif selection == "f":
-            rsa_factors_workflow(read, write)
-        elif selection == "b":
-            cbc_iv_workflow(read, write)
-        elif selection.isdecimal() and 1 <= int(selection) <= len(findings):
-            finding = findings[int(selection) - 1]
-            _show_finding(finding, write)
-            for context in relevant_source(finding, documents):
-                write(f"Analyzed source: {context.path}:{context.line} in {context.function}")
-                write(f"  {context.excerpt}")
-            if finding.rule == "RSA-PKCS1-V15-POSITIVE-PADDING-LEAK":
-                positive_padding_workflow(finding, documents, read, write)
-                continue
-            if finding.rule == "LINEAR-HASH-SMALL-ALPHABET":
-                if finding.recovery_status == "flag-recovered":
-                    write("Source-derived modular inversion produced a unique verified flag:")
-                    write(str(finding.evidence["recovered_flag"]))
-                    write("Reconstruction and matrix-output roundtrip both verified.")
-                else:
-                    write("Modular hash inversion is incomplete or ambiguous.")
-                    write("Check the finding evidence for missing matrix/output or search bounds.")
-                continue
-            if finding.rule.startswith("NTRU-"):
-                write("Polynomial NTRU data detected. Public key and ciphertext are NOT byte-XOR inputs.")
-                if finding.rule == "NTRU-X1-HAMMING-LEAK":
-                    write("Computed Hamming-weight residue mod q: " +
-                          str(finding.evidence["message_weight_mod_q"]))
-                    write("Possible bit weights: " +
-                          str(finding.evidence["possible_message_weights"]))
-                    if not finding.evidence["public_relation_verified"]:
-                        write("Warning: public evaluation disagrees with sparse-key source assumptions.")
-                write("The x=1 projection alone is insufficient to decrypt the flag.")
-                if finding.rule == "NTRU-X1-HAMMING-LEAK":
-                    ntru_lattice_workflow(finding, documents, read, write)
-                else:
-                    write("Provide matching polynomial evidence for full NTRU key recovery.")
-                continue
-            if finding.rule == "MLWE-REDUCIBLE-RING-QUOTIENT":
-                interactive_mlwe_workflow(finding, documents, read, write)
-                continue
-            if finding.rule == "GCM-COUNTER-OVERLAP":
-                answer = _ask("Run source-derived GCM workflow? [y/N]: ", read)
-                if answer.casefold() in {"y", "yes"}:
-                    guided_overlap_workflow(finding, documents, read, write)
-                continue
-            recipe = linked_recipe(finding, recipes)
-            if recipe:
-                write("Source-verified token construction and unchecked authentication path found.")
-                choice = _ask("Use this source-derived token workflow? [y/N]: ", read)
-                if choice.casefold() in {"y", "yes"}:
-                    source_verified_token_workflow(recipe, read, write)
-                continue
-            if finding.rule.startswith("RSA-") or finding.rule == "CBC-FIRST-BLOCK-BITFLIP":
-                selected_finding_workflow(finding, read, write)
-                continue
-            if finding.recovery_status in {"payload-ready", "flag-recovered"}:
-                existing_verified_result(finding, write)
-            if finding.rule in {"CTR-NONCE-REUSE", "GCM-NONCE-REUSE", "NONCE-CONSTANT", "XOR-REPEATING-KEY"}:
-                write("Source did not establish a compatible token format or verifier.")
-                choice = _ask("Run a generic XOR worksheet anyway (not source-verified)? [y/N]: ", read)
-                if choice.casefold() in {"y", "yes"}:
-                    xor_workflow(read, write)
-            elif finding.rule in {"MAC-PREFIX-HASH", "HASH-WEAK", "SHA1-LENGTH-EXTENSION"}:
-                write("No source-verified digest serialization for this finding.")
-                choice = _ask("Run a generic digest worksheet anyway? [y/N]: ", read)
-                if choice.casefold() in {"y", "yes"}:
-                    digest_workflow(read, write)
-            else:
-                write("No verified interactive calculator for this rule yet; inspect the solver and preconditions.")
-        else:
-            write("Unrecognized option.")
+        _run_assistant_option(selection, findings, recipes, documents, read, write)

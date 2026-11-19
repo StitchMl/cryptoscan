@@ -34,6 +34,7 @@ from .gcm_hidden_live import supports_wire_profile as supports_gcm_wire_profile
 from .hamiltonicity_workflow import extract_instance as extract_fiat_shamir_graph
 from .fiat_shamir_batch import extract_instance as extract_batch_fiat_shamir
 from .aead_diagnostics import unused_validation_flags
+from .stream_combiner_workflow import recognize_stream_cipher
 from .parser import (
     Document,
     flatten_objects,
@@ -1509,6 +1510,32 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
              "Compute SHA-256 message representatives modulo the curve order.",
              "Recover nonce relations using an orthogonal-lattice attack.",
              "Verify any recovered private key before claiming flag recovery."],
+        ))
+    for instance in recognize_stream_cipher(documents):
+        model = instance.model
+        findings.append(Finding(
+            "LFSR-FAST-CORRELATION-STREAM-LEAK",
+            "Known keystream permits a fast correlation attack on a biased LFSR combiner",
+            "critical", "high", model.path + ":stream",
+            {"degree": model.degree, "registers": len(model.masks),
+             "clock_counts": list(model.clocks),
+             "known_keystream_bits": len(instance.known_stream) * 8,
+             "sparse_feedback_multiples": True},
+            ["Repeated LFSR clocks and public masks are recoverable from the source.",
+             "The Boolean combiner has statistically biased output projections.",
+             "A known-zero encryption exposes an extended stream."],
+            "Find low-weight multiples of each public LFSR feedback polynomial; "
+            "recover biased registers using fast correlation, solve remaining "
+            "unknown state bits over GF(2), and verify the entire known keystream.",
+            {"kind": "lfsr_fast_correlation", "implemented": True,
+             "verification": "complete_known_keystream_and_flag_shape"},
+            "Use a cryptographically reviewed stream cipher with vetted "
+            "nonlinear filtering rather than custom LFSR combiners.",
+            ["Derive the combiner truth table from source.",
+             "Search sparse GF(2) feedback multiples automatically.",
+             "Use fast correlation to recover biased registers.",
+             "Solve remaining unknown states and verify every stream bit.",
+             "Decrypt the following ciphertext with the recovered keystream."],
         ))
     batch_graph = extract_batch_fiat_shamir(documents)
     if batch_graph is not None:

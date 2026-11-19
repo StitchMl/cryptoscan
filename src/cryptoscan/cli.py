@@ -22,6 +22,7 @@ from .fiat_shamir_batch import extract_instance as extract_batch_fiat_shamir, re
 from .parser import collect_documents
 from .scanner import scan
 from .ntru_auto import instances as ntru_instances, recover_flag as recover_ntru_flag
+from .stream_combiner_workflow import recognize_stream_cipher, recover_stream_cipher
 from .terminal_report import render_findings
 
 COLORS = {"critical": "\033[91m", "high": "\033[31m", "medium": "\033[33m", "low": "\033[36m"}
@@ -89,6 +90,9 @@ def _solve_documents(args, documents) -> int:
                     timeout=args.timeout,
                 )
     else:
+        streams = recognize_stream_cipher(documents)
+        if streams:
+            return _execute_recovery("LFSR correlation", recover_stream_cipher, streams[0])
         if extract_eclcg_instance(documents) is not None:
             return _execute_recovery("ECDSA-LCG", recover_eclcg_flag, documents)
         if ntru_instances(documents):

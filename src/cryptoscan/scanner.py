@@ -21,6 +21,7 @@ from .mathutil import (
     wiener_private_exponent,
 )
 from .model import Finding
+from .eclcg_detector import detect_ec_lcg
 from .dghv_workflow import supported_source as supported_dghv_source
 from .rsa_padding_positives import discover_positive_padding_oracles
 from .modular_linear_hash import recognize_linear_hash, solve_linear_hash
@@ -1276,6 +1277,27 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
          "Generate a unique nonce per key and store it with the ciphertext."),
     ]
     findings: list[Finding] = []
+    for context in detect_ec_lcg(documents):
+        findings.append(Finding(
+            "ECDSA-LCG-CORRELATED-NONCES",
+            "ECDSA signatures use sequential LCG-generated nonces",
+            "critical", "high", f"{context.path}:{context.line}",
+            {"message_count": context.signature_count, "source_verified": True,
+             "lattice_recovery_implemented": False},
+            ["Signed message hashes and complete (r,s) signatures are available.",
+             "Signatures use consecutive outputs of the detected LCG.",
+             "A suitable lattice solver and independent ECDSA verification are required."],
+            "Derive linear relations between ECDSA nonce differences, compute a short "
+            "integer lattice orthogonal to the observed signature vectors, recover "
+            "the private key, verify it against signatures, then decrypt the flag.",
+            {"kind": "ecdsa_lcg_lattice_guidance", "implemented": False},
+            "Generate ECDSA nonces with a secure deterministic algorithm (RFC 6979) "
+            "or a cryptographically secure independent random source.",
+            ["Extract messages and signatures in the order they were signed.",
+             "Compute SHA-256 message representatives modulo the curve order.",
+             "Recover nonce relations using an orthogonal-lattice attack.",
+             "Verify any recovered private key before claiming flag recovery."],
+        ))
     for doc in documents:
         if supported_dghv_source([doc]):
             findings.append(Finding(

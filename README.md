@@ -1,11 +1,40 @@
 # cryptoscan
 
+
+## General-purpose scanning and benchmark policy
+
+CryptoScan treats public CTFs as **regression fixtures**, not templates whose
+variable names, flags, or command strings should be embedded in detectors.
+
+- **Detection**: static analysis looks for vulnerable cryptographic behavior.
+  A detector may identify a vulnerability even when no solver applies.
+- **Mathematics**: reusable, independently tested primitives perform finite
+  field, lattice, modular, and transcript analysis.
+- **Protocol adapters**: online solvers are separate from detection. A known
+  network command protocol must be verified before a matching adapter can be
+  selected; a detected vulnerability does **not** authorize sending a
+  challenge-specific command sequence to an unknown service.
+- **Evidence**: a finding remains `validation-only` until a rule-specific,
+  independently checked recovery is available. No generated or copied flag
+  may be reported as recovered.
+- **Multiple challenges**: files with identical bytes are deduplicated within
+  the same challenge scope, not across independent challenge directories
+  or archives.
+
+`cryptoscan .` is offline. `--solve` explicitly requests an applicable
+solver, and `--host/--port` are required for network workflows. Not every
+cryptographic challenge can be solved automatically.
+
+
 ## Hidden-state GCM tag oracle (CODEGATE Greatest Common Multiple)
 
-CryptoScan detects a specific fixed-key/fixed-nonce GCM oracle whose
-`tag` command authenticates hidden AAD and ciphertext, and whose `u1` /
-`u2` commands mutate one of the two hidden fields. Ordinary scans stay
-offline and report `GCM-HIDDEN-STATE-TAG-ORACLE` as validation-only.
+CryptoScan's GCM detector recognizes the behavior of a fixed-nonce tag
+oracle with hidden mutable AAD and ciphertext using Python AST analysis.
+Renaming source variables or command strings does not change the finding.
+The bundled **online adapter** understands only the documented CODEGATE
+`tag` / `u1` / `u2` protocol and refuses incompatible command vocabularies.
+Ordinary scans remain offline and report `GCM-HIDDEN-STATE-TAG-ORACLE`
+as validation-only.
 
 To explicitly run the **authorized** CryptoHack service attack:
 

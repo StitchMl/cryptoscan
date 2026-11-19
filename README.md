@@ -1,5 +1,24 @@
 # cryptoscan
 
+## Opt-in DGHV chosen-N noise-overflow recovery
+
+CryptoScan can recognize a source-established 128-bit DGHV additive scheme
+with positive bounded noise and an exposed chosen-N/add/decrypt oracle.
+Scanning remains offline. To attack an **authorized CTF** service, specify
+the TCP endpoint explicitly:
+
+```powershell
+cryptoscan server.py --solve --host archive.cryptohack.org --port 21970
+```
+
+The solver collects ciphertexts, uses zero additions to detect the first
+noise wraparound for distinct coprime N values, reconstructs the private
+modulus with CRT, and prints `FLAG: CSC{...}` only after validating the
+128-bit key range and plaintext flag shape. The endpoint is never contacted
+without `--solve`; unsupported source models are refused. This is a
+source-scoped workflow, not a generic DGHV solver.
+
+
 `cryptoscan` inspects CTF Jeopardy cryptography artifacts without network access, AI, or required runtime dependencies. It reports evidence, exploit preconditions, a computed solver payload, an attack path, and a repair for each finding.
 
 Use it only on CTF challenges and systems you may test.

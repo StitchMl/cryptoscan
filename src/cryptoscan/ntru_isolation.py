@@ -15,13 +15,16 @@ def solve_isolated(
     h: list[int], ct: list[int], n: int, p: int, q: int,
     df: int, dg: int, *, bkz: int = 0,
     timeout_seconds: int = 300,
+    method: str = "full",
     progress: Callable[[str], None] = print,
 ) -> list[dict[str, Any]]:
+    if method not in {"full", "fold"}:
+        raise ValueError("NTRU method must be full or fold")
     if not 1 <= timeout_seconds <= 3600:
         raise ValueError("worker timeout must be between 1 and 3600 seconds")
     data = json.dumps({
         "h": h, "ct": ct, "n": n, "p": p, "q": q,
-        "df": df, "dg": dg, "bkz": bkz,
+        "df": df, "dg": dg, "bkz": bkz, "method": method,
     })
     progress(
         "Launching isolated NTRU worker with Python " + sys.executable

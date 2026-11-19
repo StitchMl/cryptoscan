@@ -114,6 +114,60 @@ def _read_flag(data: bytes) -> str | None:
     return None
 
 
+def _recover_ghash_key(conn: _Connection, progress: Callable[[str], object],
+                      session_index: int) -> int:
+    greeting = conn.until(b"): ")
+    conn.send(f"{_solve_pow(greeting)}\n".encode("ascii"))
+    conn.until(b"> ")
+
+    conn.send(b"tag\n" + b"u1\ntag\n" * 150)
+    tags = conn.tags(151)
+    deltas = [bytes(a^b for a,b in zip(tags[i-1], tags[i]))
+              for i in range(1, len(tags))]
+    h = recover_ghash_key_from_u1_tag_differences(deltas)
+    progress(f"[GCM] Session {session_index}: GHASH key recovered")
+    return h
+
+
+def _try_growth_trial(conn: _Connection, h: int) -> set[int] | None:
+    """Return candidate tags for one growth trial, or None to retry it."""
+    conn.send(b"u1\n"*50 + b"tag\n" + b"u2\ntag\n"*6)
+    captured = conn.tags(7)
+    if identify_growth_prefix(h, captured) is None:
+        return None
+    conn.send(b"u2\ntag\n"*5)
+    captured += conn.tags(5)
+    try:
+        return recover_empty_gcm_tag_candidates(h, captured)
+    except (RuntimeError, ValueError):
+        return set()
+
+
+def _submit_candidate(conn: _Connection, candidates: set[int]) -> str | None:
+    candidate = min(candidates)
+    conn.send(b"\n")
+    conn.until(b"tag: ")
+    conn.send(f"{candidate:032x}\n".encode("ascii"))
+    return _read_flag(conn.rest())
+
+
+def _run_growth_session(conn: _Connection, h: int, max_growth_trials: int,
+                        progress: Callable[[str], object], session_index: int) -> str | None:
+    for _ in range(max_growth_trials):
+        candidates = _try_growth_trial(conn, h)
+        if candidates is None:
+            continue
+        if not candidates:
+            return None
+        progress(f"[GCM] Session {session_index}: {len(candidates)} tag candidates")
+        flag = _submit_candidate(conn, candidates)
+        if flag:
+            progress("[GCM] Remote tag verification succeeded")
+            return flag
+        return None
+    return None
+
+
 def recover_flag(
     documents: Sequence[Document], host: str, port: int, *,
     timeout: float = 15.0, max_sessions: int = 25, max_growth_trials: int = 90,
@@ -134,41 +188,10 @@ def recover_flag(
     for session_index in range(1, max_sessions+1):
         conn = _Connection(host, port, timeout)
         try:
-            greeting = conn.until(b"): ")
-            conn.send(f"{_solve_pow(greeting)}\n".encode("ascii"))
-            conn.until(b"> ")
-
-            conn.send(b"tag\n" + b"u1\ntag\n" * 150)
-            tags = conn.tags(151)
-            deltas = [bytes(a^b for a,b in zip(tags[i-1], tags[i]))
-                      for i in range(1, len(tags))]
-            h = recover_ghash_key_from_u1_tag_differences(deltas)
-            progress(f"[GCM] Session {session_index}: GHASH key recovered")
-
-            for attempt in range(max_growth_trials):
-                conn.send(b"u1\n"*50 + b"tag\n" + b"u2\ntag\n"*6)
-                captured = conn.tags(7)
-                if identify_growth_prefix(h, captured) is None:
-                    continue
-                conn.send(b"u2\ntag\n"*5)
-                captured += conn.tags(5)
-                try:
-                    candidates = recover_empty_gcm_tag_candidates(h, captured)
-                except (RuntimeError, ValueError):
-                    break
-                if not candidates:
-                    break
-                candidate = min(candidates)
-                progress(f"[GCM] Session {session_index}: {len(candidates)} tag candidates")
-                conn.send(b"\n")
-                conn.until(b"tag: ")
-                conn.send(f"{candidate:032x}\n".encode("ascii"))
-                answer = conn.rest()
-                flag = _read_flag(answer)
-                if flag:
-                    progress("[GCM] Remote tag verification succeeded")
-                    return flag
-                break
+            h = _recover_ghash_key(conn, progress, session_index)
+            flag = _run_growth_session(conn, h, max_growth_trials, progress, session_index)
+            if flag:
+                return flag
         except (OSError, ValueError, RuntimeError) as exc:
             progress(f"[GCM] Session {session_index}: retry ({exc})")
         finally:

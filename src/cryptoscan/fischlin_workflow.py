@@ -125,6 +125,102 @@ class _Connection:
         self.sock.close()
 
 
+def _module_literals(text: str) -> dict:
+    vals = {}
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            try:
+                vals[node.targets[0].id] = ast.literal_eval(node.value)
+            except (TypeError, ValueError, SyntaxError):
+                pass
+    return vals
+
+
+def _group_parameters(documents: Sequence[Document]) -> dict:
+    params = None
+    for doc in documents:
+        try:
+            vals = _module_literals(doc.text)
+        except SyntaxError:
+            continue
+        if all(isinstance(vals.get(x), int) for x in ("p", "q", "g")):
+            params = vals
+            break
+    if params is None:
+        raise ValueError("Challenge group parameters p, q, g are required")
+    p, q, g = params["p"], params["q"], params["g"]
+    if p != 2*q+1 or g != 2 or not (2**500 < q < 2**520):
+        raise ValueError("Unexpected group parameters; unsupported attack instance")
+    return params
+
+
+_PROMPT = b"which witness do you want to see?"
+_FOLLOW = b"do you think you can guess my witness? (y,n)"
+_GUESS = b"which witness did the prover use?"
+_SUCCESSFUL = b"well done, you distinguished all the witnesses!"
+_FAILED = b"you didn't guess the right witness"
+
+
+def _attempt_round(conn: _Connection, q: int) -> bool:
+    """Try up to 16 witness reveals for one round; return True if committed."""
+    for attempt_no in range(16):
+        # Always request w0. Source code proves both witnesses
+        # satisfy y=g^w, so this revelation alone cannot tell b.
+        conn.send(0)
+        response, marker = conn.until_one((_FOLLOW, _FAILED))
+        if marker == _FAILED:
+            return False
+        witness_match = re.search(rb"w0\s*=\s*(\d+)", response)
+        transcript_match = re.search(rb"\{[^\r\n]+\}", response)
+        if witness_match is None or transcript_match is None:
+            raise ValueError("Server changed the expected transcript format")
+        w0 = int(witness_match.group(1))
+        proof = json.loads(transcript_match.group(0))
+        decision = identify_simulated_branch(proof, w0, 0, q)
+        if decision is None:
+            conn.send("n")
+            if attempt_no < 15:
+                conn.until_one((_PROMPT,))
+            continue
+        conn.send("y")
+        conn.until_one((_GUESS,))
+        conn.send(decision)
+        return True
+    return False
+
+
+def _extract_flag(combined: bytes) -> str:
+    match = re.search(rb"\w{2,32}\{[^\r\n{}]+\}", combined)
+    if match:
+        return match.group(0).decode("ascii")
+    raise RuntimeError("All rounds passed, but no parseable flag was returned")
+
+
+def _run_session(conn: _Connection, q: int, session_no: int,
+                 progress: Callable[[str], object]) -> str | None:
+    """Return the flag on success, or None to retry with a new session."""
+    _, marker = conn.until_one((_PROMPT, _FAILED))
+    if marker == _FAILED:
+        return None
+    for round_no in range(64):
+        if not _attempt_round(conn, q):
+            # After all 16 rejections, the server is at its mandatory
+            # guess prompt. Reconnect instead of sending an unproven guess.
+            progress(f"[FISCHLIN] Session {session_no}, round {round_no}: inconclusive; restarting")
+            return None
+        response, marker = conn.until_one((_PROMPT, _SUCCESSFUL, _FAILED))
+        if marker == _FAILED:
+            progress(f"[FISCHLIN] Session {session_no}: wrong decision; restarting")
+            return None
+        if marker == _SUCCESSFUL:
+            combined = response + conn.read_tail()
+            flag = _extract_flag(combined)
+            progress("[FISCHLIN] All 64 witness challenges solved")
+            return flag
+        progress(f"[FISCHLIN] Session {session_no}: solved round {round_no+1}/64")
+    return None
+
+
 def recover_flag(
     documents: Sequence[Document], host: str, port: int, *,
     timeout: float = 20.0, max_sessions: int = 16,
@@ -134,84 +230,15 @@ def recover_flag(
         raise ValueError("Source does not match the supported Fischlin first-hit protocol")
     if not (1 <= port <= 65535 and 0 < timeout <= 120 and 1 <= max_sessions <= 100):
         raise ValueError("Invalid networking or retry limits")
-    params = None
-    for doc in documents:
-        try:
-            vals = {}
-            for node in ast.parse(doc.text).body:
-                if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-                    try:
-                        vals[node.targets[0].id] = ast.literal_eval(node.value)
-                    except (TypeError, ValueError, SyntaxError):
-                        pass
-            if all(isinstance(vals.get(x), int) for x in ("p", "q", "g")):
-                params = vals
-                break
-        except SyntaxError:
-            continue
-    if params is None:
-        raise ValueError("Challenge group parameters p, q, g are required")
-    p, q, g = params["p"], params["q"], params["g"]
-    if p != 2*q+1 or g != 2 or not (2**500 < q < 2**520):
-        raise ValueError("Unexpected group parameters; unsupported attack instance")
-
-    prompt = b"which witness do you want to see?"
-    follow = b"do you think you can guess my witness? (y,n)"
-    guess = b"which witness did the prover use?"
-    successful = b"well done, you distinguished all the witnesses!"
-    failed = b"you didn't guess the right witness"
+    params = _group_parameters(documents)
+    q = params["q"]
 
     for session_no in range(1, max_sessions+1):
         conn = _Connection(host, port, timeout)
         try:
-            status, marker = conn.until_one((prompt, failed))
-            if marker == failed:
-                continue
-            for round_no in range(64):
-                committed = False
-                for attempt_no in range(16):
-                    # Always request w0. Source code proves both witnesses
-                    # satisfy y=g^w, so this revelation alone cannot tell b.
-                    conn.send(0)
-                    response, marker = conn.until_one((follow, failed))
-                    if marker == failed:
-                        break
-                    witness_match = re.search(rb"w0\s*=\s*(\d+)", response)
-                    transcript_match = re.search(rb"\{[^\r\n]+\}", response)
-                    if witness_match is None or transcript_match is None:
-                        raise ValueError("Server changed the expected transcript format")
-                    w0 = int(witness_match.group(1))
-                    proof = json.loads(transcript_match.group(0))
-                    decision = identify_simulated_branch(proof, w0, 0, q)
-                    if decision is None:
-                        conn.send("n")
-                        if attempt_no < 15:
-                            conn.until_one((prompt,))
-                        continue
-                    conn.send("y")
-                    conn.until_one((guess,))
-                    conn.send(decision)
-                    committed = True
-                    break
-                if not committed:
-                    # After all 16 rejections, the server is at its mandatory
-                    # guess prompt. Reconnect instead of sending an unproven guess.
-                    progress(f"[FISCHLIN] Session {session_no}, round {round_no}: inconclusive; restarting")
-                    break
-                response, marker = conn.until_one((prompt, successful, failed))
-                if marker == failed:
-                    progress(f"[FISCHLIN] Session {session_no}: wrong decision; restarting")
-                    break
-                if marker == successful:
-                    tail = conn.read_tail()
-                    combined = response + tail
-                    match = re.search(rb"\w{2,32}\{[^\r\n{}]+\}", combined)
-                    if match:
-                        flag = match.group(0).decode("ascii")
-                        progress("[FISCHLIN] All 64 witness challenges solved")
-                        return flag
-                    raise RuntimeError("All rounds passed, but no parseable flag was returned")
-                progress(f"[FISCHLIN] Session {session_no}: solved round {round_no+1}/64")
+            flag = _run_session(conn, q, session_no, progress)
+            if flag is not None:
+                return flag
         except OSError as exc:
             progress(f"[FISCHLIN] Session {session_no}: connection interrupted ({exc})")
         finally:

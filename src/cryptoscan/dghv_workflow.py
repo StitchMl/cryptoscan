@@ -65,6 +65,77 @@ class _LineConnection:
         self.sock.close()
 
 
+def _read_encrypted_flag(session: _LineConnection) -> list[int]:
+    """Parse a bounded decimal-ciphertext greeting without backtracking."""
+    greeting = session.until(b"Choose N: ")
+    matched = re.search(
+        rb"encrypted our secret flag with it:[ \t]*\r?\n"
+        rb"((?:[ \t]*[0-9]+[ \t]*\r?\n){1,4096})",
+        greeting,
+    )
+    if matched is None:
+        raise ValueError("Encrypted flag not found in challenge greeting")
+    ciphertexts = [int(line.strip()) for line in matched.group(1).splitlines()
+                   if line.strip()]
+    if not 1 <= len(ciphertexts) <= 4096:
+        raise ValueError("Unexpected encrypted flag length")
+    return ciphertexts
+
+
+def _read_noise_overflow_residue(
+    session: _LineConnection, modulus: int, max_adds: int,
+) -> int:
+    """Detect the first positive-noise overflow and recover one CRT residue."""
+    session.send(1)
+    session.until(b"Choose N: ")
+    session.send(modulus)
+    session.until(HEX_INPUT_PROMPT)
+    session.send("00")
+    session.until(b"> ")
+    for _ in range(max_adds):
+        session.send(2)
+        session.until(HEX_INPUT_PROMPT)
+        session.send("00")
+        session.until(b"> ")
+        session.send(3)
+        reply = session.until(b"> ")
+        found = re.search(rb"Decrypted message:[ \t]*([0-9a-fA-F]{2})", reply)
+        if found is None:
+            raise ValueError("Unexpected decryption response")
+        observed = int(found.group(1), 16)
+        if observed:
+            return (-observed) % modulus
+    raise RuntimeError(
+        f"No positive noise overflow at N={modulus}; try larger max_adds"
+    )
+
+
+def _recover_private_modulus(
+    session: _LineConnection, max_adds: int,
+    progress: Callable[[str], object],
+) -> int:
+    session.send(128)
+    session.until(HEX_INPUT_PROMPT)
+    session.send("00")
+    session.until(b"> ")
+
+    value, product = 0, 1
+    for modulus in MODULI:
+        residue = _read_noise_overflow_residue(session, modulus, max_adds)
+        value += (
+            (residue - value) * pow(product, -1, modulus) % modulus
+        ) * product
+        product *= modulus
+        progress(
+            f"[DGHV] N={modulus}: p mod N={residue}, CRT bits={product.bit_length()}"
+        )
+        if product > 2**128:
+            break
+    if product <= 2**128 or not 2**127 <= value < 2**128:
+        raise RuntimeError("CRT could not uniquely recover a 128-bit private key")
+    return value
+
+
 def recover_flag(
     documents: Sequence[Document],
     host: str,
@@ -74,77 +145,26 @@ def recover_flag(
     max_adds: int = 50,
     progress: Callable[[str], object] = print,
 ) -> str:
-    """Recover one session's 128-bit secret via positive noise overflow and CRT.
-
-    Requires a source-verified DGHV challenge, explicit host/port, and a server
-    exposing chosen-N, add-zero, and decrypt operations. No challenge-specific
-    flag or secret is embedded. A failed assumption raises instead of guessing.
-    """
+    """Recover a 128-bit DGHV secret through positive noise and CRT."""
     if not supported_source(documents):
         raise ValueError("Source does not establish the supported DGHV 128-bit noise-overflow model")
     if not (1 <= port <= 65535 and 0 < timeout <= 120 and 1 <= max_adds <= 1000):
         raise ValueError("Invalid solver limits")
     session = _LineConnection(host, port, timeout)
     try:
-        intro = session.until(b"Choose N: ")
-        match = re.search(rb"encrypted our secret flag with it:[ \t]*\r?\n((?:[ \t]*[0-9]+[ \t]*\r?\n){1,4096})", intro)
-        if match is None:
-            raise ValueError("Encrypted flag not found in challenge greeting")
-        ciphertexts = [int(line.strip()) for line in match.group(1).splitlines() if line.strip()]
-        if not ciphertexts or len(ciphertexts) > 4096:
-            raise ValueError("Unexpected encrypted flag length")
+        ciphertexts = _read_encrypted_flag(session)
         progress(f"[DGHV] Collected {len(ciphertexts)} ciphertexts")
-
-        # The first round starts in 'new' state automatically.
-        session.send(128)
-        session.until(HEX_INPUT_PROMPT)
-        session.send("00")
-        session.until(b"> ")
-
-        value, product = 0, 1
-        for n in MODULI:
-            session.send(1)
-            session.until(b"Choose N: ")
-            session.send(n)
-            session.until(HEX_INPUT_PROMPT)
-            session.send("00")
-            session.until(b"> ")
-            residue = None
-            for _ in range(max_adds):
-                session.send(2)
-                session.until(HEX_INPUT_PROMPT)
-                session.send("00")
-                session.until(b"> ")
-                session.send(3)
-                reply = session.until(b"> ")
-                found = re.search(rb"Decrypted message:\s*([0-9a-fA-F]{2})", reply)
-                if found is None:
-                    raise ValueError("Unexpected decryption response")
-                observed = int(found.group(1), 16)
-                if observed:
-                    # First crossing of p: before crossing output is zero,
-                    # and each nonnegative noise increment is < p.
-                    residue = (-observed) % n
-                    break
-            if residue is None:
-                raise RuntimeError(f"No positive noise overflow at N={n}; try larger max_adds")
-            # All selected N values are prime, so incremental CRT is exact.
-            value += (((residue - value) * pow(product, -1, n)) % n) * product
-            product *= n
-            progress(f"[DGHV] N={n}: p mod N={residue}, CRT bits={product.bit_length()}")
-            if product > 2**128:
-                break
-
-        if product <= 2**128 or not (2**127 <= value < 2**128):
-            raise RuntimeError("CRT could not uniquely recover a 128-bit private key")
-        plaintext = bytes((c % value) % 128 for c in ciphertexts)
+        secret = _recover_private_modulus(session, max_adds, progress)
+        plaintext = bytes((ciphertext % secret) % 128 for ciphertext in ciphertexts)
         try:
             result = plaintext.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise RuntimeError("Recovered plaintext is not UTF-8") from exc
         if not re.fullmatch(r"CSC\{[^\r\n]{1,256}\}", result):
             raise RuntimeError("Recovered plaintext does not match the expected flag shape")
-        progress(f"[DGHV] Recovered 128-bit private key and {len(plaintext)} plaintext bytes")
+        progress(
+            f"[DGHV] Recovered 128-bit private key and {len(plaintext)} plaintext bytes"
+        )
         return result
     finally:
         session.close()

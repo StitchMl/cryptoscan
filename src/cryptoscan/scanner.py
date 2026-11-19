@@ -1317,6 +1317,12 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                  "Verify that CRT uniquely determines the 128-bit modulus and recover flag bytes."],
             ))
         for rule, title, severity, pattern, attack, patch in rules:
+            # A saved nonce in an output artifact is not evidence of reuse.
+            # Match nonce construction only in source code, not result dumps.
+            if rule == "NONCE-CONSTANT" and not doc.path.split("!/", 1)[-1].casefold().endswith(
+                (".py", ".sage", ".sage.py", ".js", ".ts", ".go", ".rs", ".c", ".cpp")
+            ):
+                continue
             regex = re.compile(pattern, re.IGNORECASE)
             for match in regex.finditer(doc.text):
                 line = doc.text.count("\n", 0, match.start()) + 1

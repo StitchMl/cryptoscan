@@ -117,8 +117,12 @@ def test_gcm_detector_survives_renamed_commands_and_variables():
               .replace('"u2"', '"extend_block"')
               .replace("s[randbit()]", "data[randbit()]")
               .replace("s = [gen(), gen()]", "data = [gen(), gen()]")
-              .replace("new", "make_cipher")
-              .replace("cipher", "context"))
+              .replace("new = lambda:", "make_cipher = lambda:")
+              .replace("cipher = new()", "context = make_cipher()")
+              .replace("new().digest()", "make_cipher().digest()")
+              .replace("cipher.update(", "context.update(")
+              .replace("cipher.encrypt(", "context.encrypt(")
+              .replace("cipher.digest()", "context.digest()"))
     results = recognize_gcm_tag_oracle([Document("renamed.py", altered, None)])
     assert len(results) == 1
     assert results[0].pow_difficulty == 26

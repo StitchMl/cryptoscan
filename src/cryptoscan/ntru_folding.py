@@ -248,6 +248,12 @@ def decrypt_with_private_key(
     return number.to_bytes(max(1, (number.bit_length()+7)//8), "big")
 
 
+def _canonical_rotation(values: Sequence[int]) -> tuple[int, ...]:
+    """One representative per monomial-equivalent NTRU private key orbit."""
+    sequence = tuple(values)
+    return min(sequence[i:] + sequence[:i] for i in range(len(sequence)))
+
+
 def solve_folded(
     h: list[int], ct: list[int], n: int, p: int, q: int,
     df: int, dg: int, *,
@@ -280,6 +286,11 @@ def solve_folded(
             reduced = _reduce(rows, backend=backend, bkz=bkz, progress=progress)
             for candidate in _folded_key_candidates(
                     reduced, folded_h, q, df, dg, previous):
+                # Rotating both f and g by x^k preserves h=g/f.
+                # At the first fold, canonicalize that equivalence class
+                # to avoid running the same expensive lift d times.
+                if previous is None:
+                    candidate = list(_canonical_rotation(candidate))
                 key = tuple(candidate)
                 if key not in seen:
                     seen.add(key)

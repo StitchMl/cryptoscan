@@ -20,6 +20,32 @@ In PowerShell use `$env:NO_COLOR = "1"` to disable colors, then
 `Remove-Item Env:NO_COLOR` to restore them. The guided assistant menu
 also uses grouped concise commands instead of repeating long descriptions.
 
+## Offline NTRU folding recovery
+
+The source-verified offline NTRU solver can now be invoked directly:
+
+```powershell
+cryptoscan . --solve --bkz-block 20 --lattice-timeout 900
+```
+
+For difficult NTRU parameters, **LLL alone is not enough**. CryptoScan
+supports a native `fpylll` backend or the `fplll` command-line BKZ
+backend. On Windows, `fplll` can run inside WSL Ubuntu and is called
+automatically from the isolated worker when BKZ is selected. Install
+the one-time dependency inside your existing WSL Ubuntu environment:
+
+```powershell
+wsl -e sh -lc "sudo apt-get update && sudo apt-get install -y fplll-tools"
+```
+
+A Windows system with no WSL distro must first install and configure
+WSL Ubuntu. The worker shows each folding stage, enforces a timeout,
+and prints a flag only if a binary sparse private key is validated by
+`f*h == g (mod q)` and its plaintext decodes to a flag. Native
+`python-flint` provides LLL but not BKZ. The full original Origami
+instance is covered by an optional native-BKZ benchmark; until that
+benchmark passes, recovery from the public ciphertext is not confirmed.
+
 ## NTRU folding (experimental)
 
 For binary sparse-polynomial NTRU with a composite ring degree, CryptoScan

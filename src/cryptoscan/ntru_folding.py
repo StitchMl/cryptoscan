@@ -10,7 +10,11 @@ All reconstructed keys are checked against the full public key.
 """
 from __future__ import annotations
 
+import ast
 import math
+import re
+import shutil
+import subprocess
 import sys
 from collections.abc import Callable, Sequence
 
@@ -44,7 +48,8 @@ def fold_lattice_basis(
     degree = len(h)
     if not 2 <= degree <= 2048 or q <= 2:
         raise ValueError("Invalid folding degree or ciphertext modulus")
-    H = circulant_rows(h)
+    centered_h = [value % q if value % q <= q // 2 else value % q - q for value in h]
+    H = circulant_rows(centered_h)
     if previous_f is None:
         rows = [[int(i == j) for j in range(degree)] + H[i][:]
                 for i in range(degree)]
@@ -76,20 +81,85 @@ def fold_lattice_basis(
             if i >= half or previous_f[i] != 0], half
 
 
+def _parse_fplll_matrix(output: str, expected_rows: int, expected_cols: int) -> list[list[int]]:
+    """Parse the whitespace-separated integer matrix printed by fplll."""
+    chunks = re.findall(r"\\[([^\\[\\]]+)\\]", output)
+    matrix = []
+    for chunk in chunks:
+        tokens = chunk.replace(",", " ").split()
+        if not tokens:
+            continue
+        try:
+            row = [int(token) for token in tokens]
+        except ValueError as exc:
+            raise RuntimeError("Malformed fplll integer matrix") from exc
+        matrix.append(row)
+    if len(matrix) != expected_rows or any(len(row) != expected_cols for row in matrix):
+        raise RuntimeError(
+            f"fplll produced unexpected lattice dimensions: expected "
+            f"{expected_rows}x{expected_cols}, got {len(matrix)} rows"
+        )
+    return matrix
+
+
+def _fplll_command() -> list[str] | None:
+    if shutil.which("fplll"):
+        return ["fplll"]
+    if sys.platform == "win32" and shutil.which("wsl.exe"):
+        return ["wsl.exe", "-e", "fplll"]
+    return None
+
+
+def _run_fplll(
+    rows: list[list[int]], bkz: int, progress: Callable[[str], None],
+) -> list[list[int]]:
+    executable = _fplll_command()
+    if executable is None:
+        raise RuntimeError(
+            "BKZ needs fpylll or fplll-tools. On Windows, install "
+            "fplll-tools inside WSL Ubuntu, or use a compatible fpylll environment."
+        )
+    payload = "[" + "\\n".join(
+        "[" + " ".join(map(str, row)) + "]" for row in rows
+    ) + "]\\n"
+    args = executable + (["-a", "bkz", "-b", str(bkz), "-bkzmaxloops", "4"]
+                         if bkz else ["-a", "lll"])
+    progress(f"[NTRU-FOLD] Native fplll reduction, {len(rows)} rows; "
+             f"BKZ block size {bkz if bkz else 'none'}")
+    try:
+        finished = subprocess.run(
+            args, input=payload, text=True, capture_output=True,
+            timeout=1200, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("fplll lattice reduction was interrupted") from exc
+    if finished.returncode:
+        raise RuntimeError(
+            "fplll failed: " + finished.stderr.strip()[-700:]
+        )
+    return _parse_fplll_matrix(
+        finished.stdout, len(rows), len(rows[0])
+    )
+
+
 def _reduce(rows: list[list[int]], *, backend: str, bkz: int,
             progress: Callable[[str], None]) -> list[list[int]]:
     if not rows:
         raise ValueError("Empty lattice")
     if backend == "auto":
-        if len(rows) <= 24:
-            backend = "sympy"
-        else:
-            try:
-                import fpylll  # noqa: F401
-            except ImportError:
-                backend = "flint"
+        try:
+            import fpylll  # noqa: F401
+        except ImportError:
+            if bkz:
+                backend = "fplll"
             else:
-                backend = "fpylll"
+                backend = "sympy" if len(rows) <= 24 else "flint"
+        else:
+            backend = "fpylll"
+    if backend == "fplll":
+        if bkz and not 2 <= bkz <= min(60, len(rows)):
+            raise ValueError("BKZ block size must be between 2 and 60")
+        return _run_fplll(rows, bkz, progress)
     if backend == "sympy":
         if bkz:
             raise RuntimeError("BKZ requires the optional fpylll backend")
@@ -104,7 +174,7 @@ def _reduce(rows: list[list[int]], *, backend: str, bkz: int,
             from flint import fmpz_mat
         except ImportError as exc:
             raise RuntimeError("Install python-flint for native folding LLL") from exc
-        matrix = fmpz_mat(rows).lll()
+        matrix = fmpz_mat(rows).lll(delta=0.99)
         return [[int(matrix[i, j]) for j in range(matrix.ncols())]
                 for i in range(matrix.nrows())]
     if backend == "fpylll":
@@ -117,7 +187,7 @@ def _reduce(rows: list[list[int]], *, backend: str, bkz: int,
         if bkz:
             if not 2 <= bkz <= min(60, len(rows)):
                 raise ValueError("BKZ block size must be between 2 and 60")
-            BKZ.reduction(matrix, BKZ.Param(block_size=bkz))
+            BKZ.reduction(matrix, BKZ.Param(block_size=bkz, max_loops=4))
         return [[int(matrix[i, j]) for j in range(matrix.ncols)]
                 for i in range(matrix.nrows)]
     raise ValueError("Unknown folding backend")

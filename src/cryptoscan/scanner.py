@@ -32,6 +32,7 @@ from .gcm_overlap_detector import counter_overlap_lines
 from .gcm_hidden_state import recognize_gcm_tag_oracle
 from .gcm_hidden_live import supports_wire_profile as supports_gcm_wire_profile
 from .hamiltonicity_workflow import extract_instance as extract_fiat_shamir_graph
+from .fiat_shamir_batch import extract_instance as extract_batch_fiat_shamir
 from .aead_diagnostics import unused_validation_flags
 from .parser import (
     Document,
@@ -1301,6 +1302,35 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
              "Compute SHA-256 message representatives modulo the curve order.",
              "Recover nonce relations using an orthogonal-lattice attack.",
              "Verify any recovered private key before claiming flag recovery."],
+        ))
+    batch_graph = extract_batch_fiat_shamir(documents)
+    if batch_graph is not None:
+        findings.append(Finding(
+            "FIAT-SHAMIR-AMBIGUOUS-TRANSCRIPT",
+            "Unframed commitment encoding permits proof equivocation after batch hashing",
+            "critical", "high", f"{batch_graph.source_path}:challenge_bits",
+            {"source_verified": True, "serialized_by": "decimal_string_concatenation",
+             "non_injective_encoding": True, "batch_rounds": batch_graph.rounds,
+             "graph_vertices": len(batch_graph.graph),
+             "full_graph_and_cycle_openings": True,
+             "live_service_verified": False},
+            ["Commitment integers are hashed in decimal form without length framing.",
+             "The verifier computes all Fiat-Shamir challenges only after collecting proofs.",
+             "The commitment matrix shape is checked without integer-canonicalization checks.",
+             "Pedersen commitments are validated modulo the group prime."],
+            "Find two distinct integer commitment matrices with identical hash preimages. "
+            "Open one to the public graph and the other on an induced Hamiltonian cycle; "
+            "derive final Fiat-Shamir challenge bits from the common transcript and select "
+            "the matching proof branch for each round.",
+            {"kind": "fiat_shamir_decimal_serialization_equivocation",
+             "implemented": True, "verified_by": "local Pedersen openings and hash equality",
+             "requires": ["authorized host", "port"]},
+            "Serialize commitments canonically with unambiguous length framing "
+            "and reject out-of-range commitment integers before hashing.",
+            ["Confirm the unframed decimal serialization and verifier modulus checks.",
+             "Generate two collision-equivalent Pedersen commitment matrices.",
+             "Verify both opening branches locally and derive all challenge bits.",
+             "Submit the matching proofs and require remote confirmation before printing the flag."],
         ))
     fs_graph = extract_fiat_shamir_graph(documents)
     if fs_graph is not None:

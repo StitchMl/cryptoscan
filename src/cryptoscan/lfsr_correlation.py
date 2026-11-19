@@ -117,6 +117,7 @@ def correlation_recover(
     observed: Sequence[int], mask: int, degree: int,
     probability: float, triple: tuple[int, int], *,
     max_iterations: int = 100,
+    flip_divisor: int = 32,
     progress: Callable[[str], None] | None = None,
 ) -> CorrelationResult:
     """Estimate a correlated LFSR state using biased sparse checks.
@@ -130,7 +131,7 @@ def correlation_recover(
         raise RuntimeError("Fast correlation recovery requires numpy") from exc
     if not 0.55 <= max(probability, 1 - probability) < 1:
         raise ValueError("Insufficient LFSR correlation")
-    if not 1 <= max_iterations <= 1000 or len(observed) <= 2 * degree:
+    if not 1 <= max_iterations <= 1000 or not 8 <= flip_divisor <= 256 or len(observed) <= 2 * degree:
         raise ValueError("Invalid recovery budget or keystream length")
     a, b = triple
     if not (a > b > 0 and a < len(observed)):
@@ -170,7 +171,7 @@ def correlation_recover(
                         progress(f"[FCA] Recovered {degree}-bit output state; "
                                  f"agreement={agreement:.4f}, iterations={iteration}")
                     return CorrelationResult(candidate, agreement, iteration)
-        count = max(1, length // 32)
+        count = max(1, length // flip_divisor)
         least_likely = np.argpartition(likelihoods, count)[:count]
         adjusted[least_likely] ^= 1
     raise RuntimeError("Fast correlation attack exhausted its iteration budget")

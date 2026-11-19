@@ -25,9 +25,9 @@ def supported_source(documents: Sequence[Document]) -> bool:
         decrypt = functions.get("dghv_decrypt")
         if encrypt is None or decrypt is None:
             continue
-        enc = re.sub(r"\\s+", "", ast.unparse(encrypt))
-        dec = re.sub(r"\\s+", "", ast.unparse(decrypt))
-        full = re.sub(r"\\s+", "", ast.unparse(tree))
+        enc = re.sub(r"\s+", "", ast.unparse(encrypt))
+        dec = re.sub(r"\s+", "", ast.unparse(decrypt))
+        full = re.sub(r"\s+", "", ast.unparse(tree))
         if (("returnp*q+N*r+m" in enc)
                 and ("return(c%p)%N" in dec)
                 and "random.randint(0,rmax)" in enc
@@ -140,7 +140,7 @@ def recover_flag(
             result = plaintext.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise RuntimeError("Recovered plaintext is not UTF-8") from exc
-        if not re.fullmatch(r"CSC\\{[^\\r\\n]{1,256}\\}", result):
+        if not re.fullmatch(r"CSC\{[^\r\n]{1,256}\}", result):
             raise RuntimeError("Recovered plaintext does not match the expected flag shape")
         progress(f"[DGHV] Recovered 128-bit private key and {len(plaintext)} plaintext bytes")
         return result

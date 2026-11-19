@@ -17,6 +17,7 @@ from .gcm_hidden_live import (
     recover_flag as recover_gcm_hidden_flag,
     supports_wire_profile as supports_gcm_wire_profile,
 )
+from .hamiltonicity_workflow import extract_instance as extract_fiat_shamir_graph, recover_flag as recover_fs_graph_flag
 from .parser import collect_documents
 from .scanner import scan
 
@@ -96,6 +97,14 @@ def main(argv: list[str] | None = None) -> int:
         color = not args.no_color and sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
         print(_text(findings, color))
     if args.solve:
+        if args.host and args.port and extract_fiat_shamir_graph(documents) is not None:
+            try:
+                flag = recover_fs_graph_flag(documents, args.host, args.port, timeout=args.timeout)
+            except (RuntimeError, ValueError, OSError, ConnectionError) as exc:
+                print(f"Fiat-Shamir grinding solver failed: {exc}", file=sys.stderr)
+                return 2
+            print(f"FLAG: {flag}")
+            return 0
         if args.host and args.port and supports_gcm_wire_profile(documents):
             try:
                 flag = recover_gcm_hidden_flag(documents, args.host, args.port, timeout=args.timeout)

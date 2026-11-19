@@ -16,15 +16,22 @@ def solve_isolated(
     df: int, dg: int, *, bkz: int = 0,
     timeout_seconds: int = 300,
     method: str = "full",
+    backend: str = "auto",
+    initial_degree: int = 64,
     progress: Callable[[str], None] = print,
 ) -> list[dict[str, Any]]:
     if method not in {"full", "fold"}:
         raise ValueError("NTRU method must be full or fold")
+    if backend not in {"auto", "sympy", "flint", "fpylll", "fplll"}:
+        raise ValueError("Unsupported lattice backend")
+    if type(initial_degree) is not int or not 2 <= initial_degree <= 2048:
+        raise ValueError("Invalid initial folding degree")
     if not 1 <= timeout_seconds <= 3600:
         raise ValueError("worker timeout must be between 1 and 3600 seconds")
     data = json.dumps({
         "h": h, "ct": ct, "n": n, "p": p, "q": q,
         "df": df, "dg": dg, "bkz": bkz, "method": method,
+        "backend": backend, "initial_degree": initial_degree,
     })
     progress(
         "Launching isolated NTRU worker with Python " + sys.executable

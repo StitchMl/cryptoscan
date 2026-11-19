@@ -57,6 +57,22 @@ def lfsr_bits(initial_state: int, mask: int, degree: int, length: int) -> list[i
     return bits
 
 
+def _insert_equation(
+    row: int, bit: int, pivots: dict[int, tuple[int, int]],
+) -> tuple[int, int]:
+    """Insert one GF(2) equation; return the residual consistency check."""
+    while row:
+        pivot = row.bit_length() - 1
+        if pivot in pivots:
+            prior, parity = pivots[pivot]
+            row ^= prior
+            bit ^= parity
+        else:
+            pivots[pivot] = (row, bit)
+            break
+    return row, bit
+
+
 def solve_gf2(equations: Sequence[tuple[int, int]], unknowns: int) -> int | None:
     """Solve an overdetermined binary linear system using packed integers."""
     if not 1 <= unknowns <= 1024:
@@ -65,16 +81,7 @@ def solve_gf2(equations: Sequence[tuple[int, int]], unknowns: int) -> int | None
     for coefficients, right in equations:
         if coefficients < 0 or coefficients >> unknowns or right not in (0, 1):
             raise ValueError("Malformed binary equation")
-        row, bit = coefficients, right
-        while row:
-            pivot = row.bit_length() - 1
-            if pivot in pivots:
-                old_row, old_bit = pivots[pivot]
-                row ^= old_row
-                bit ^= old_bit
-            else:
-                pivots[pivot] = (row, bit)
-                break
+        row, bit = _insert_equation(coefficients, right, pivots)
         if not row and bit:
             return None
     if len(pivots) != unknowns:
@@ -111,6 +118,25 @@ def _attempt_state(
         [(rows[int(index)], int(adjusted[index]))
          for index in ranked[:degree * 2 + 4]], degree,
     )
+
+
+def _verify_state(
+    candidate: int | None, original, mask: int, degree: int,
+    expected_bias: float, iteration: int,
+    progress: Callable[[str], None] | None,
+) -> CorrelationResult | None:
+    """Require agreement against unchanged, original keystream samples."""
+    if candidate is None:
+        return None
+    recovered = lfsr_bits(candidate, mask, degree, len(original))
+    matches = sum(left == right for left, right in zip(recovered, original))
+    agreement = matches / len(original)
+    if abs(agreement - expected_bias) > 0.035:
+        return None
+    if progress is not None:
+        progress(f"[FCA] Recovered {degree}-bit output state; "
+                 f"agreement={agreement:.4f}, iterations={iteration}")
+    return CorrelationResult(candidate, agreement, iteration)
 
 
 def correlation_recover(
@@ -159,18 +185,11 @@ def correlation_recover(
         if iteration >= 5:
             candidate = _attempt_state(np.argsort(-likelihoods),
                                        adjusted, linear_rows, degree)
-            if candidate is not None:
-                recovered = lfsr_bits(candidate, mask, degree, length)
-                # Unmodified symbols are the independent verification
-                # reference. Denoised symbols are not evidence.
-                matches = sum(left == right for left, right in
-                              zip(recovered, original))
-                agreement = matches / length
-                if abs(agreement - p) <= 0.035:
-                    if progress is not None:
-                        progress(f"[FCA] Recovered {degree}-bit output state; "
-                                 f"agreement={agreement:.4f}, iterations={iteration}")
-                    return CorrelationResult(candidate, agreement, iteration)
+            validated = _verify_state(
+                candidate, original, mask, degree, p, iteration, progress,
+            )
+            if validated is not None:
+                return validated
         count = max(1, length // flip_divisor)
         least_likely = np.argpartition(likelihoods, count)[:count]
         adjusted[least_likely] ^= 1

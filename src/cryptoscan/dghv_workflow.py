@@ -29,7 +29,7 @@ def supported_source(documents: Sequence[Document]) -> bool:
         dec = re.sub(r"\s+", "", ast.unparse(decrypt))
         full = re.sub(r"\s+", "", ast.unparse(tree))
         if (("returnp*q+N*r+m" in enc)
-                and ("return(c%p)%N" in dec)
+                and ("returnc%p%N" in dec)
                 and "random.randint(0,rmax)" in enc
                 and "rmax=2**128/N/4" in enc
                 and "getPrime(128)" in full

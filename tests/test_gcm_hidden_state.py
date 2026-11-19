@@ -143,3 +143,22 @@ def test_gcm_detector_ignores_new_nonce_on_each_factory_call():
 def test_gcm_detector_needs_empty_message_tag_target():
     altered = SOURCE.replace("new().digest().hex()", "b'invalid'.hex()")
     assert not recognize_gcm_tag_oracle([Document("bad.py", altered, None)])
+
+
+def test_generic_detector_does_not_enable_wrong_network_adapter(tmp_path, monkeypatch):
+    from cryptoscan.gcm_hidden_live import supports_wire_profile
+    from cryptoscan.cli import main
+
+    source = SOURCE.replace('"u1"', '"rename_state"')
+    docs = [Document("alternate.py", source, None)]
+    assert len(recognize_gcm_tag_oracle(docs)) == 1
+    assert not supports_wire_profile(docs)
+    assert supports_wire_profile([Document("original.py", SOURCE, None)])
+
+    def unexpected_network(*args, **kwargs):
+        raise AssertionError("Wrong protocol adapter contacted the network")
+
+    monkeypatch.setattr("cryptoscan.cli.recover_gcm_hidden_flag", unexpected_network)
+    path = tmp_path / "alternate.py"
+    path.write_text(source, encoding="utf-8")
+    assert main([str(path), "--solve", "--host", "example.test", "--port", "2762"]) == 2

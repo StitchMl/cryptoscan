@@ -122,7 +122,7 @@ def _run_fplll(
     payload = "[" + "\n".join(
         "[" + " ".join(map(str, row)) + "]" for row in rows
     ) + "]\n"
-    args = executable + (["-a", "bkz", "-b", str(bkz), "-bkzmaxloops", "4"]
+    args = executable + (["-a", "bkz", "-b", str(bkz)]
                          if bkz else ["-a", "lll"])
     progress(f"[NTRU-FOLD] Native fplll reduction, {len(rows)} rows; "
              f"BKZ block size {bkz if bkz else 'none'}")

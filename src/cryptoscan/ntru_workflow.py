@@ -6,6 +6,7 @@ from typing import Any
 
 from .ntru import recognize_ntru, pair_ntru_records
 from .ntru_lattice import solve
+from .ntru_folding import solve_folded
 from .ntru_isolation import solve_isolated
 from .parser import Document, scalar_records
 
@@ -41,10 +42,22 @@ def ntru_lattice_workflow(
         f"Source-derived NTRU: n={context.degree}, p={context.plaintext_modulus}, "
         f"q={context.ciphertext_modulus}, df={context.f_weight}, dg={context.g_weight}"
     )
-    write(
-        f"Constrained sparse-key lattice dimension: {2 * context.degree - 1}. "
-        "This is expensive and not guaranteed to recover the key."
+    foldable = (
+        context.degree >= 64 and
+        context.degree % 64 == 0 and
+        (context.degree // 64) & ((context.degree // 64) - 1) == 0
     )
+    if foldable:
+        write(
+            "NTRU folding attack available: degrees "
+            + ", ".join(str(64 * (2 ** i)) for i in range((context.degree // 64).bit_length()))
+            + ". Reduced lattices are smaller than the original full-key lattice."
+        )
+    else:
+        write(
+            f"Constrained sparse-key lattice dimension: {2 * context.degree - 1}. "
+            "This is expensive and not guaranteed to recover the key."
+        )
     if context.degree > 32:
         import sys
         if sys.platform == "win32":
@@ -54,6 +67,14 @@ def ntru_lattice_workflow(
     if read("Attempt lattice private-key recovery? [y/N]: ").strip().lower() not in {"y", "yes"}:
         write("No computation started.")
         return
+    method = "fold" if foldable else "full"
+    if foldable:
+        choice = read("Attack method [fold/full, default fold]: ").strip().lower()
+        if choice in {"fold", "full"}:
+            method = choice
+        elif choice:
+            write("Unsupported attack method; select fold or full.")
+            return
     bkz_value = read("Optional BKZ block size [0=LLL only]: ").strip() or "0"
     try:
         bkz = int(bkz_value)
@@ -68,6 +89,7 @@ def ntru_lattice_workflow(
                 context.degree, context.plaintext_modulus, context.ciphertext_modulus,
                 context.f_weight, context.g_weight,
                 bkz=bkz, timeout_seconds=int(timeout_raw), progress=write,
+                method=method,
             )
         else:
             results = solve(
@@ -75,6 +97,11 @@ def ntru_lattice_workflow(
                 context.degree, context.plaintext_modulus, context.ciphertext_modulus,
                 context.f_weight, context.g_weight,
                 bkz=bkz, progress=write,
+            ) if method == "full" else solve_folded(
+                public["value"], encrypted["value"],
+                context.degree, context.plaintext_modulus, context.ciphertext_modulus,
+                context.f_weight, context.g_weight,
+                initial_degree=64, bkz=bkz, progress=write,
             )
     except (ValueError, RuntimeError, ImportError, MemoryError) as exc:
         write("NTRU key recovery stopped: " + str(exc))

@@ -1,6 +1,39 @@
 # cryptoscan
 
 
+## Readable output and colors
+
+By default the terminal report is a short, color-coded finding summary
+(severity, location, recovery status, attack, and flag path). Expensive
+details stay available without cluttering every scan:
+
+```powershell
+cryptoscan .                       # compact report, automatic terminal colors
+cryptoscan . --verbose             # evidence, preconditions, steps, solver data and patches
+cryptoscan . --color               # explicitly enable ANSI colors
+cryptoscan . --no-color            # clean monochrome report
+cryptoscan . --format json         # unchanged structured results for scripts
+```
+
+The standard \`NO_COLOR\` environment variable disables ANSI output.
+In PowerShell use \`$env:NO_COLOR = "1"\` to disable colors, then
+\`Remove-Item Env:NO_COLOR\` to restore them. The guided assistant menu
+also uses grouped concise commands instead of repeating long descriptions.
+
+## NTRU folding (experimental)
+
+For binary sparse-polynomial NTRU with a composite ring degree, CryptoScan
+now has reusable polynomial folding, stage-wise lattice constructions, and
+independent key/decryption verification. The guided NTRU workflow offers
+\`fold\` versus \`full\`; the isolated worker accepts the selected strategy
+so Windows can reclaim native LLL memory. This is an **experimental**
+attack: successful algebraic primitive tests do not establish that Origami
+or arbitrary NTRU instances will yield a private key. Larger degrees may
+need advanced lattice reductions; the tool must report failure rather than
+fabricate a flag.
+
+
+
 ## Fiat-Shamir low-entropy challenge grinding
 
 CryptoScan detects a class of noninteractive proof flaws in which a prover

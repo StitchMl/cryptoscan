@@ -29,6 +29,7 @@ from .modular_linear_hash import recognize_linear_hash, solve_linear_hash
 from .ntru import recognize_ntru, is_polynomial_coefficients, analyze_ntru_vectors, pair_ntru_records
 from .mlwe import recognize_weak_mlwe_ring
 from .gcm_overlap_detector import counter_overlap_lines
+from .gcm_hidden_state import recognize_gcm_tag_oracle
 from .aead_diagnostics import unused_validation_flags
 from .parser import (
     Document,
@@ -1298,6 +1299,33 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
              "Compute SHA-256 message representatives modulo the curve order.",
              "Recover nonce relations using an orthogonal-lattice attack.",
              "Verify any recovered private key before claiming flag recovery."],
+        ))
+    for oracle in recognize_gcm_tag_oracle(documents):
+        findings.append(Finding(
+            "GCM-HIDDEN-STATE-TAG-ORACLE",
+            "Fixed-nonce GCM oracle with randomly mutable hidden AAD/plaintext",
+            "critical", "high", f"{oracle.path}:{oracle.line}",
+            {"fixed_nonce": True, "hidden_aad": True, "hidden_plaintext": True,
+             "tag_oracle": True, "chosen_state_mutations": ["u1", "u2"],
+             "timeout_seconds": oracle.timeout_seconds,
+             "pow_difficulty": oracle.pow_difficulty,
+             "automatic_recovery_implemented": False},
+            ["The same key and nonce are used in every AES-GCM instance.",
+             "The oracle returns GCM tags for hidden AAD/plaintext.",
+             "An authorized interactive service exposes the documented state mutations."],
+            "Model each tag using GHASH_H(AAD, ciphertext) xor E_K(J0). "
+            "Use tag differences and u1 resets to infer the 128-bit GHASH key "
+            "through GF(2)-linear constraints. Then use u2 length extensions "
+            "to solve for the hidden state and the empty-message authentication pad.",
+            {"kind": "gcm_hidden_state_linear_algebra", "implemented": False,
+             "algebra": "GF(2^128)", "requires": ["tag transcript", "state mutations"]},
+            "Use a fresh GCM nonce per encryption and avoid exposing tag oracles "
+            "over a hidden, attacker-mutatable authentication state.",
+            ["Solve or negotiate the service PoW within its time budget.",
+             "Collect tags after many u1 mutations and derive linear constraints on H.",
+             "Recover H using binary finite-field linear algebra and validate against additional tags.",
+             "Use u2 to extend message lengths and solve for hidden GHASH coefficients.",
+             "Compute the authentication pad for empty AAD/plaintext and submit it."],
         ))
     for doc in documents:
         if supported_fischlin_source([doc]):

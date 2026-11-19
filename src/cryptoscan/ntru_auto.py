@@ -75,7 +75,7 @@ def recover_flag(
             f"initial fold={initial_degree}, BKZ={bkz}"
         )
         results = solve_isolated(
-            public, encrypted, n,
+            public, encrypted,
             context.plaintext_modulus, context.ciphertext_modulus,
             context.f_weight, context.g_weight,
             method="fold", backend=backend, bkz=bkz,

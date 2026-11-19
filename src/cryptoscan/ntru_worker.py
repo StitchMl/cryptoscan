@@ -30,10 +30,10 @@ def main() -> int:
         method = data["method"]
         if method not in {"full", "fold"}:
             raise ValueError("invalid NTRU solver strategy")
-        common = dict(
-            bkz=data["bkz"], backend=data["backend"],
-            progress=lambda message: print(message, file=sys.stderr, flush=True),
-        )
+        common = {
+            "bkz": data["bkz"], "backend": data["backend"],
+            "progress": lambda message: print(message, file=sys.stderr, flush=True),
+        }
         if method == "fold":
             results = solve_folded(
                 h, ct, n, data["p"], data["q"], data["df"], data["dg"],

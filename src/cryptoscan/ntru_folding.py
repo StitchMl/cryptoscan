@@ -142,55 +142,95 @@ def _run_fplll(
     )
 
 
+def _resolve_backend(backend: str, bkz: int, row_count: int) -> str:
+    if backend != "auto":
+        return backend
+    try:
+        import fpylll  # noqa: F401
+    except ImportError:
+        if bkz:
+            return "fplll"
+        return "sympy" if row_count <= 24 else "flint"
+    return "fpylll"
+
+
+def _check_bkz_range(bkz: int, row_count: int) -> None:
+    if not 2 <= bkz <= min(60, row_count):
+        raise ValueError("BKZ block size must be between 2 and 60")
+
+
+def _reduce_sympy(rows: list[list[int]], bkz: int) -> list[list[int]]:
+    if bkz:
+        raise RuntimeError("BKZ requires the optional fpylll backend")
+    if len(rows) > 32:
+        raise RuntimeError("SymPy is limited to small folding stages")
+    from sympy import Matrix
+    return [[int(v) for v in row] for row in Matrix(rows).lll().tolist()]
+
+
+def _reduce_flint(rows: list[list[int]], bkz: int) -> list[list[int]]:
+    if bkz:
+        raise RuntimeError("Install fpylll to use BKZ (python-flint supplies LLL)")
+    try:
+        from flint import fmpz_mat
+    except ImportError as exc:
+        raise RuntimeError("Install python-flint for native folding LLL") from exc
+    matrix = fmpz_mat(rows).lll(delta=0.99)
+    return [[int(matrix[i, j]) for j in range(matrix.ncols())]
+            for i in range(matrix.nrows())]
+
+
+def _reduce_fpylll(rows: list[list[int]], bkz: int) -> list[list[int]]:
+    try:
+        from fpylll import IntegerMatrix, LLL, BKZ
+    except ImportError as exc:
+        raise RuntimeError("Install fpylll for BKZ folding") from exc
+    matrix = IntegerMatrix.from_matrix(rows)
+    LLL.reduction(matrix)
+    if bkz:
+        _check_bkz_range(bkz, len(rows))
+        BKZ.reduction(matrix, BKZ.Param(block_size=bkz, max_loops=4))
+    return [[int(matrix[i, j]) for j in range(matrix.ncols)]
+            for i in range(matrix.nrows)]
+
+
 def _reduce(rows: list[list[int]], *, backend: str, bkz: int,
             progress: Callable[[str], None]) -> list[list[int]]:
     if not rows:
         raise ValueError("Empty lattice")
-    if backend == "auto":
-        try:
-            import fpylll  # noqa: F401
-        except ImportError:
-            if bkz:
-                backend = "fplll"
-            else:
-                backend = "sympy" if len(rows) <= 24 else "flint"
-        else:
-            backend = "fpylll"
+    backend = _resolve_backend(backend, bkz, len(rows))
     if backend == "fplll":
-        if bkz and not 2 <= bkz <= min(60, len(rows)):
-            raise ValueError("BKZ block size must be between 2 and 60")
+        if bkz:
+            _check_bkz_range(bkz, len(rows))
         return _run_fplll(rows, bkz, progress)
     if backend == "sympy":
-        if bkz:
-            raise RuntimeError("BKZ requires the optional fpylll backend")
-        if len(rows) > 32:
-            raise RuntimeError("SymPy is limited to small folding stages")
-        from sympy import Matrix
-        return [[int(v) for v in row] for row in Matrix(rows).lll().tolist()]
+        return _reduce_sympy(rows, bkz)
     if backend == "flint":
-        if bkz:
-            raise RuntimeError("Install fpylll to use BKZ (python-flint supplies LLL)")
-        try:
-            from flint import fmpz_mat
-        except ImportError as exc:
-            raise RuntimeError("Install python-flint for native folding LLL") from exc
-        matrix = fmpz_mat(rows).lll(delta=0.99)
-        return [[int(matrix[i, j]) for j in range(matrix.ncols())]
-                for i in range(matrix.nrows())]
+        return _reduce_flint(rows, bkz)
     if backend == "fpylll":
-        try:
-            from fpylll import IntegerMatrix, LLL, BKZ
-        except ImportError as exc:
-            raise RuntimeError("Install fpylll for BKZ folding") from exc
-        matrix = IntegerMatrix.from_matrix(rows)
-        LLL.reduction(matrix)
-        if bkz:
-            if not 2 <= bkz <= min(60, len(rows)):
-                raise ValueError("BKZ block size must be between 2 and 60")
-            BKZ.reduction(matrix, BKZ.Param(block_size=bkz, max_loops=4))
-        return [[int(matrix[i, j]) for j in range(matrix.ncols)]
-                for i in range(matrix.nrows)]
+        return _reduce_fpylll(rows, bkz)
     raise ValueError("Unknown folding backend")
+
+
+def _lift_candidate(
+    row: Sequence[int], sign: int, half: int, previous: Sequence[int] | None,
+) -> list[int]:
+    part = [sign*int(v) for v in row[:half]]
+    if previous is None:
+        return part
+    return part + [int(previous[i])-part[i] for i in range(half)]
+
+
+def _is_weighted_nonnegative(f: Sequence[int], df: int) -> bool:
+    return all(v >= 0 for v in f) and sum(f) == df
+
+
+def _folds_g_validly(f: list[int], h: Sequence[int], q: int, dg: int) -> bool:
+    # Every valid folded secret also folds g to nonnegative
+    # coefficients of total weight dg.
+    g = cyclic_mul(f, list(h), q)
+    g = [v if v <= dg else v-q for v in g]
+    return all(v >= 0 for v in g) and sum(g) == dg
 
 
 def _folded_key_candidates(
@@ -205,20 +245,11 @@ def _folded_key_candidates(
         if len(row) < half:
             continue
         for sign in (1, -1):
-            part = [sign*int(v) for v in row[:half]]
-            f = part if previous is None else part + [
-                int(previous[i])-part[i] for i in range(half)
-            ]
-            if any(v < 0 for v in f) or sum(f) != df:
-                continue
+            f = _lift_candidate(row, sign, half, previous)
             key = tuple(f)
-            if key in seen:
+            if key in seen or not _is_weighted_nonnegative(f, df):
                 continue
-            # Every valid folded secret also folds g to nonnegative
-            # coefficients of total weight dg.
-            g = cyclic_mul(f, list(h), q)
-            g = [v if v <= dg else v-q for v in g]
-            if all(v >= 0 for v in g) and sum(g) == dg:
+            if _folds_g_validly(f, h, q, dg):
                 seen.add(key)
                 results.append(f)
     return results
@@ -254,6 +285,62 @@ def _canonical_rotation(values: Sequence[int]) -> tuple[int, ...]:
     return min(sequence[i:] + sequence[:i] for i in range(len(sequence)))
 
 
+def _validate_instance(
+    h: list[int], ct: list[int], n: int, q: int, df: int, dg: int,
+    initial_degree: int,
+) -> None:
+    if (len(h) != n or len(ct) != n or n < 4 or
+            any(type(x) is not int or not 0 <= x < q for x in h+ct) or
+            not (1 <= df <= n and 1 <= dg <= n)):
+        raise ValueError("Invalid NTRU instance")
+    if (initial_degree < 2 or n % initial_degree or
+            (n//initial_degree) & (n//initial_degree - 1)):
+        raise ValueError("Initial fold must divide n with a power-of-two ratio")
+
+
+def _stage_candidates(
+    candidates: Sequence[Sequence[int] | None], folded_h: list[int], degree: int,
+    q: int, df: int, dg: int, backend: str, bkz: int,
+    progress: Callable[[str], None],
+) -> list[list[int]]:
+    next_candidates: list[list[int]] = []
+    seen = set()
+    for previous in candidates:
+        rows, _ = fold_lattice_basis(folded_h, q, previous)
+        progress(f"[NTRU-FOLD] Degree {degree}; lattice {len(rows)}x{len(rows[0])}")
+        reduced = _reduce(rows, backend=backend, bkz=bkz, progress=progress)
+        for candidate in _folded_key_candidates(
+                reduced, folded_h, q, df, dg, previous):
+            # Rotating both f and g by x^k preserves h=g/f.
+            # At the first fold, canonicalize that equivalence class
+            # to avoid running the same expensive lift d times.
+            if previous is None:
+                candidate = list(_canonical_rotation(candidate))
+            key = tuple(candidate)
+            if key not in seen:
+                seen.add(key)
+                next_candidates.append(candidate)
+    return next_candidates
+
+
+def _verified_results(
+    keys: Sequence[list[int]], h: list[int], ct: list[int],
+    p: int, q: int, df: int, dg: int,
+) -> list[dict]:
+    results = []
+    for key in keys:
+        plaintext = decrypt_with_private_key(key, h, ct, p, q, df, dg)
+        if plaintext is not None:
+            results.append({
+                "plaintext": plaintext,
+                "private_f": key,
+                "public_relation_verified": True,
+                "flag_shaped": bool(__import__("re").search(
+                    rb"[A-Za-z0-9_]{1,30}\{[^\r\n{}]{1,180}\}", plaintext)),
+            })
+    return results
+
+
 def solve_folded(
     h: list[int], ct: list[int], n: int, p: int, q: int,
     df: int, dg: int, *,
@@ -266,52 +353,20 @@ def solve_folded(
     explicit candidate check; failure is reported instead of fabricated
     plaintext. For hard instances BKZ may be necessary.
     """
-    if (len(h) != n or len(ct) != n or n < 4 or
-            any(type(x) is not int or not 0 <= x < q for x in h+ct) or
-            not (1 <= df <= n and 1 <= dg <= n)):
-        raise ValueError("Invalid NTRU instance")
-    if (initial_degree < 2 or n % initial_degree or
-            (n//initial_degree) & (n//initial_degree - 1)):
-        raise ValueError("Initial fold must divide n with a power-of-two ratio")
+    _validate_instance(h, ct, n, q, df, dg, initial_degree)
 
     degree = initial_degree
     candidates: list[list[int] | None] = [None]
     while True:
         folded_h = fold_poly(h, degree, q)
-        next_candidates: list[list[int]] = []
-        seen = set()
-        for previous in candidates:
-            rows, unknown = fold_lattice_basis(folded_h, q, previous)
-            progress(f"[NTRU-FOLD] Degree {degree}; lattice {len(rows)}x{len(rows[0])}")
-            reduced = _reduce(rows, backend=backend, bkz=bkz, progress=progress)
-            for candidate in _folded_key_candidates(
-                    reduced, folded_h, q, df, dg, previous):
-                # Rotating both f and g by x^k preserves h=g/f.
-                # At the first fold, canonicalize that equivalence class
-                # to avoid running the same expensive lift d times.
-                if previous is None:
-                    candidate = list(_canonical_rotation(candidate))
-                key = tuple(candidate)
-                if key not in seen:
-                    seen.add(key)
-                    next_candidates.append(candidate)
+        next_candidates = _stage_candidates(
+            candidates, folded_h, degree, q, df, dg, backend, bkz, progress)
         if not next_candidates:
             raise RuntimeError(
                 f"No valid folded key found at degree {degree}; "
                 "try a stronger BKZ backend or a different starting fold")
         progress(f"[NTRU-FOLD] Degree {degree}: {len(next_candidates)} key candidates")
         if degree == n:
-            results = []
-            for key in next_candidates:
-                plaintext = decrypt_with_private_key(key, h, ct, p, q, df, dg)
-                if plaintext is not None:
-                    results.append({
-                        "plaintext": plaintext,
-                        "private_f": key,
-                        "public_relation_verified": True,
-                        "flag_shaped": bool(__import__("re").search(
-                            rb"[A-Za-z0-9_]{1,30}\{[^\r\n{}]{1,180}\}", plaintext)),
-                    })
-            return results
+            return _verified_results(next_candidates, h, ct, p, q, df, dg)
         candidates = next_candidates
         degree *= 2

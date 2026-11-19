@@ -136,7 +136,7 @@ def _cyberchef_input(value: Any, parsed: bytes) -> tuple[str, str]:
         try:
             if base64.b64decode(cleaned, validate=True) == parsed:
                 return "base64", cleaned
-        except (ValueError, base64.binascii.Error):
+        except ValueError:
             pass
     return "hex", parsed.hex()
 

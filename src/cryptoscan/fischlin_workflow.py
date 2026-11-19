@@ -212,7 +212,7 @@ def recover_flag(
                         return flag
                     raise RuntimeError("All rounds passed, but no parseable flag was returned")
                 progress(f"[FISCHLIN] Session {session_no}: solved round {round_no+1}/64")
-        except (TimeoutError, ConnectionError, OSError) as exc:
+        except OSError as exc:
             progress(f"[FISCHLIN] Session {session_no}: connection interrupted ({exc})")
         finally:
             conn.close()

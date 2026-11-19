@@ -169,7 +169,7 @@ def recover_flag(
                     progress("[GCM] Remote tag verification succeeded")
                     return flag
                 break
-        except (OSError, ValueError, RuntimeError, ConnectionError, TimeoutError) as exc:
+        except (OSError, ValueError, RuntimeError) as exc:
             progress(f"[GCM] Session {session_index}: retry ({exc})")
         finally:
             conn.close()

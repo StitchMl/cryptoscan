@@ -204,14 +204,14 @@ def parse_bytes(value: Any) -> bytes | None:
     if len(cleaned) >= 8 and re.fullmatch(r"[A-Za-z0-9+/]*={0,2}", cleaned):
         try:
             return base64.b64decode(cleaned, validate=True)
-        except (ValueError, base64.binascii.Error):
+        except ValueError:
             pass
     return None
 
 
 def assignments(text: str) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    pattern = re.compile(r"(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^#\r\n]+)")
+    pattern = re.compile(r"(?m)^[ \t]*([A-Za-z_](?a:\w)*)[ \t]*=[ \t]*([^#\r\n]+)")
     for match in pattern.finditer(text):
         name, literal = match.groups()
         try:
@@ -226,7 +226,7 @@ def assignments(text: str) -> dict[str, Any]:
 def scalar_records(text: str) -> list[dict[str, Any]]:
     """Parse common challenge dumps: Python assignments and key: value lines."""
     result = assignments(text)
-    pattern = re.compile(r"(?m)^\s*([A-Za-z_](?a:[\w-])*)\s*:\s*([^#\r\n]+)")
+    pattern = re.compile(r"(?m)^[ \t]*([A-Za-z_](?a:[\w-])*)[ \t]*:[ \t]*([^#\r\n]+)")
     for name, literal in pattern.findall(text):
         key = name.casefold().replace("-", "_")
         raw = literal.strip().rstrip(",")
@@ -247,7 +247,7 @@ def pem_rsa_public_keys(text: str) -> list[dict[str, int]]:
             der = base64.b64decode(re.sub(r"\s+", "", body), validate=True)
             keys = der_rsa_public_keys(der, spki=label == "PUBLIC KEY")
             found.extend(keys)
-        except (ValueError, base64.binascii.Error):
+        except ValueError:
             continue
     return found
 

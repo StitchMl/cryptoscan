@@ -18,6 +18,7 @@ from .gcm_hidden_live import (
     supports_wire_profile as supports_gcm_wire_profile,
 )
 from .hamiltonicity_workflow import extract_instance as extract_fiat_shamir_graph, recover_flag as recover_fs_graph_flag
+from .fiat_shamir_batch import extract_instance as extract_batch_fiat_shamir, recover_flag as recover_batch_fs_flag
 from .parser import collect_documents
 from .scanner import scan
 from .ntru_auto import instances as ntru_instances, recover_flag as recover_ntru_flag
@@ -90,6 +91,14 @@ def main(argv: list[str] | None = None) -> int:
         color = not args.no_color and os.environ.get("NO_COLOR") is None and (args.color or sys.stdout.isatty())
         print(_text(findings, color, verbose=args.verbose))
     if args.solve:
+        if args.host and args.port and extract_batch_fiat_shamir(documents) is not None:
+            try:
+                flag = recover_batch_fs_flag(documents, args.host, args.port, timeout=args.timeout)
+            except (RuntimeError, ValueError, OSError, ConnectionError) as exc:
+                print(f"Fiat-Shamir transcript-collision solver failed: {exc}", file=sys.stderr)
+                return 2
+            print(f"FLAG: {flag}")
+            return 0
         if args.host and args.port and extract_fiat_shamir_graph(documents) is not None:
             try:
                 flag = recover_fs_graph_flag(documents, args.host, args.port, timeout=args.timeout)

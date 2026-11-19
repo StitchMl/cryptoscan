@@ -1,6 +1,33 @@
 # cryptoscan
 
 
+## Fiat-Shamir low-entropy challenge grinding
+
+CryptoScan detects a class of noninteractive proof flaws in which a prover
+controls a randomized commitment, computes the challenge locally from a
+public hash, and can efficiently construct a valid transcript for one
+challenge branch. A **generic bounded-grinding primitive** searches for a
+suitable commitment; it works independently of graph size, round count,
+and user-visible protocol strings.
+
+A currently supported adapter implements Pedersen-committed graph-opening
+proofs: it extracts the active graph and public group parameters from the
+challenge source, grinds each Fiat-Shamir challenge bit to the full-graph
+opening branch, validates the commitment openings, and sends 128 (or the
+source-specified number of) proofs to the authorized verifier. No secret
+Hamiltonian cycle or known flag is embedded in the solver.
+
+\`\`\`powershell
+cryptoscan . --no-assist
+cryptoscan . --solve --host archive.cryptohack.org --port 14635
+\`\`\`
+
+Network access requires \`--solve --host --port\`. The detector is offline;
+the live protocol adapter expects a compatible JSON line-oriented graph
+proof server. The original CryptoHack artifacts and independent synthetic
+graphs are regression-tested. Live flag recovery must be independently
+confirmed against the real service.
+
 ## General-purpose scanning and benchmark policy
 
 CryptoScan treats public CTFs as **regression fixtures**, not templates whose

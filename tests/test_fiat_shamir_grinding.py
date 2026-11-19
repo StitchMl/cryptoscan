@@ -177,3 +177,19 @@ def test_generic_grinding_reports_exhausted_budget():
             b"", lambda: (b"commitment", []),
             lambda commitment, state: hashlib.sha256(commitment + state).digest(),
             lambda digest: False, max_trials=3)
+
+
+def test_fiat_shamir_detector_survives_renamed_hash_and_challenge_state():
+    alternate_source = (CHALLENGE
+        .replace("FS_state", "rolling_digest")
+        .replace("challenge = ", "which_branch = ")
+        .replace("if challenge:", "if which_branch:")
+        .replace("hash_committed_graph", "commitment_digest"))
+    alternate_helper = HELPER.replace("hash_committed_graph", "commitment_digest")
+    instance = extract_instance([
+        Document("puzzle.py", alternate_source, None),
+        Document("math.py", alternate_helper, None),
+    ])
+    assert instance is not None
+    assert instance.graph == GRAPH
+    assert instance.rounds == 20

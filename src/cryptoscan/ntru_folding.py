@@ -83,7 +83,7 @@ def fold_lattice_basis(
 
 def _parse_fplll_matrix(output: str, expected_rows: int, expected_cols: int) -> list[list[int]]:
     """Parse the whitespace-separated integer matrix printed by fplll."""
-    chunks = re.findall(r"\\[([^\\[\\]]+)\\]", output)
+    chunks = re.findall(r"\[([^\[\]]+)\]", output)
     matrix = []
     for chunk in chunks:
         tokens = chunk.replace(",", " ").split()
@@ -119,9 +119,9 @@ def _run_fplll(
             "BKZ needs fpylll or fplll-tools. On Windows, install "
             "fplll-tools inside WSL Ubuntu, or use a compatible fpylll environment."
         )
-    payload = "[" + "\\n".join(
+    payload = "[" + "\n".join(
         "[" + " ".join(map(str, row)) + "]" for row in rows
-    ) + "]\\n"
+    ) + "]\n"
     args = executable + (["-a", "bkz", "-b", str(bkz), "-bkzmaxloops", "4"]
                          if bkz else ["-a", "lll"])
     progress(f"[NTRU-FOLD] Native fplll reduction, {len(rows)} rows; "

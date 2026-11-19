@@ -126,14 +126,18 @@ def _hash_follows_graph_commitments(documents: Sequence[Document]) -> bool:
 
 
 def extract_instance(documents: Sequence[Document]) -> HamiltonicityInstance | None:
-    params = _pedersen_parameters(documents)
-    if params is None or not _hash_follows_graph_commitments(documents):
-        return None
-    p, q, h1, h2 = params
-    if p <= q or min(h1, h2) <= 0 or max(h1, h2) >= p:
-        return None
     for doc in documents:
         if not doc.path.casefold().endswith(".py"):
+            continue
+        # Never combine a prover from one challenge with group parameters
+        # or a hash recipe from an unrelated directory/archive.
+        scoped = [candidate for candidate in documents
+                  if candidate.scope == doc.scope]
+        params = _pedersen_parameters(scoped)
+        if params is None or not _hash_follows_graph_commitments(scoped):
+            continue
+        p, q, h1, h2 = params
+        if p <= q or min(h1, h2) <= 0 or max(h1, h2) >= p:
             continue
         try:
             tree = ast.parse(doc.text)

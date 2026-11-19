@@ -88,6 +88,50 @@ jobs:
               json.dumps(issues, indent=2, ensure_ascii=False)
           )
           PY
+      - name: Find exact source duplication blocks behind the Quality Gate
+        run: |
+          python - <<'PY'
+          import json
+          import urllib.parse
+          import urllib.request
+
+          base = "https://sonarcloud.io/api/"
+          def request(path, parameters):
+              address = base + path + "?" + urllib.parse.urlencode(parameters)
+              with urllib.request.urlopen(
+                  urllib.request.Request(address, headers={"User-Agent": "cryptoscan-sonar-audit/1.0"}),
+                  timeout=25,
+              ) as response:
+                  return json.load(response)
+
+          project = "StitchMl_cryptoscan"
+          try:
+              response = request("measures/component_tree", {
+                  "component": project, "metricKeys": "new_duplicated_lines,new_duplicated_lines_density,duplicated_lines",
+                  "qualifiers": "FIL", "ps": 500,
+              })
+              files = []
+              for item in response.get("components", []):
+                  metric = {m["metric"]: m.get("value", "0") for m in item.get("measures", [])}
+                  count = float(metric.get("new_duplicated_lines", 0))
+                  if count:
+                      files.append((count, item["key"], metric))
+              files.sort(reverse=True)
+              print("===== SONAR DUPLICATED SOURCE FILES =====", len(files), flush=True)
+              for count, key, metrics in files[:35]:
+                  print(json.dumps({"file": key, "new_lines": count,
+                                    "metrics": metrics}), flush=True)
+              for _, key, _ in files[:12]:
+                  try:
+                      duplicates = request("duplications/show", {"key": key})
+                      for group in duplicates.get("duplications", [])[:30]:
+                          print(json.dumps({"file": key, "blocks": group.get("blocks", [])}),
+                                flush=True)
+                  except Exception as error:
+                      print("DUPLICATIONS ERROR", key, str(error), flush=True)
+          except Exception as error:
+              print("METRIC ERROR", type(error).__name__, str(error), flush=True)
+          PY
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4

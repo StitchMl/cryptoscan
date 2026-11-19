@@ -1,10 +1,12 @@
-"""Readable terminal reporting, independent of scanner and solver logic.
+"""Colorful, readable terminal reports without changing the JSON API.
 
-Text output is human-focused; JSON remains the complete machine-readable API.
+Formatting is isolated from analysis and recovery. Width accounting uses
+visible characters; ANSI escapes never influence wrapping or alignment.
 """
 from __future__ import annotations
 
 import json
+import re
 import textwrap
 from collections import Counter
 from collections.abc import Sequence
@@ -13,7 +15,7 @@ from .model import Finding
 
 RESET = "\x1b[0m"
 STYLES = {
-    "critical": "\x1b[1;91m",
+    "critical": "\x1b[1;91m",  # bright red
     "high": "\x1b[1;31m",
     "medium": "\x1b[1;33m",
     "low": "\x1b[1;36m",
@@ -22,58 +24,88 @@ STYLES = {
     "good": "\x1b[1;32m",
     "label": "\x1b[1;37m",
     "warning": "\x1b[1;33m",
+    "accent": "\x1b[96m",
+    "value": "\x1b[97m",
 }
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_VERIFIED = {"flag-recovered", "payload-ready"}
 
 
 def paint(value: str, style: str, enabled: bool) -> str:
-    if not enabled:
-        return value
-    return STYLES.get(style, "") + value + RESET
+    sequence = STYLES.get(style, "")
+    return sequence + value + RESET if enabled and sequence else value
 
 
-def _wrapped(label: str, value: str, *, width: int = 100, indent: int = 4) -> list[str]:
-    prefix = "  " + label + ": "
-    continuation = " " * max(indent, len(prefix))
-    return textwrap.wrap(
-        str(value), width=width, initial_indent=prefix,
-        subsequent_indent=continuation, break_long_words=False,
-        break_on_hyphens=False,
-    ) or [prefix]
+def visible_width(value: str) -> int:
+    return len(_ANSI.sub("", value))
 
 
-def _summary(finding: Finding, *, width: int = 100) -> list[str]:
-    lines = _wrapped("Location", finding.location, width=width)
-    lines.extend(_wrapped("Recovery", finding.recovery_status, width=width))
-    lines.extend(_wrapped("Attack", finding.attack, width=width))
-    lines.extend(_wrapped("Flag path", finding.flag_path, width=width))
+def _wrap(
+    label: str,
+    value: object,
+    width: int,
+    color: bool,
+    *,
+    indent: int = 2,
+    style: str = "value",
+) -> list[str]:
+    lead = " " * indent
+    prefix = label + ": "
+    usable = max(24, width - indent - len(prefix))
+    segments = textwrap.wrap(
+        str(value), width=usable, break_long_words=False,
+        break_on_hyphens=False, replace_whitespace=True,
+    ) or [""]
+    lines = [lead + paint(label, "muted", color) + ": " +
+             paint(segments[0], style, color)]
+    lines.extend(" " * (indent + len(prefix)) + paint(segment, style, color)
+                 for segment in segments[1:])
     return lines
 
 
-def _details(finding: Finding, *, width: int = 100) -> list[str]:
+def _kv_section(
+    title: str, content: dict, width: int, color: bool,
+    *,
+    indent: int = 4,
+) -> list[str]:
+    lines = ["  " + paint(title, "accent", color)]
+    for key, value in content.items():
+        lines.extend(_wrap(str(key), json.dumps(value, ensure_ascii=False)
+                           if isinstance(value, (list, dict)) else str(value),
+                           width, color, indent=indent))
+    return lines
+
+
+def _summary(finding: Finding, width: int, color: bool) -> list[str]:
+    status = finding.recovery_status
+    return [
+        *_wrap("Location", finding.location, width, color, style="accent"),
+        *_wrap("Recovery", status, width, color,
+               style="good" if status in _VERIFIED else "warning"),
+        *_wrap("Attack", finding.attack, width, color),
+        *_wrap("Flag path", finding.flag_path, width, color),
+    ]
+
+
+def _details(finding: Finding, width: int, color: bool) -> list[str]:
     lines: list[str] = []
-    lines.extend(_wrapped("Evidence", json.dumps(finding.evidence, sort_keys=True,
-                                                   ensure_ascii=False), width=width))
-    lines.extend(_wrapped("Flag path", finding.flag_path, width=width))
+    if finding.evidence:
+        lines.extend(_kv_section("EVIDENCE", finding.evidence, width, color))
     if finding.preconditions:
-        lines.append("  Preconditions:")
+        lines.append("  " + paint("PRECONDITIONS", "accent", color))
         for index, item in enumerate(finding.preconditions, 1):
-            lines.extend(textwrap.wrap(
-                f"{index}. {item}", width=width,
-                initial_indent="    ", subsequent_indent="       ",
-                break_long_words=False,
-            ))
+            lines.extend(_wrap(f"{index:02d}", item, width, color, indent=4))
     if finding.playbook:
-        lines.append("  Steps:")
+        lines.append("  " + paint("RECOVERY STEPS", "accent", color))
         for index, step in enumerate(finding.playbook, 1):
-            lines.extend(_wrapped(f"Step {index}", step, width=width))
-    lines.extend(_wrapped("Solver", json.dumps(finding.solver, sort_keys=True,
-                                                ensure_ascii=False), width=width))
+            lines.extend(_wrap(f"Step {index}", step, width, color, indent=4))
+    if finding.solver:
+        lines.extend(_kv_section("SOLVER", finding.solver, width, color))
     if finding.cyberchef is not None:
-        lines.extend(_wrapped("CyberChef input", finding.cyberchef["input"], width=width))
-        lines.extend(_wrapped("CyberChef recipe", json.dumps(
-            finding.cyberchef["recipe"], separators=(",", ":"), ensure_ascii=False), width=width))
-        lines.append("  CyberChef: use a trusted local/offline instance.")
-    lines.extend(_wrapped("Patch", finding.patch, width=width))
+        lines.extend(_kv_section("CYBERCHEF", finding.cyberchef, width, color))
+        lines.append("    " + paint("Use a trusted offline CyberChef instance.",
+                                   "warning", color))
+    lines.extend(_wrap("Patch", finding.patch, width, color))
     return lines
 
 
@@ -84,41 +116,38 @@ def render_findings(
     verbose: bool = False,
     width: int = 100,
 ) -> str:
+    """Render severity-grouped finding cards; --verbose expands technical detail."""
     if not findings:
         return paint("No cryptographic weaknesses found.", "good", color)
     width = max(68, min(width, 150))
-    counts = Counter(f.severity for f in findings)
-    count_parts = " | ".join(f"{counts[level]} {level.upper()}" for level in
-                             ("critical", "high", "medium", "low") if counts[level])
-    lines = [paint("CRYPTOSCAN  /  CRYPTO ANALYSIS", "title", color),
-             paint("-" * min(width, 98), "muted", color),
-             f"Findings: {len(findings)}  |  {count_parts}",
-             ""]
+    separator = "─" * (width - 2)
+    counts = Counter(finding.severity for finding in findings)
+    counts_text = "   ".join(
+        paint(f"{counts[level]} {level.upper()}", level, color)
+        for level in ("critical", "high", "medium", "low") if counts[level]
+    )
+    lines = [
+        paint("CRYPTOSCAN", "title", color) + paint("  /  CRYPTO ANALYSIS", "muted", color),
+        paint(separator, "muted", color),
+        paint("FINDINGS", "label", color) + f"  {len(findings)}   |   " + counts_text,
+        "",
+    ]
     for index, finding in enumerate(findings, 1):
         severity = paint(finding.severity.upper(), finding.severity, color)
-        heading = f"{index:02d}  [{severity}] {finding.rule}"
-        lines.append(heading)
-        lines.append("    " + paint(finding.title, "label", color))
-        summary = _summary(finding, width=width)
-        if color:
-            status_style = (
-                "good" if finding.recovery_status in {"flag-recovered", "payload-ready"}
-                else "warning"
-            )
-            summary = [
-                line.replace(
-                    "Recovery: " + finding.recovery_status,
-                    "Recovery: " + paint(finding.recovery_status, status_style, True),
-                    1,
-                ) if "Recovery: " in line else line
-                for line in summary
-            ]
-        lines.extend(summary)
+        lines.append(f"{index:02d}  [{severity}] " + paint(finding.rule, "label", color))
+        for line in textwrap.wrap(finding.title, width=width - 4,
+                                  break_long_words=False) or [""]:
+            lines.append("    " + line)
+        lines.extend(_summary(finding, width, color))
         if verbose:
-            lines.extend(_details(finding, width=width))
-        lines.append(paint("-" * min(width, 98), "muted", color))
+            lines.append("")
+            lines.extend(_details(finding, width, color))
+        lines.append(paint(separator, "muted", color))
         lines.append("")
     if not verbose:
         lines.append(paint("Tip: use --verbose for evidence, conditions, recovery steps, and patches.",
                            "muted", color))
-    return "\n".join(lines).rstrip()
+    # For compatibility with existing terminal tests, finish colored output
+    # with the standard reset code; monochrome output has no escapes.
+    answer = "\n".join(lines).rstrip()
+    return answer + RESET if color else answer

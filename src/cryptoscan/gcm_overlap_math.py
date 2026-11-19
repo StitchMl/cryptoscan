@@ -84,6 +84,26 @@ def _square_mod(poly: list[int], modulus: list[int]) -> list[int]:
     return _mod(_trim(squared), modulus)
 
 
+def _split_linear_factors(factor: list[int], rng: random.Random) -> list[int]:
+    if len(factor) == 2:
+        return [gf_mul(factor[0], gf_exp(factor[1], (1 << 128) - 2))]
+    for _ in range(64):
+        trace = []
+        term = _mod([0, rng.getrandbits(128)], factor)
+        for _ in range(128):
+            trace = _add(trace, term)
+            term = _square_mod(term, factor)
+        part = _gcd(factor, trace)
+        if len(part) in (0, 1, len(factor)):
+            continue
+        quotient, remainder = _divmod(factor, part)
+        if remainder:
+            raise ValueError("polynomial split verification failed")
+        return _split_linear_factors(part, rng) + _split_linear_factors(quotient, rng)
+    raise ValueError("could not split polynomial; use additional observations")
+
+
+
 def polynomial_roots(poly: list[int]) -> list[int]:
     poly = _trim(poly[:])
     if len(poly) < 2:
@@ -98,25 +118,7 @@ def polynomial_roots(poly: list[int]) -> list[int]:
         return []
     rng = random.Random(0xC7F)
 
-    def split(factor: list[int]) -> list[int]:
-        if len(factor) == 2:
-            return [gf_mul(factor[0], gf_exp(factor[1], (1 << 128) - 2))]
-        for _ in range(64):
-            trace = []
-            term = _mod([0, rng.getrandbits(128)], factor)
-            for _ in range(128):
-                trace = _add(trace, term)
-                term = _square_mod(term, factor)
-            part = _gcd(factor, trace)
-            if len(part) in (0, 1, len(factor)):
-                continue
-            quotient, remainder = _divmod(factor, part)
-            if remainder:
-                raise ValueError("polynomial split verification failed")
-            return split(part) + split(quotient)
-        raise ValueError("could not split polynomial; use additional observations")
-
-    return sorted(set(split(linear)))
+    return sorted(set(_split_linear_factors(linear, rng)))
 
 
 def _blocks(ciphertext: bytes, aad: bytes) -> list[int]:
@@ -141,11 +143,9 @@ class Candidate:
     subkey_hex: str
 
 
-def compute_counter_overlap_candidates(
+def _parse_counter_overlap_token(
     observed_token: str, known_plaintext: bytes, desired_plaintext: bytes,
-    aad: bytes = b"", max_blocks: int = 32,
-) -> list[Candidate]:
-    """Produce GHASH-consistent candidates; do not infer acceptance by a server."""
+) -> tuple[bytes, bytes]:
     parts = observed_token.strip().split(";")
     if len(parts) != 2:
         raise ValueError("expected ciphertext_hex;tag_hex")
@@ -161,6 +161,17 @@ def compute_counter_overlap_candidates(
         raise ValueError("at least 16 known plaintext bytes are required")
     if len(desired_plaintext) > len(known_plaintext):
         raise ValueError("desired plaintext exceeds available known keystream")
+    return ciphertext, tag
+
+
+def compute_counter_overlap_candidates(
+    observed_token: str, known_plaintext: bytes, desired_plaintext: bytes,
+    aad: bytes = b"", max_blocks: int = 32,
+) -> list[Candidate]:
+    """Produce GHASH-consistent candidates; do not infer acceptance by a server."""
+    ciphertext, tag = _parse_counter_overlap_token(
+        observed_token, known_plaintext, desired_plaintext,
+    )
     blocks = _blocks(ciphertext, aad)
     if len(blocks) > max_blocks:
         raise ValueError("GHASH polynomial exceeds solver block bound")

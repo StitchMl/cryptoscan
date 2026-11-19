@@ -205,7 +205,7 @@ def recover_flag(
                 if marker == successful:
                     tail = conn.read_tail()
                     combined = response + tail
-                    match = re.search(rb"[A-Za-z0-9_]{2,32}\{[^\r\n{}]+\}", combined)
+                    match = re.search(rb"\w{2,32}\{[^\r\n{}]+\}", combined)
                     if match:
                         flag = match.group(0).decode("ascii")
                         progress("[FISCHLIN] All 64 witness challenges solved")

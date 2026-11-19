@@ -46,29 +46,64 @@ def _literal_module_values(tree: ast.Module) -> dict[str, object]:
     return values
 
 
+def _is_graph_assignment(statement: ast.stmt) -> bool:
+    return (isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and statement.targets[0].id == "G")
+
+
+def _selected_branch(node: ast.stmt, values: dict[str, object]) -> list[ast.stmt] | None:
+    if not isinstance(node, ast.If) or not isinstance(node.test, ast.Name):
+        return None
+    condition = values.get(node.test.id)
+    if type(condition) is not bool:
+        return None
+    return node.body if condition else node.orelse
+
+
+def _literal_graph(node: ast.expr) -> list[list[int]] | None:
+    try:
+        graph = ast.literal_eval(node)
+    except (SyntaxError, ValueError, TypeError):
+        return None
+    return graph if isinstance(graph, list) else None
+
+
 def _graph_from_source(tree: ast.Module) -> list[list[int]] | None:
     values = _literal_module_values(tree)
     if isinstance(values.get("G"), list):
         return values["G"]
     # Respect a literal Boolean configuration selecting one graph definition.
     for node in tree.body:
-        if not isinstance(node, ast.If) or not isinstance(node.test, ast.Name):
+        branch = _selected_branch(node, values)
+        if branch is None:
             continue
-        condition = values.get(node.test.id)
-        if type(condition) is not bool:
-            continue
-        branch = node.body if condition else node.orelse
         for statement in branch:
-            if (isinstance(statement, ast.Assign)
-                    and len(statement.targets) == 1
-                    and isinstance(statement.targets[0], ast.Name)
-                    and statement.targets[0].id == "G"):
-                try:
-                    graph = ast.literal_eval(statement.value)
-                except (SyntaxError, ValueError, TypeError):
-                    return None
-                return graph if isinstance(graph, list) else None
+            if _is_graph_assignment(statement):
+                return _literal_graph(statement.value)
     return None
+
+
+def _is_comm_params_assignment(node: ast.stmt) -> bool:
+    return (isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "comm_params"
+            and isinstance(node.value, (ast.Tuple, ast.List)))
+
+
+def _comm_params_elements(node: ast.Assign, values: dict[str, object]) -> list[object]:
+    elements: list[object] = []
+    for element in node.value.elts:
+        if isinstance(element, ast.Name):
+            elements.append(values.get(element.id))
+            continue
+        try:
+            elements.append(ast.literal_eval(element))
+        except (SyntaxError, ValueError, TypeError):
+            break
+    return elements
 
 
 def _pedersen_parameters(documents: Sequence[Document]) -> tuple[int, int, int, int] | None:
@@ -79,21 +114,9 @@ def _pedersen_parameters(documents: Sequence[Document]) -> tuple[int, int, int, 
             continue
         values = _literal_module_values(tree)
         for node in tree.body:
-            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            if not _is_comm_params_assignment(node):
                 continue
-            if not isinstance(node.targets[0], ast.Name) or node.targets[0].id != "comm_params":
-                continue
-            if not isinstance(node.value, (ast.Tuple, ast.List)):
-                continue
-            elements = []
-            for element in node.value.elts:
-                if isinstance(element, ast.Name):
-                    elements.append(values.get(element.id))
-                else:
-                    try:
-                        elements.append(ast.literal_eval(element))
-                    except (SyntaxError, ValueError, TypeError):
-                        break
+            elements = _comm_params_elements(node, values)
             if len(elements) == 4 and all(type(x) is int and x > 0 for x in elements):
                 return tuple(elements)
     return None
@@ -161,71 +184,95 @@ def _fs_challenge_names(tree: ast.Module, hash_functions: set[str]) -> set[str]:
     return result
 
 
+def _branch_verified(tree: ast.Module, challenge_vars: set[str]) -> bool:
+    """The unblinded branch must actually be an acceptance path."""
+    return any(
+        isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id in challenge_vars
+        and any(isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "open_graph"
+                for child in node.orelse
+                for call in ast.walk(child))
+        for node in ast.walk(tree)
+    )
+
+
+def _valid_graph(graph: object) -> bool:
+    if not isinstance(graph, list) or not graph:
+        return False
+    if not all(isinstance(row, list) and len(row) == len(graph) for row in graph):
+        return False
+    return not any(type(v) is not int or v not in (0, 1) for row in graph for v in row)
+
+
+def _proof_prompt(tree: ast.Module) -> bytes | None:
+    prompts = [
+        argument.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "input"
+        for argument in node.args
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, (bytes, str))
+    ]
+    chosen = next((item for item in prompts if b"proof" in
+                   (item if isinstance(item, bytes) else item.encode()).lower()), None)
+    if chosen is None:
+        return None
+    prompt = chosen if isinstance(chosen, bytes) else chosen.encode()
+    if not prompt or len(prompt) > 128:
+        return None
+    return prompt
+
+
+def _instance_from_document(
+    doc: Document, documents: Sequence[Document]
+) -> HamiltonicityInstance | None:
+    # Never combine a prover from one challenge with group parameters
+    # or a hash recipe from an unrelated directory/archive.
+    scoped = [candidate for candidate in documents
+              if candidate.scope == doc.scope]
+    params = _pedersen_parameters(scoped)
+    hash_functions = _hash_function_names(scoped)
+    if params is None or not hash_functions:
+        return None
+    p, q, h1, h2 = params
+    if p <= q or min(h1, h2) <= 0 or max(h1, h2) >= p:
+        return None
+    try:
+        tree = ast.parse(doc.text)
+    except SyntaxError:
+        return None
+    src = ast.unparse(tree)
+    # Detect the challenge by following data flow from a SHA-256 graph
+    # hash into the extracted low bit, not by its Python identifier.
+    challenge_vars = _fs_challenge_names(tree, hash_functions)
+    if not (challenge_vars and "testcycle(" in src
+            and "open_graph(" in src and "permute_graph(" in src):
+        return None
+    if not _branch_verified(tree, challenge_vars):
+        return None
+    values = _literal_module_values(tree)
+    rounds = values.get("numrounds")
+    graph = _graph_from_source(tree)
+    if type(rounds) is not int or not (1 <= rounds <= 4096):
+        return None
+    if not _valid_graph(graph):
+        return None
+    prompt = _proof_prompt(tree)
+    if prompt is None:
+        return None
+    return HamiltonicityInstance(doc.path, graph, params, rounds, prompt)
+
+
 def extract_instance(documents: Sequence[Document]) -> HamiltonicityInstance | None:
     for doc in documents:
         if not doc.path.casefold().endswith(".py"):
             continue
-        # Never combine a prover from one challenge with group parameters
-        # or a hash recipe from an unrelated directory/archive.
-        scoped = [candidate for candidate in documents
-                  if candidate.scope == doc.scope]
-        params = _pedersen_parameters(scoped)
-        hash_functions = _hash_function_names(scoped)
-        if params is None or not hash_functions:
-            continue
-        p, q, h1, h2 = params
-        if p <= q or min(h1, h2) <= 0 or max(h1, h2) >= p:
-            continue
-        try:
-            tree = ast.parse(doc.text)
-        except SyntaxError:
-            continue
-        src = ast.unparse(tree)
-        # Detect the challenge by following data flow from a SHA-256 graph
-        # hash into the extracted low bit, not by its Python identifier.
-        challenge_vars = _fs_challenge_names(tree, hash_functions)
-        if not (challenge_vars and "testcycle(" in src
-                and "open_graph(" in src and "permute_graph(" in src):
-            continue
-        # The unblinded branch must actually be an acceptance path.
-        branch_verified = any(
-            isinstance(node, ast.If)
-            and isinstance(node.test, ast.Name)
-            and node.test.id in challenge_vars
-            and any(isinstance(call, ast.Call)
-                    and isinstance(call.func, ast.Name)
-                    and call.func.id == "open_graph"
-                    for child in node.orelse
-                    for call in ast.walk(child))
-            for node in ast.walk(tree)
-        )
-        if not branch_verified:
-            continue
-        values = _literal_module_values(tree)
-        rounds = values.get("numrounds")
-        graph = _graph_from_source(tree)
-        if type(rounds) is not int or not (1 <= rounds <= 4096):
-            continue
-        if (not isinstance(graph, list) or not graph
-                or not all(isinstance(row, list) and len(row) == len(graph) for row in graph)
-                or any(type(v) is not int or v not in (0, 1) for row in graph for v in row)):
-            continue
-        prompts = [
-            argument.value
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == "input"
-            for argument in node.args
-            if isinstance(argument, ast.Constant) and isinstance(argument.value, (bytes, str))
-        ]
-        chosen = next((item for item in prompts if b"proof" in
-                       (item if isinstance(item, bytes) else item.encode()).lower()), None)
-        if chosen is None:
-            continue
-        prompt = chosen if isinstance(chosen, bytes) else chosen.encode()
-        if not prompt or len(prompt) > 128:
-            continue
-        return HamiltonicityInstance(doc.path, graph, params, rounds, prompt)
+        instance = _instance_from_document(doc, documents)
+        if instance is not None:
+            return instance
     return None
 
 
@@ -310,7 +357,7 @@ def recover_flag(
                 progress(f"[FIAT-SHAMIR] Accepted {round_no+1}/{instance.rounds} rounds")
         reply = conn.rest()
         colored = re.sub(rb"\x1b\[[0-9;]*m", b"", reply)
-        match = re.search(rb"[a-zA-Z0-9_]{2,32}\{[^\r\n{}]{1,256}\}", colored)
+        match = re.search(rb"\w{2,32}\{[^\r\n{}]{1,256}\}", colored)
         if not match:
             raise RuntimeError("All rounds accepted, but server did not return a recognizable flag")
         progress(f"[FIAT-SHAMIR] All rounds passed after {total_trials} commitment trials")

@@ -113,7 +113,7 @@ jobs:
               files = []
               print("SAMPLE COMPONENT METRICS", json.dumps(response.get("components", [])[:10])[:5000], flush=True)
               for item in response.get("components", []):
-                  metric = {m["metric"]: m.get("value", "0") for m in item.get("measures", [])}
+                  metric = {m["metric"]: (m.get("value") or next(iter(m.get("periods", [])), {}).get("value", "0")) for m in item.get("measures", [])}
                   count = float(metric.get("new_duplicated_lines", 0) or metric.get("duplicated_lines", 0))
                   if count:
                       files.append((count, item["key"], metric))

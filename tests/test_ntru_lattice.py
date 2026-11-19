@@ -174,3 +174,16 @@ def test_isolated_worker_error_is_propagated(monkeypatch):
     with pytest.raises(RuntimeError, match="invalid lattice"):
         solve_isolated([1]*64, [2]*64, 64, 2, 127, 3, 3,
                        progress=lambda _: None)
+
+
+def test_streamed_ntru_worker_recovers_small_synthetic_key():
+    from cryptoscan.ntru_isolation import solve_isolated
+    degree, p, q, df, dg, _, h, ct, plaintext, _ = synthetic(n=16, seed=83)
+    messages = []
+    candidates = solve_isolated(
+        h, ct, degree, p, q, df, dg,
+        timeout_seconds=120, stream=True,
+        progress=messages.append,
+    )
+    assert any(item["plaintext"] == plaintext for item in candidates)
+    assert any("SymPy" in line for line in messages)

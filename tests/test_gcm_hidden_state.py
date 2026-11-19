@@ -162,3 +162,11 @@ def test_generic_detector_does_not_enable_wrong_network_adapter(tmp_path, monkey
     path = tmp_path / "alternate.py"
     path.write_text(source, encoding="utf-8")
     assert main([str(path), "--solve", "--host", "example.test", "--port", "2762"]) == 2
+
+
+def test_mutable_nonce_disqualifies_fixed_nonce_finding():
+    source = SOURCE.replace(
+        'if cmd == "tag":',
+        'if cmd == "tag":\\n        nonce = urandom(12)'
+    )
+    assert recognize_gcm_tag_oracle([Document("rotating_nonce.py", source, None)]) == []

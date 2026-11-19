@@ -10,6 +10,7 @@ from .cookie import main as cookie_main
 from .assistant import assistant_session
 from .diagnostics import diagnose_runtime
 from .dghv_workflow import recover_flag as recover_dghv_flag, supported_source as supported_dghv_source
+from .eclcg_workflow import extract_instance as extract_eclcg_instance, recover_flag as recover_eclcg_flag
 from .parser import collect_documents
 from .scanner import scan
 
@@ -77,8 +78,8 @@ def main(argv: list[str] | None = None) -> int:
         _parser().error("--assist and --no-assist cannot be combined")
     if args.solve and (args.format == "json" or args.assist or args.no_assist):
         _parser().error("--solve cannot be combined with --format json, --assist, or --no-assist")
-    if args.solve and (not args.host or not args.port):
-        _parser().error("--solve requires explicit --host and --port")
+    if args.solve and bool(args.host) != bool(args.port):
+        _parser().error("--host and --port must be supplied together")
     if args.assist and args.format == "json":
         _parser().error("--assist cannot be combined with --format json")
     documents = collect_documents(args.targets)
@@ -89,6 +90,17 @@ def main(argv: list[str] | None = None) -> int:
         color = not args.no_color and sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
         print(_text(findings, color))
     if args.solve:
+        if not args.host and extract_eclcg_instance(documents) is not None:
+            try:
+                flag = recover_eclcg_flag(documents)
+            except (RuntimeError, ValueError, ImportError, ArithmeticError) as exc:
+                print(f"ECDSA-LCG solver failed: {exc}", file=sys.stderr)
+                return 2
+            print(f"FLAG: {flag}")
+            return 0
+        if not (args.host and args.port and supported_dghv_source(documents)):
+            print("No supported source-verified solver for these files and endpoint.", file=sys.stderr)
+            return 2
         if not supported_dghv_source(documents):
             print("No supported source-verified automatic solver for these files.", file=sys.stderr)
             return 2

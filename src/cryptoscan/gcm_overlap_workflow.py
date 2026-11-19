@@ -101,6 +101,48 @@ def _cookie_name(documents: Sequence[Document], scope: str) -> str | None:
     return next(iter(names)) if len(names) == 1 else None
 
 
+def _imports_gcm_implementation(doc: Document) -> bool:
+    try:
+        tree = ast.parse(doc.text)
+    except SyntaxError:
+        return False
+    return any(
+        isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.split(".")[0] == "gcm"
+        and any(alias.name == "GCM" for alias in node.names)
+        for node in tree.body
+    )
+
+
+def _recipes_for_codec(
+    doc: Document, implementation: Document,
+    cookie_name: str | None,
+) -> list[OverlapRecipe]:
+    functions = _functions(doc)
+    builders = [
+        (function, fields) for function in functions
+        if (fields := _builder_fields(function)) is not None
+    ]
+    verifiers = [
+        (function, checks) for function in functions
+        if (checks := _verifier_checks(function)) is not None
+    ]
+    results = []
+    for builder, fields in builders:
+        for verifier, checks in verifiers:
+            if builder is verifier:
+                continue
+            if _gcm_iv_signature(builder) != _gcm_iv_signature(verifier):
+                continue
+            if not all(key in fields for key, _ in checks):
+                continue
+            results.append(OverlapRecipe(
+                doc.path, implementation.path, fields, checks, cookie_name,
+            ))
+    return results
+
+
 def find_overlap_recipe(
     documents: Sequence[Document], finding_location: str
 ) -> OverlapRecipe | None:
@@ -113,40 +155,14 @@ def find_overlap_recipe(
     if len(implementations) != 1:
         return None
     implementation = implementations[0]
+    cookie_name = _cookie_name(documents, implementation.scope)
     results = []
     for doc in documents:
         if doc.scope != implementation.scope or doc.path == implementation.path:
             continue
-        if not doc.path.lower().endswith(".py"):
+        if not doc.path.lower().endswith(".py") or not _imports_gcm_implementation(doc):
             continue
-        try:
-            tree = ast.parse(doc.text)
-        except SyntaxError:
-            continue
-        # Explicitly require import of the custom implementation API.
-        importing = any(
-            isinstance(node, ast.ImportFrom) and node.module
-            and node.module.split(".")[0] == "gcm"
-            and any(alias.name == "GCM" for alias in node.names)
-            for node in tree.body
-        )
-        if not importing:
-            continue
-        functions = _functions(doc)
-        builders = [(fn, fields) for fn in functions
-                    if (fields := _builder_fields(fn)) is not None]
-        verifiers = [(fn, checks) for fn in functions
-                     if (checks := _verifier_checks(fn)) is not None]
-        for builder, fields in builders:
-            for verifier, checks in verifiers:
-                if builder is verifier or _gcm_iv_signature(builder) != _gcm_iv_signature(verifier):
-                    continue
-                if not all(key in fields for key, _ in checks):
-                    continue
-                results.append(OverlapRecipe(
-                    doc.path, implementation.path, fields, checks,
-                    _cookie_name(documents, implementation.scope)
-                ))
+        results.extend(_recipes_for_codec(doc, implementation, cookie_name))
     return results[0] if len(results) == 1 else None
 
 

@@ -17,12 +17,12 @@ opening branch, validates the commitment openings, and sends 128 (or the
 source-specified number of) proofs to the authorized verifier. No secret
 Hamiltonian cycle or known flag is embedded in the solver.
 
-\`\`\`powershell
+```powershell
 cryptoscan . --no-assist
 cryptoscan . --solve --host archive.cryptohack.org --port 14635
-\`\`\`
+```
 
-Network access requires \`--solve --host --port\`. The detector is offline;
+Network access requires `--solve --host --port`. The detector is offline;
 the live protocol adapter expects a compatible JSON line-oriented graph
 proof server. The original CryptoHack artifacts and independent synthetic
 graphs are regression-tested. Live flag recovery must be independently
@@ -396,11 +396,11 @@ Usage:
 cryptoscan ".\challenge-files" --assist
 ~~~
 
-Select the new \`MLWE-REDUCIBLE-RING-QUOTIENT\` finding. Choose \`file\`
-to analyze a captured text transcript with \`sanitize_mat(A)\` and
-\`sanitize_vec(t)\` (base64/gzip encoded). The tool outputs an MLWE
-prediction \`1\` or a uniform prediction \`0\` and a residual bound.
-Choose \`tcp\` **only for CTF services you are authorized to test**,
+Select the new `MLWE-REDUCIBLE-RING-QUOTIENT` finding. Choose `file`
+to analyze a captured text transcript with `sanitize_mat(A)` and
+`sanitize_vec(t)` (base64/gzip encoded). The tool outputs an MLWE
+prediction `1` or a uniform prediction `0` and a residual bound.
+Choose `tcp` **only for CTF services you are authorized to test**,
 and supply the server host and port. It uses the native TCP challenge
 protocol, not HTTP, and submits consecutive predictions; it does not
 embed a challenge URL, flag or known response. Press Ctrl+C to stop.

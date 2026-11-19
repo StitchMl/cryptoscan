@@ -50,35 +50,47 @@ def _context(doc: Document, node: ast.AST) -> SourceContext:
     return SourceContext(doc.path, getattr(node, "name", "<unknown>"), node.lineno, snippet[:160])
 
 
-def relevant_source(finding: Any, documents: Sequence[Document]) -> list[SourceContext]:
-    """Resolve a finding to its actual document and enclosing functions, if any."""
+def _source_at_location(
+    document: Document, location: str, path: str,
+) -> SourceContext | None:
+    try:
+        line = int(location[len(path) + 1:].split(" ", 1)[0])
+    except (ValueError, IndexError):
+        return None
+    lines = document.text.splitlines()
+    if not 1 <= line <= len(lines):
+        return None
+    owner = "<module>"
+    try:
+        tree = ast.parse(document.text)
+        nodes = [
+            function for function in ast.walk(tree)
+            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and function.lineno <= line <= getattr(
+                function, "end_lineno", function.lineno
+            )
+        ]
+        if nodes:
+            owner = min(
+                nodes, key=lambda function: function.end_lineno - function.lineno
+            ).name
+    except (SyntaxError, ValueError):
+        pass
+    return SourceContext(
+        document.path, owner, line, lines[line - 1].strip()[:160],
+    )
+
+
+def relevant_source(
+    finding: Any, documents: Sequence[Document],
+) -> list[SourceContext]:
+    """Resolve a finding to its actual document and enclosing function."""
     path = finding.location.split(":", 1)[0].split(" + ", 1)[0]
-    matched = [document for document in documents if document.path == path]
-    contexts: list[SourceContext] = []
-    for document in matched:
-        try:
-            line = int(finding.location[len(path) + 1:].split(" ", 1)[0])
-        except (ValueError, IndexError):
-            line = None
-        if line is None:
-            continue
-        lines = document.text.splitlines()
-        if not 1 <= line <= len(lines):
-            continue
-        owner = "<module>"
-        try:
-            tree = ast.parse(document.text)
-            nodes = [
-                n for n in ast.walk(tree)
-                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and n.lineno <= line <= getattr(n, "end_lineno", n.lineno)
-            ]
-            if nodes:
-                owner = min(nodes, key=lambda n: n.end_lineno - n.lineno).name
-        except (SyntaxError, ValueError):
-            pass
-        contexts.append(SourceContext(document.path, owner, line, lines[line - 1].strip()[:160]))
-    return contexts
+    matches = [
+        _source_at_location(document, finding.location, path)
+        for document in documents if document.path == path
+    ]
+    return [match for match in matches if match is not None]
 
 
 def _is_json_payload(node: ast.AST) -> tuple[str, ...] | None:
@@ -105,7 +117,7 @@ def _is_json_payload(node: ast.AST) -> tuple[str, ...] | None:
     return keys
 
 
-def _build_signature(doc: Document, node: ast.FunctionDef) -> tuple[str, ...] | None:
+def _build_signature(node: ast.FunctionDef) -> tuple[str, ...] | None:
     """Recognize the supplied custom GCM token layout, not arbitrary GCM use."""
     fields = None
     gcm_constructed = any(
@@ -156,51 +168,54 @@ def _verification_signature(node: ast.FunctionDef) -> bool:
     return not uses_auth
 
 
-def _required_equality_checks(node: ast.FunctionDef) -> tuple[tuple[str, str], ...] | None:
-    """Prove the simple deny-on-inequality, allow-on-success verifier pattern.
-
-    This intentionally declines complex conditions rather than assuming a
-    field is optional. Exact AST recognition prevents the assistant from
-    crafting arbitrary formats for unrelated challenges.
-    """
-    checks: list[tuple[str, str]] = []
-    subscript_keys: set[str] = set()
-    for item in ast.walk(node):
-        if isinstance(item, ast.Subscript) and isinstance(item.slice, ast.Constant):
-            if isinstance(item.slice.value, str):
-                subscript_keys.add(item.slice.value)
-    if not subscript_keys:
+def _equality_guard(item: ast.stmt) -> tuple[str, str] | None:
+    """Recognize one if-payload-field-not-equal-literal return-False guard."""
+    if not isinstance(item, ast.If) or len(item.body) != 1 or item.orelse:
         return None
-    for item in node.body:
-        if not isinstance(item, ast.If) or len(item.body) != 1 or item.orelse:
-            continue
-        expr = item.test
-        if not (isinstance(expr, ast.Compare) and len(expr.ops) == 1
-                and isinstance(expr.ops[0], ast.NotEq)
-                and len(expr.comparators) == 1):
-            continue
-        denial = item.body[0]
-        if not (isinstance(denial, ast.Return)
-                and isinstance(denial.value, ast.Constant)
-                and denial.value.value is False):
-            continue
-        left, right = expr.left, expr.comparators[0]
-        if isinstance(right, ast.Subscript) and isinstance(left, ast.Constant):
-            left, right = right, left
-        if not (isinstance(left, ast.Subscript)
-                and isinstance(left.slice, ast.Constant)
-                and isinstance(left.slice.value, str)
-                and isinstance(right, ast.Constant)
-                and isinstance(right.value, str)):
-            continue
-        checks.append((left.slice.value, right.value))
-    if not checks or {name for name, _ in checks} != subscript_keys:
+    test = item.test
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.NotEq)
+            and len(test.comparators) == 1):
+        return None
+    denial = item.body[0]
+    if not (isinstance(denial, ast.Return)
+            and isinstance(denial.value, ast.Constant)
+            and denial.value.value is False):
+        return None
+    left, right = test.left, test.comparators[0]
+    if isinstance(right, ast.Subscript) and isinstance(left, ast.Constant):
+        left, right = right, left
+    if not (isinstance(left, ast.Subscript)
+            and isinstance(left.slice, ast.Constant)
+            and isinstance(left.slice.value, str)
+            and isinstance(right, ast.Constant)
+            and isinstance(right.value, str)):
+        return None
+    return left.slice.value, right.value
+
+
+def _required_equality_checks(node: ast.FunctionDef) -> tuple[tuple[str, str], ...] | None:
+    """Identify exact deny-on-inequality, allow-on-success source logic."""
+    keys = {
+        item.slice.value for item in ast.walk(node)
+        if isinstance(item, ast.Subscript)
+        and isinstance(item.slice, ast.Constant)
+        and isinstance(item.slice.value, str)
+    }
+    if not keys:
+        return None
+    checks = [
+        guard for statement in node.body
+        if (guard := _equality_guard(statement)) is not None
+    ]
+    if not checks or {name for name, _ in checks} != keys:
         return None
     if len({name for name, _ in checks}) != len(checks):
         return None
-    if not (isinstance(node.body[-1], ast.Return)
-            and isinstance(node.body[-1].value, ast.Constant)
-            and node.body[-1].value.value is True):
+    final = node.body[-1]
+    if not (isinstance(final, ast.Return)
+            and isinstance(final.value, ast.Constant)
+            and final.value.value is True):
         return None
     return tuple(checks)
 
@@ -223,7 +238,7 @@ def discover_token_recipes(documents: Sequence[Document]) -> list[TokenRecipe]:
     builders = []
     verifiers = []
     for doc, function in _functions(documents):
-        fields = _build_signature(doc, function)
+        fields = _build_signature(function)
         if fields:
             builders.append((doc, function, fields))
         if _verification_signature(function):

@@ -9,6 +9,7 @@ import json
 import sys
 
 from .ntru_lattice import solve
+from .ntru_folding import solve_folded
 
 
 def main() -> int:
@@ -17,7 +18,7 @@ def main() -> int:
         if len(raw) > 131072:
             raise ValueError("NTRU input exceeds process safety limit")
         data = json.loads(raw)
-        required = {"h", "ct", "n", "p", "q", "df", "dg", "bkz"}
+        required = {"h", "ct", "n", "p", "q", "df", "dg", "bkz", "method"}
         if not isinstance(data, dict) or set(data) != required:
             raise ValueError("invalid NTRU worker input")
         n = data["n"]
@@ -26,7 +27,11 @@ def main() -> int:
                 and isinstance(h, list) and isinstance(ct, list)
                 and len(h) == n and len(ct) == n):
             raise ValueError("invalid NTRU vector dimensions")
-        results = solve(
+        method = data["method"]
+        if method not in {"full", "fold"}:
+            raise ValueError("invalid NTRU solver strategy")
+        solver = solve_folded if method == "fold" else solve
+        results = solver(
             h, ct, n, data["p"], data["q"], data["df"], data["dg"],
             bkz=data["bkz"],
             progress=lambda message: print(message, file=sys.stderr, flush=True),

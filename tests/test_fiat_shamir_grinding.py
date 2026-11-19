@@ -163,3 +163,17 @@ def test_no_fabricated_flag_after_accepted_rounds(monkeypatch):
     monkeypatch.setattr(workflow, "_Connection", FakeServer)
     with pytest.raises(RuntimeError, match="did not return"):
         recover_flag(docs(), "example.test", 14635, progress=lambda _: None)
+
+
+def test_does_not_mix_sources_from_separate_ctfs():
+    prover = Document("first/challenge.py", CHALLENGE, None, scope="first")
+    unrelated = Document("second/helper.py", HELPER, None, scope="second")
+    assert extract_instance([prover, unrelated]) is None
+
+
+def test_generic_grinding_reports_exhausted_budget():
+    with pytest.raises(RuntimeError, match="exhausted"):
+        grind_challenge(
+            b"", lambda: (b"commitment", []),
+            lambda commitment, state: hashlib.sha256(commitment + state).digest(),
+            lambda digest: False, max_trials=3)

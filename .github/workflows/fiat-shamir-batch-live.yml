@@ -1,0 +1,25 @@
+name: Fiat-Shamir batch live CTF benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/cryptoscan/fiat_shamir_batch.py"
+      - "src/cryptoscan/fiat_shamir_encoding.py"
+      - ".github/workflows/fiat-shamir-batch-live.yml"
+
+jobs:
+  authorized-cryptohack-verifier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install CryptoScan
+        run: python -m pip install -e .
+      - name: Verify batch proof equivocation against public CTF service
+        run: |
+          timeout 150 cryptoscan tests/fixtures/fiat_shamir_hamiltonicity2 --solve --host archive.cryptohack.org --port 34597 --timeout 20

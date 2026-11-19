@@ -22,6 +22,7 @@ from .mathutil import (
 )
 from .model import Finding
 from .eclcg_detector import detect_ec_lcg
+from .fischlin_workflow import supported_source as supported_fischlin_source
 from .dghv_workflow import supported_source as supported_dghv_source
 from .rsa_padding_positives import discover_positive_padding_oracles
 from .modular_linear_hash import recognize_linear_hash, solve_linear_hash
@@ -1299,6 +1300,28 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
              "Verify any recovered private key before claiming flag recovery."],
         ))
     for doc in documents:
+        if supported_fischlin_source([doc]):
+            findings.append(Finding(
+                "FISCHLIN-FIRST-HIT-WITNESS-LEAK",
+                "Fischlin proof leaks branch identity through first-hit hash selection",
+                "critical", "high", f"{doc.path}:fischlin_proof",
+                {"hash": "SHA-512", "leading_zero_bits": 6,
+                 "max_attempts_per_round": 16, "rounds": 64,
+                 "source_verified": True, "online_solver": True},
+                ["The service discloses one valid witness per transcript.",
+                 "The prover deterministically takes the first hash under threshold.",
+                 "Authorized service address must be supplied explicitly."],
+                "Use the disclosed witness to reconstruct earlier candidate proof "
+                "transcripts under the real-branch hypothesis. If an earlier "
+                "candidate meets the hash bound, that branch must be simulated.",
+                {"kind": "fischlin_first_hit_tcp", "requires": ["host", "port"]},
+                "Avoid publishing witnesses and relying on a deterministic first-hit "
+                "sampling transcript as a witness-indistinguishability mechanism.",
+                ["Provide the challenge source and group parameters.",
+                 "Run cryptoscan . --solve --host HOST --port PORT.",
+                 "Skip inconclusive transcripts; never guess a branch without evidence.",
+                 "Complete all 64 rounds and parse the returned flag."],
+            ))
         if supported_dghv_source([doc]):
             findings.append(Finding(
                 "DGHV-NOISE-OVERFLOW", "DGHV positive-noise overflow leaks private modulus",

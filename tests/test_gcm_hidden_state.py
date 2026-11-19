@@ -45,7 +45,8 @@ def test_codegate_source_reproduces_finding():
     found = [f for f in scan(docs) if f.rule == "GCM-HIDDEN-STATE-TAG-ORACLE"]
     assert len(found) == 1
     assert found[0].recovery_status == "validation-only"
-    assert found[0].solver["implemented"] is False
+    assert found[0].solver["implemented"] is True
+    assert found[0].evidence["live_server_verified"] is False
 
 
 def test_no_false_positive_on_independent_nonce_or_missing_mutations():

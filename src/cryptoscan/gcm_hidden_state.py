@@ -49,7 +49,165 @@ class GCMTagOracle:
     pow_difficulty: int | None
 
 
+def _call_name(call: ast.Call) -> str | None:
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _subscript_state(arg: ast.expr) -> tuple[str, str] | None:
+    """Return a shared container and statically determined index."""
+    if not isinstance(arg, ast.Subscript) or not isinstance(arg.value, ast.Name):
+        return None
+    try:
+        index = ast.literal_eval(arg.slice)
+    except (ValueError, TypeError):
+        return None
+    if type(index) is not int:
+        return None
+    return (arg.value.id, str(index))
+
+
+def _module_bound_names(tree: ast.Module) -> set[str]:
+    bound: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+        for target in targets:
+            for child in ast.walk(target):
+                if isinstance(child, ast.Name):
+                    bound.add(child.id)
+    return bound
+
+
+def _gcm_factories(tree: ast.Module) -> set[str]:
+    """Identify factories returning a GCM cipher under a module-scoped nonce.
+
+    This deliberately refuses nonces generated inline and nonces refreshed
+    inside the cipher factory: they are not evidence of nonce reuse.
+    """
+    module_names = _module_bound_names(tree)
+    factory_names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Lambda):
+            funcs = [(target.id, node.value.body, None)
+                     for target in node.targets if isinstance(target, ast.Name)]
+        elif isinstance(node, ast.FunctionDef):
+            returns = [child.value for child in ast.walk(node)
+                       if isinstance(child, ast.Return)]
+            funcs = [(node.name, expression, node) for expression in returns]
+        else:
+            continue
+        for name, expression, function in funcs:
+            if not isinstance(expression, ast.Call):
+                continue
+            if not (isinstance(expression.func, ast.Attribute)
+                    and expression.func.attr == "new"
+                    and len(expression.args) >= 3
+                    and isinstance(expression.args[1], ast.Attribute)
+                    and expression.args[1].attr == "MODE_GCM"):
+                continue
+            nonce = expression.args[2]
+            if not isinstance(nonce, ast.Name) or nonce.id not in module_names:
+                continue
+            if function is not None:
+                local_writes = set()
+                for child in ast.walk(function):
+                    if isinstance(child, (ast.Assign, ast.AnnAssign)):
+                        targets = child.targets if isinstance(child, ast.Assign) else (child.target,)
+                        for target in targets:
+                            local_writes.update(inner.id for inner in ast.walk(target)
+                                                if isinstance(inner, ast.Name))
+                if nonce.id in local_writes:
+                    continue
+            factory_names.add(name)
+    return factory_names
+
+
+def _authentication_states(tree: ast.Module, factories: set[str]) -> set[str]:
+    """Identify two-field hidden state authenticated by one GCM cipher."""
+    states: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        if _call_name(node.value) not in factories:
+            continue
+        cipher_names = {target.id for target in node.targets
+                        if isinstance(target, ast.Name)}
+        if not cipher_names:
+            continue
+        called: dict[str, set[tuple[str, str]]] = {"update": set(), "encrypt": set()}
+        digest_seen = False
+        for call in ast.walk(tree):
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
+                continue
+            receiver = call.func.value
+            if not isinstance(receiver, ast.Name) or receiver.id not in cipher_names:
+                continue
+            if call.func.attr in called and call.args:
+                state = _subscript_state(call.args[0])
+                if state is not None:
+                    called[call.func.attr].add(state)
+            elif call.func.attr == "digest":
+                digest_seen = True
+        if not digest_seen:
+            continue
+        for aad, _ in called["update"]:
+            if any(state == aad for state, _ in called["encrypt"]):
+                states.add(aad)
+    return states
+
+
+def _mutated_states(tree: ast.Module) -> set[str]:
+    """Require both replacement and extension of a random-indexed state."""
+    resets: set[str] = set()
+    extensions: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets, increment = node.targets, False
+        elif isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add):
+            targets, increment = (node.target,), True
+        else:
+            continue
+        for target in targets:
+            if not isinstance(target, ast.Subscript) or not isinstance(target.value, ast.Name):
+                continue
+            # Random/unknown index: not one statically known selected slot.
+            try:
+                ast.literal_eval(target.slice)
+                continue
+            except (ValueError, TypeError):
+                pass
+            (extensions if increment else resets).add(target.value.id)
+    return resets & extensions
+
+
+def _empty_tag_targets(tree: ast.Module, factories: set[str]) -> bool:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
+                continue
+            if call.func.attr != "digest":
+                continue
+            receiver = call.func.value
+            if isinstance(receiver, ast.Call) and _call_name(receiver) in factories:
+                return True
+    return False
+
+
 def recognize_gcm_tag_oracle(documents: Sequence[Document]) -> list[GCMTagOracle]:
+    """Recognize the source-level weakness without assuming challenge command names.
+
+    Only the combination of a persistent nonce, an authenticated hidden
+    two-field state, replacement and extension of that state, an exposed
+    digest, and an empty-message tag comparison is actionable evidence.
+    """
     matches = []
     for doc in documents:
         if not doc.path.casefold().endswith(".py"):
@@ -58,21 +216,11 @@ def recognize_gcm_tag_oracle(documents: Sequence[Document]) -> list[GCMTagOracle
             tree = ast.parse(doc.text)
         except SyntaxError:
             continue
-        # Match code structure rather than comments or arbitrary words in output files.
-        normalized = "".join(ast.unparse(tree).split())
-        has_aes = "AES.new(key,AES.MODE_GCM,nonce)" in normalized
-        has_tag_path = all(x in normalized for x in (
-            "cmd=='tag'", "cipher=new()", "cipher.update(s[0])",
-            "cipher.encrypt(s[1])", "cipher.digest().hex()"
-        ))
-        has_mutation = all(x in normalized for x in (
-            "cmd=='u1'", "cmd=='u2'", "s[randbit()]=gen()",
-            "s[randbit()]+=gen()"
-        ))
-        has_target = "new().digest().hex()" in normalized
-        has_random_state = "s=[gen(),gen()]" in normalized
-        if not (has_aes and has_tag_path and has_mutation
-                and has_target and has_random_state):
+        factories = _gcm_factories(tree)
+        if not factories:
+            continue
+        states = _authentication_states(tree, factories) & _mutated_states(tree)
+        if not states or not _empty_tag_targets(tree, factories):
             continue
         timeout = pow_bits = None
         for node in ast.walk(tree):
@@ -88,9 +236,8 @@ def recognize_gcm_tag_oracle(documents: Sequence[Document]) -> list[GCMTagOracle
                     except (ValueError, TypeError):
                         pass
         line = next((node.lineno for node in ast.walk(tree)
-                     if isinstance(node, ast.Lambda)
-                     and "AES.new" in ast.unparse(node)
-                     and "MODE_GCM" in ast.unparse(node)), 1)
+                     if isinstance(node, ast.Attribute)
+                     and node.attr == "MODE_GCM"), 1)
         matches.append(GCMTagOracle(
             doc.path, line,
             timeout if type(timeout) is int and timeout > 0 else None,

@@ -137,8 +137,30 @@ def _gcm_factories(tree: ast.Module) -> set[str]:
     return names
 
 
+def _cipher_state_uses(
+    tree: ast.Module, cipher_names: set[str],
+) -> tuple[dict[str, set[tuple[str, str]]], bool]:
+    called: dict[str, set[tuple[str, str]]] = {
+        "update": set(), "encrypt": set(),
+    }
+    digest_seen = False
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
+            continue
+        receiver = call.func.value
+        if not isinstance(receiver, ast.Name) or receiver.id not in cipher_names:
+            continue
+        if call.func.attr == "digest":
+            digest_seen = True
+        elif call.func.attr in called and call.args:
+            state = _subscript_state(call.args[0])
+            if state is not None:
+                called[call.func.attr].add(state)
+    return called, digest_seen
+
+
 def _authentication_states(tree: ast.Module, factories: set[str]) -> set[str]:
-    """Identify two-field hidden state authenticated by one GCM cipher."""
+    """Identify hidden state reused by both AAD and encryption calls."""
     states: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
@@ -149,49 +171,39 @@ def _authentication_states(tree: ast.Module, factories: set[str]) -> set[str]:
                         if isinstance(target, ast.Name)}
         if not cipher_names:
             continue
-        called: dict[str, set[tuple[str, str]]] = {"update": set(), "encrypt": set()}
-        digest_seen = False
-        for call in ast.walk(tree):
-            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
-                continue
-            receiver = call.func.value
-            if not isinstance(receiver, ast.Name) or receiver.id not in cipher_names:
-                continue
-            if call.func.attr in called and call.args:
-                state = _subscript_state(call.args[0])
-                if state is not None:
-                    called[call.func.attr].add(state)
-            elif call.func.attr == "digest":
-                digest_seen = True
-        if not digest_seen:
-            continue
-        for aad, _ in called["update"]:
-            if any(state == aad for state, _ in called["encrypt"]):
-                states.add(aad)
+        calls, has_digest = _cipher_state_uses(tree, cipher_names)
+        if has_digest:
+            aad_names = {name for name, _ in calls["update"]}
+            encrypted_names = {name for name, _ in calls["encrypt"]}
+            states.update(aad_names & encrypted_names)
     return states
 
 
+def _dynamic_state_container(target: ast.AST) -> str | None:
+    if not isinstance(target, ast.Subscript) or not isinstance(target.value, ast.Name):
+        return None
+    try:
+        ast.literal_eval(target.slice)
+    except (ValueError, TypeError):
+        return target.value.id
+    return None
+
+
 def _mutated_states(tree: ast.Module) -> set[str]:
-    """Require both replacement and extension of a random-indexed state."""
+    """Require both replacement and extension of a randomly indexed state."""
     resets: set[str] = set()
     extensions: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
-            targets, increment = node.targets, False
+            targets, updated = node.targets, resets
         elif isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add):
-            targets, increment = (node.target,), True
+            targets, updated = (node.target,), extensions
         else:
             continue
-        for target in targets:
-            if not isinstance(target, ast.Subscript) or not isinstance(target.value, ast.Name):
-                continue
-            # Random/unknown index: not one statically known selected slot.
-            try:
-                ast.literal_eval(target.slice)
-                continue
-            except (ValueError, TypeError):
-                pass
-            (extensions if increment else resets).add(target.value.id)
+        updated.update(
+            name for target in targets
+            if (name := _dynamic_state_container(target)) is not None
+        )
     return resets & extensions
 
 

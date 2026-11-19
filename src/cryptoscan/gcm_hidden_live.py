@@ -14,6 +14,32 @@ from .gcm_hidden_growth import identify_growth_prefix, recover_empty_gcm_tag_can
 from .parser import Document
 
 
+def supports_wire_profile(documents: Sequence[Document]) -> bool:
+    """Is the known interactive protocol compatible with this TCP adapter?
+
+    The vulnerability detector is intentionally generic. The network
+    adapter, however, understands a specific command vocabulary and PoW
+    handshake. Never send its commands to an arbitrary GCM service.
+    """
+    recognized = {item.path for item in recognize_gcm_tag_oracle(documents)}
+    for doc in documents:
+        if doc.path not in recognized:
+            continue
+        try:
+            tree = ast.parse(doc.text)
+        except SyntaxError:
+            continue
+        strings = {node.value for node in ast.walk(tree)
+                   if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+        if not {"tag", "u1", "u2", "> ", "tag: "} <= strings:
+            continue
+        if not all(item in "".join(ast.unparse(tree).split())
+                   for item in ("PoW(26)", "alarm(20)")):
+            continue
+        return True
+    return False
+
+
 class _Connection:
     def __init__(self, host: str, port: int, timeout: float):
         self.sock = socket.create_connection((host, port), timeout=timeout)

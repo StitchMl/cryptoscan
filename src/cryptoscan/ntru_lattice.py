@@ -210,7 +210,7 @@ def _candidate_from_reduced_row(
         "private_g": g,
         "public_relation_verified": True,
         "flag_shaped": bool(re.search(
-            rb"[A-Za-z0-9_]{1,30}\{[\x20-\x7e]{1,180}\}", plaintext
+            rb"\\w{1,30}\{[\x20-\x7e]{1,180}\}", plaintext
         )),
     }
 

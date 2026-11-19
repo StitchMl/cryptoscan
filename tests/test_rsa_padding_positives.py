@@ -84,7 +84,9 @@ def test_source_recognizes_public_key_and_positive_transcript():
     assert _source_names(docs[0].text) is not None, "source AST oracle detection failed"
     assert len(pem_rsa_public_keys(docs[1].text)) == 1, "PEM parsing failed"
     records = scalar_records(docs[2].text)
-    assert records and "enc_flag" in records[0] and "r" in records[0], "transcript parse failed"
+    assert records, "transcript parse failed"
+    assert "enc_flag" in records[0], "ciphertext missing"
+    assert "r" in records[0], "positive multipliers missing"
     matches = discover_positive_padding_oracles(docs)
     assert len(matches) == 1
     oracle = matches[0]

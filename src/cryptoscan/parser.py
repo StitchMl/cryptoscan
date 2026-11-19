@@ -226,7 +226,7 @@ def assignments(text: str) -> dict[str, Any]:
 def scalar_records(text: str) -> list[dict[str, Any]]:
     """Parse common challenge dumps: Python assignments and key: value lines."""
     result = assignments(text)
-    pattern = re.compile(r"(?m)^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*([^#\r\n]+)")
+    pattern = re.compile(r"(?m)^\s*([A-Za-z_](?a:[\\w-])*)\s*:\s*([^#\r\n]+)")
     for name, literal in pattern.findall(text):
         key = name.casefold().replace("-", "_")
         raw = literal.strip().rstrip(",")

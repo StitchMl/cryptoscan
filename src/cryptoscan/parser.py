@@ -84,9 +84,13 @@ def collect_documents(targets: Iterable[str]) -> list[Document]:
                 data = json.loads(text)
         relative = path.relative_to(root).as_posix()
         documents.append(Document(relative, text, data, _scope(relative), hashlib.sha256(raw).hexdigest()))
-    unique: dict[str, Document] = {}
+    # Avoid cross-challenge deduplication. Identical source templates may
+    # occur in independent CTF folders with different companion outputs.
+    # Deduplicating by digest alone would discard one folder's source and
+    # prevent scope-local correlation with its ciphertexts.
+    unique: dict[tuple[str, str], Document] = {}
     for document in sorted(documents, key=lambda item: ("!/" in item.path, item.path.casefold())):
-        unique.setdefault(document.digest, document)
+        unique.setdefault((document.scope, document.digest), document)
     return list(unique.values())
 
 

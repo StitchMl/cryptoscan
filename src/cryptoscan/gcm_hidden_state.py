@@ -62,11 +62,11 @@ def recognize_gcm_tag_oracle(documents: Sequence[Document]) -> list[GCMTagOracle
         normalized = "".join(ast.unparse(tree).split())
         has_aes = "AES.new(key,AES.MODE_GCM,nonce)" in normalized
         has_tag_path = all(x in normalized for x in (
-            'cmd=="tag"', "cipher=new()", "cipher.update(s[0])",
+            "cmd=='tag'", "cipher=new()", "cipher.update(s[0])",
             "cipher.encrypt(s[1])", "cipher.digest().hex()"
         ))
         has_mutation = all(x in normalized for x in (
-            'cmd=="u1"', 'cmd=="u2"', "s[randbit()]=gen()",
+            "cmd=='u1'", "cmd=='u2'", "s[randbit()]=gen()",
             "s[randbit()]+=gen()"
         ))
         has_target = "new().digest().hex()" in normalized

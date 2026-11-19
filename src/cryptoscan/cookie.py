@@ -128,14 +128,24 @@ def build_cookie(masterkey: str, username: str, role: str) -> str:
         raise ValueError("master key must be in hex") from exc
     if len(key) != 16:
         raise ValueError("master key must be 16 bytes (32 hexadecimal digits)")
-    cipher = AES.new(key, AES.MODE_ECB)
-    j0 = bytes(15) + b"\x01"
+    # This legacy CTF format is intentionally *not* standard AES-GCM.
+    # It encrypts data with CTR starting at block 1 (instead of GCM's
+    # block 2), then derives H=E_K(0) and masks GHASH with E_K(1).
+    # Use explicit CTR streams rather than constructing an ECB cipher.
+    # Never use a fixed nonce/counter sequence for production tokens.
     data = token_payload(username, role)
-    ciphertext = _gctr(cipher, j0, data)
+    ciphertext = AES.new(
+        key, AES.MODE_CTR, nonce=b"", initial_value=1,
+    ).encrypt(data)
     blocks = ciphertext + bytes(-len(ciphertext) % 16)
     length_block = bytes(8) + (8 * len(ciphertext)).to_bytes(8, "big")
-    auth = _ghash(cipher.encrypt(bytes(16)), blocks + length_block)
-    tag = _gctr(cipher, j0, auth)
+    hash_key = AES.new(
+        key, AES.MODE_CTR, nonce=b"", initial_value=0,
+    ).encrypt(bytes(16))
+    auth = _ghash(hash_key, blocks + length_block)
+    tag = AES.new(
+        key, AES.MODE_CTR, nonce=b"", initial_value=1,
+    ).encrypt(auth)
     return ciphertext.hex() + ";" + tag.hex()
 
 

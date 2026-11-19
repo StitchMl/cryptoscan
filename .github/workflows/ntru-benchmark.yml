@@ -6,6 +6,9 @@ on:
     branches: [main]
     paths:
       - "benchmarks/test_ntru_origami_full.py"
+      - "src/cryptoscan/ntru_folding.py"
+      - "src/cryptoscan/ntru_worker.py"
+      - "src/cryptoscan/ntru_auto.py"
       - ".github/workflows/ntru-benchmark.yml"
 
 jobs:

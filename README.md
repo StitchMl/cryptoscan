@@ -1,5 +1,28 @@
 # cryptoscan
 
+## Source-verified Fischlin witness-discrimination CTF workflow
+
+For the CryptoHack **Fischlin's Transformation** CTF (with its original
+`chal.py` and `params.py`), CryptoScan recognizes that the prover selects
+the **first** hash satisfying a threshold and reveals a witness selected by
+the client. Under the hypothesis that the revealed witness is the real
+branch, the client can reconstruct earlier trial hashes. An earlier
+successful hash disproves that hypothesis and identifies the other branch.
+Uninformative transcripts are skipped, never guessed.
+
+To run against the **authorized** challenge server, opt in to network
+access:
+
+```powershell
+cryptoscan . --solve --host archive.cryptohack.org --port 3583
+```
+
+The solver retries fresh sessions when the 16 attempts in a round produce
+no conclusive transcript. It must complete all 64 rounds before it can print
+`FLAG: ...`. The approach uses the disclosed witness and is not a
+generic attack on Fischlin's transformation or witness indistinguishability.
+
+
 ## Opt-in DGHV chosen-N noise-overflow recovery
 
 CryptoScan can recognize a source-established 128-bit DGHV additive scheme

@@ -177,3 +177,30 @@ def test_missing_range_validation_prevents_false_positive():
         Document("hamiltonicity.py", hardened, None),
     ]
     assert extract_instance(docs) is None
+
+
+def test_detector_survives_challenge_state_and_bit_variable_renames():
+    original = (FIXTURE / "chal.py").read_text()
+    renamed = (
+        original.replace("challenge_bits", "selected_bits")
+        .replace("challenge = ", "selected_branch = ")
+        .replace("if challenge:", "if selected_branch:")
+    )
+    docs = [
+        Document("prover.py", renamed, None),
+        Document("math.py", (FIXTURE / "hamiltonicity.py").read_text(), None),
+    ]
+    assert extract_instance(docs) is not None
+
+
+def test_canonical_serialization_disables_equivocation_finding():
+    helper = (FIXTURE / "hamiltonicity.py").read_text()
+    safer = helper.replace(
+        'first_message = "".join([str(x) for xs in G for x in xs])',
+        'first_message = repr(G)',
+    )
+    docs = [
+        Document("server.py", (FIXTURE / "chal.py").read_text(), None),
+        Document("helper.py", safer, None),
+    ]
+    assert extract_instance(docs) is None

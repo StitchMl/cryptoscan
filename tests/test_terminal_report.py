@@ -49,7 +49,7 @@ def test_colored_severity_and_recovery_state():
     result = render_findings([sample()], color=True)
     assert "\x1b[" in result
     assert "[MEDIUM]" in re.sub(r"\x1b\[[0-9;]*m", "", result)
-    assert "Recovery:" in result
+    assert "Recovery:" in re.sub(r"\x1b\[[0-9;]*m", "", result)
     assert result.endswith("\x1b[0m")
 
 

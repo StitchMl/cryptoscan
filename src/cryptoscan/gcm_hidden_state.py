@@ -84,61 +84,57 @@ def _module_bound_names(tree: ast.Module) -> set[str]:
     return bound
 
 
-def _gcm_factories(tree: ast.Module) -> set[str]:
-    """Identify factories returning a GCM cipher under a module-scoped nonce.
-
-    This deliberately refuses nonces generated inline and nonces refreshed
-    inside the cipher factory: they are not evidence of nonce reuse.
-    """
-    module_names = _module_bound_names(tree)
-    factory_names: set[str] = set()
+def _gcm_factory_declarations(tree: ast.Module):
+    """Return source-visible functions and lambdas that build cipher objects."""
     for node in tree.body:
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Lambda):
-            funcs = [(target.id, node.value.body, None)
-                     for target in node.targets if isinstance(target, ast.Name)]
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    yield target.id, node.value.body, None
         elif isinstance(node, ast.FunctionDef):
-            returns = [child.value for child in ast.walk(node)
-                       if isinstance(child, ast.Return)]
-            funcs = [(node.name, expression, node) for expression in returns]
-        else:
+            for child in ast.walk(node):
+                if isinstance(child, ast.Return):
+                    yield node.name, child.value, node
+
+
+def _gcm_factory_nonce(expression: ast.AST) -> str | None:
+    if not isinstance(expression, ast.Call):
+        return None
+    if not (isinstance(expression.func, ast.Attribute)
+            and expression.func.attr == "new" and len(expression.args) >= 3
+            and isinstance(expression.args[1], ast.Attribute)
+            and expression.args[1].attr == "MODE_GCM"):
+        return None
+    nonce = expression.args[2]
+    return nonce.id if isinstance(nonce, ast.Name) else None
+
+
+def _written_names(tree: ast.AST):
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
             continue
-        for name, expression, function in funcs:
-            if not isinstance(expression, ast.Call):
-                continue
-            if not (isinstance(expression.func, ast.Attribute)
-                    and expression.func.attr == "new"
-                    and len(expression.args) >= 3
-                    and isinstance(expression.args[1], ast.Attribute)
-                    and expression.args[1].attr == "MODE_GCM"):
-                continue
-            nonce = expression.args[2]
-            if not isinstance(nonce, ast.Name) or nonce.id not in module_names:
-                continue
-            # An initial module-level nonce is not proof of reuse if the
-            # same variable is refreshed later (including inside a loop).
-            writes = 0
-            for assignment in ast.walk(tree):
-                if not isinstance(assignment, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-                    continue
-                targets = (assignment.targets if isinstance(assignment, ast.Assign)
-                           else (assignment.target,))
-                if any(isinstance(child, ast.Name) and child.id == nonce.id
-                       for target in targets for child in ast.walk(target)):
-                    writes += 1
-            if writes != 1:
-                continue
-            if function is not None:
-                local_writes = set()
-                for child in ast.walk(function):
-                    if isinstance(child, (ast.Assign, ast.AnnAssign)):
-                        targets = child.targets if isinstance(child, ast.Assign) else (child.target,)
-                        for target in targets:
-                            local_writes.update(inner.id for inner in ast.walk(target)
-                                                if isinstance(inner, ast.Name))
-                if nonce.id in local_writes:
-                    continue
-            factory_names.add(name)
-    return factory_names
+        targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+        for target in targets:
+            for child in ast.walk(target):
+                if isinstance(child, ast.Name):
+                    yield child.id
+
+
+def _gcm_factories(tree: ast.Module) -> set[str]:
+    """Only factories with a single, module-scoped, stable nonce qualify."""
+    module_names = _module_bound_names(tree)
+    written = list(_written_names(tree))
+    names: set[str] = set()
+    for name, expression, function in _gcm_factory_declarations(tree):
+        nonce = _gcm_factory_nonce(expression)
+        if nonce is None or nonce not in module_names:
+            continue
+        if written.count(nonce) != 1:
+            continue
+        if function is not None and nonce in set(_written_names(function)):
+            continue
+        names.add(name)
+    return names
 
 
 def _authentication_states(tree: ast.Module, factories: set[str]) -> set[str]:

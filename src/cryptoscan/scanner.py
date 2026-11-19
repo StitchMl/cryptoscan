@@ -89,21 +89,39 @@ def _rsa_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def _bytes_records(records: list[dict[str, Any]], ntru_contexts=()) -> list[dict[str, Any]]:
+def _binary_cipher_record(
+    record: dict[str, Any], key: Any, value: Any,
+    ntru_contexts,
+) -> dict[str, Any] | None:
+    name = str(key).casefold()
+    if not any(token in name for token in ("cipher", "ct", "encrypted", "payload", "data")):
+        return None
+    if any(
+        record["scope"] == context.scope
+        and is_polynomial_coefficients(value, context)
+        for context in ntru_contexts
+    ):
+        return None
+    parsed = parse_bytes(value)
+    if not parsed or len(parsed) < 4:
+        return None
+    encoding, encoded_input = _cyberchef_input(value, parsed)
+    return {
+        **record, "field": str(key), "bytes": parsed,
+        "input_encoding": encoding, "encoded_input": encoded_input,
+    }
+
+
+def _bytes_records(
+    records: list[dict[str, Any]], ntru_contexts=(),
+) -> list[dict[str, Any]]:
     result = []
     for record in records:
-        obj = record["object"]
-        for key, value in sorted(obj.items(), key=lambda item: str(item[0])):
-            name = str(key).casefold()
-            if any(token in name for token in ("cipher", "ct", "encrypted", "payload", "data")):
-                if any(record["scope"] == ctx.scope and is_polynomial_coefficients(value, ctx)
-                       for ctx in ntru_contexts):
-                    continue  # Ring coefficients are not serialized ciphertext bytes.
-                parsed = parse_bytes(value)
-                if parsed and len(parsed) >= 4:
-                    encoding, encoded_input = _cyberchef_input(value, parsed)
-                    result.append({**record, "field": str(key), "bytes": parsed,
-                                   "input_encoding": encoding, "encoded_input": encoded_input})
+        for key, value in sorted(record["object"].items(),
+                                 key=lambda item: str(item[0])):
+            candidate = _binary_cipher_record(record, key, value, ntru_contexts)
+            if candidate is not None:
+                result.append(candidate)
     return result
 
 

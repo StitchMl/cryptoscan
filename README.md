@@ -15,9 +15,9 @@ cryptoscan . --no-color            # clean monochrome report
 cryptoscan . --format json         # unchanged structured results for scripts
 ```
 
-The standard \`NO_COLOR\` environment variable disables ANSI output.
-In PowerShell use \`$env:NO_COLOR = "1"\` to disable colors, then
-\`Remove-Item Env:NO_COLOR\` to restore them. The guided assistant menu
+The standard `NO_COLOR` environment variable disables ANSI output.
+In PowerShell use `$env:NO_COLOR = "1"` to disable colors, then
+`Remove-Item Env:NO_COLOR` to restore them. The guided assistant menu
 also uses grouped concise commands instead of repeating long descriptions.
 
 ## NTRU folding (experimental)
@@ -25,7 +25,7 @@ also uses grouped concise commands instead of repeating long descriptions.
 For binary sparse-polynomial NTRU with a composite ring degree, CryptoScan
 now has reusable polynomial folding, stage-wise lattice constructions, and
 independent key/decryption verification. The guided NTRU workflow offers
-\`fold\` versus \`full\`; the isolated worker accepts the selected strategy
+`fold` versus `full`; the isolated worker accepts the selected strategy
 so Windows can reclaim native LLL memory. This is an **experimental**
 attack: successful algebraic primitive tests do not establish that Origami
 or arbitrary NTRU instances will yield a private key. Larger degrees may

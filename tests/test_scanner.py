@@ -214,7 +214,7 @@ def test_shared_prime_does_not_cross_challenge_boundaries(tmp_path):
     assert "RSA-SHARED-PRIME" not in rules
 
 
-def test_duplicate_release_server_and_archive_artifacts_are_deduplicated(tmp_path):
+def test_duplicate_release_server_and_archive_artifacts_respect_scopes(tmp_path):
     payload = json.dumps({"n": 1009 * 1013, "e": 65537, "c": 7})
     (tmp_path / "release").mkdir()
     (tmp_path / "server").mkdir()
@@ -223,8 +223,12 @@ def test_duplicate_release_server_and_archive_artifacts_are_deduplicated(tmp_pat
     with zipfile.ZipFile(tmp_path / "challenge.zip", "w") as archive:
         archive.writestr("public.json", payload)
     documents = collect_documents([str(tmp_path)])
-    assert len(documents) == 1
-    assert "!/" not in documents[0].path
+    # release/ and server/ are deployment copies within the root scope;
+    # challenge.zip is an independent archive scope and must not silently
+    # lose its source, which may pair with challenge-specific ciphertexts.
+    assert len(documents) == 2
+    assert {doc.scope for doc in documents} == {".", "challenge"}
+    assert len([doc for doc in documents if "!/" not in doc.path]) == 1
 
 
 def test_secret_prefix_hash_reports_length_extension_not_collision(tmp_path):

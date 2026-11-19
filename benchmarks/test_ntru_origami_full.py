@@ -9,7 +9,7 @@ from pathlib import Path
 from cryptoscan.ntru_auto import recover_flag
 from cryptoscan.parser import collect_documents
 
-FIXTURE = Path(__file__).parent / "fixtures" / "ntru_origami"
+FIXTURE = Path(__file__).parent.parent / "tests" / "fixtures" / "ntru_origami"
 
 
 def test_original_ntru_key_recovery_with_native_bkz():

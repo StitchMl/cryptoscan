@@ -45,6 +45,7 @@ def _summary(finding: Finding, *, width: int = 100) -> list[str]:
     lines = _wrapped("Location", finding.location, width=width)
     lines.extend(_wrapped("Recovery", finding.recovery_status, width=width))
     lines.extend(_wrapped("Attack", finding.attack, width=width))
+    lines.extend(_wrapped("Flag path", finding.flag_path, width=width))
     return lines
 
 

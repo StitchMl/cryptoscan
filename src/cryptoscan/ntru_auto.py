@@ -36,6 +36,17 @@ def instances(documents: Sequence[Document]) -> list[tuple]:
     return result
 
 
+def _verified_flag_from_candidates(results: Sequence[dict]) -> str | None:
+    """Require a verified private key and full flag-shaped plaintext."""
+    for candidate in results:
+        if not candidate["public_relation_verified"]:
+            continue
+        plaintext = candidate["plaintext"]
+        if FLAG_RE.fullmatch(plaintext):
+            return plaintext.decode("ascii")
+    return None
+
+
 def recover_flag(
     documents: Sequence[Document], *,
     bkz: int = 20,
@@ -72,12 +83,8 @@ def recover_flag(
             initial_degree=initial_degree, timeout_seconds=timeout_seconds,
             stream=True, progress=progress,
         )
-        for candidate in results:
-            plaintext = candidate["plaintext"]
-            if not candidate["public_relation_verified"]:
-                continue
-            match = FLAG_RE.fullmatch(plaintext)
-            if match:
-                progress("[NTRU-FOLD] Binary private key and plaintext independently verified")
-                return plaintext.decode("ascii")
+        verified = _verified_flag_from_candidates(results)
+        if verified is not None:
+            progress("[NTRU-FOLD] Binary private key and plaintext independently verified")
+            return verified
     raise RuntimeError("No verified flag recovered; try stronger BKZ or another fold degree")

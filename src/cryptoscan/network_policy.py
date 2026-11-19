@@ -12,19 +12,11 @@ import os
 import socket
 
 
-def connect_authorized(host: str, port: int, timeout: float) -> socket.socket:
-    """Connect only to a globally routable address unless explicitly opted in."""
-    if not isinstance(host, str) or not host or len(host) > 253:
-        raise ValueError("Invalid CTF host")
-    if not isinstance(port, int) or not 1 <= port <= 65535:
-        raise ValueError("Invalid CTF TCP port")
-    if not 0 < timeout <= 120:
-        raise ValueError("Invalid socket timeout")
-
+def _validated_addresses(host: str, port: int) -> list[tuple]:
+    """Validate the complete DNS answer before opening any socket."""
     addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     if not addresses or len(addresses) > 64:
         raise ValueError("CTF host did not resolve to a bounded address set")
-
     permitted_private = os.environ.get("CRYPTOSCAN_ALLOW_PRIVATE_NETWORK") == "1"
     validated = []
     for family, socktype, protocol, _canonical, sockaddr in addresses:
@@ -37,6 +29,19 @@ def connect_authorized(host: str, port: int, timeout: float) -> socket.socket:
                 "CRYPTOSCAN_ALLOW_PRIVATE_NETWORK=1 only for your own lab"
             )
         validated.append((family, socktype, protocol, sockaddr))
+    return validated
+
+
+def connect_authorized(host: str, port: int, timeout: float) -> socket.socket:
+    """Connect only to a globally routable address unless explicitly opted in."""
+    if not isinstance(host, str) or not host or len(host) > 253:
+        raise ValueError("Invalid CTF host")
+    if not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("Invalid CTF TCP port")
+    if not 0 < timeout <= 120:
+        raise ValueError("Invalid socket timeout")
+
+    validated = _validated_addresses(host, port)
 
     last_error: OSError | None = None
     for family, socktype, protocol, sockaddr in validated:

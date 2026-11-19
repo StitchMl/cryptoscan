@@ -35,6 +35,21 @@ def _functions(doc: Document) -> list[ast.FunctionDef]:
     return [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
 
 
+def _is_serialized_ciphertext(node: ast.Call) -> bool:
+    """Recognize a delimited two-part ciphertext/tag serialization."""
+    if not (node.func.attr == "join" and isinstance(node.func.value, ast.Constant)
+            and node.func.value.value == ";" and len(node.args) == 1):
+        return False
+    payload = node.args[0]
+    if not isinstance(payload, (ast.List, ast.Tuple)) or len(payload.elts) != 2:
+        return False
+    return all(
+        isinstance(part, ast.Call) and isinstance(part.func, ast.Attribute)
+        and part.func.attr == "hex"
+        for part in payload.elts
+    )
+
+
 def _builder_fields(function: ast.FunctionDef) -> tuple[str, ...] | None:
     fields = None
     for node in ast.walk(function):
@@ -51,16 +66,7 @@ def _builder_fields(function: ast.FunctionDef) -> tuple[str, ...] | None:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     ]
     encrypted = any(node.func.attr == "encrypt" and len(node.args) == 1 for node in calls)
-    serialized = any(
-        node.func.attr == "join" and isinstance(node.func.value, ast.Constant)
-        and node.func.value.value == ";"
-        and len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple))
-        and len(node.args[0].elts) == 2
-        and all(
-            isinstance(part, ast.Call) and isinstance(part.func, ast.Attribute)
-            and part.func.attr == "hex" for part in node.args[0].elts
-        ) for node in calls
-    )
+    serialized = any(_is_serialized_ciphertext(node) for node in calls)
     return fields if encrypted and serialized else None
 
 

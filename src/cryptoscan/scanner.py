@@ -368,151 +368,182 @@ def _scan_phase_01(documents, records, rsa, byte_records, ntru_contexts, finding
 
 
 
-def _scan_phase_02(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
-    """Collect a coherent cryptographic attack family without side effects."""
-    for item in rsa:
-        n, e, c = item["n"], item["e"], item["c"]
-        factor = None
-        leak_kind = None
-        for name in ("p", "q"):
+def _rsa_from_parameters(item, findings):
+    n, e, c = item["n"], item["e"], item["c"]
+    factor = None
+    leak_kind = None
+    for name in ("p", "q"):
+        candidate = item[name]
+        if candidate and 1 < candidate < n and n % candidate == 0:
+            factor, leak_kind = candidate, name
+            break
+    if factor is None and e:
+        for name in ("dp", "dq"):
             candidate = item[name]
-            if candidate and 1 < candidate < n and n % candidate == 0:
-                factor, leak_kind = candidate, name
-                break
-        if factor is None and e:
-            for name in ("dp", "dq"):
-                candidate = item[name]
-                if candidate and candidate > 0:
-                    factor = _factor_from_crt_exponent(n, e, candidate)
-                    if factor:
-                        leak_kind = name
-                        break
+            if candidate and candidate > 0:
+                factor = _factor_from_crt_exponent(n, e, candidate)
+                if factor:
+                    leak_kind = name
+                    break
+    if factor:
+        p, q = factor, n // factor
+        evidence: dict[str, Any] = {"n": str(n), "leak": leak_kind, "p": str(p), "q": str(q), "factorization_verified": p * q == n}
+        solver: dict[str, Any] = {"kind": "rsa_parameter_leak", "p": str(p), "q": str(q)}
+        if e and c is not None and math.gcd(e, (p - 1) * (q - 1)) == 1:
+            derived_d = pow(e, -1, (p - 1) * (q - 1))
+            message = pow(c, derived_d, n)
+            plain = int_to_bytes(message)
+            verified = pow(message, e, n) == c
+            evidence.update({"d": str(derived_d), "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace"), "reencryption_verified": verified})
+            solver.update({"d": str(derived_d), "result_hex": plain.hex()})
+        findings.append(Finding(
+            "RSA-PARAMETER-LEAK", "Leaked RSA parameter factors the modulus", "critical", "certain", item["location"],
+            evidence, [f"The structured {leak_kind} value belongs to this RSA key."],
+            "Use the leaked parameter to factor n, derive the private exponent, and decrypt the flag ciphertext.", solver,
+            "Remove private primes and CRT exponents from published artifacts. Rotate the RSA key."
+        ))
+
+
+def _rsa_private_exponent(item, findings):
+    n, e, c = item["n"], item["e"], item["c"]
+    if item["d"] and e and c is not None and 0 <= c < n:
+        message = pow(c, item["d"], n)
+        if pow(message, e, n) == c:
+            plain = int_to_bytes(message)
+            findings.append(Finding(
+                "RSA-PRIVATE-EXPONENT-LEAK", "Leaked RSA private exponent decrypts ciphertext", "critical", "certain", item["location"],
+                {"n": str(n), "e": e, "d": str(item["d"]), "plaintext_hex": plain.hex(),
+                 "plaintext_utf8": plain.decode("utf-8", "replace"), "reencryption_verified": True},
+                ["The structured d value belongs to this RSA public modulus and exponent."],
+                "Compute m=c^d mod n. Re-encryption with e verifies the recovered plaintext.",
+                {"kind": "rsa_private_exponent", "d": str(item["d"]), "result_hex": plain.hex()},
+                "Never publish the private exponent. Rotate the exposed RSA key."
+            ))
+
+
+def _rsa_exact_cube(item, findings):
+    n, e, c = item["n"], item["e"], item["c"]
+    if e == 3 and c is not None and 0 <= c < n:
+        root, exact = integer_nth_root(c, 3)
+        if exact:
+            plain = int_to_bytes(root)
+            findings.append(Finding(
+                "RSA-E3-EXACT-ROOT", "Unpadded RSA message is an exact cube", "critical", "certain", item["location"],
+                {"n": str(n), "e": 3, "c": str(c), "m": str(root), "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace")},
+                ["Textbook RSA was used without randomized padding.", "m^3 is smaller than n."],
+                "Take the integer cube root of c. The exact root is the plaintext integer.",
+                {"kind": "integer_root", "degree": 3, "result_int": str(root), "result_hex": plain.hex()},
+                "Use RSA-OAEP with a maintained cryptographic library."
+            ))
+
+
+def _rsa_wrapped_root(item, findings):
+    n, e, c = item["n"], item["e"], item["c"]
+    if e in {3, 5, 7, 11, 17} and c is not None and 0 <= c < n:
+        # Textbook RSA can still be rooted after modular wraparound when m^e=c+k*n
+        # for a small k. The exact modular round trip prevents guessed plaintexts.
+        wrap_limits = {3: 10_000, 5: 2_000, 7: 256, 11: 32, 17: 4}
+        for multiplier in range(0 if e != 3 else 1, wrap_limits[e] + 1):
+            root, exact = integer_nth_root(c + multiplier * n, e)
+            if not exact or pow(root, e, n) != c:
+                continue
+            plain = int_to_bytes(root)
+            findings.append(Finding(
+                "RSA-LOW-EXPONENT-SMALL-MESSAGE", "Unpadded low-exponent RSA plaintext recovered", "critical", "certain", item["location"],
+                {"n": str(n), "e": e, "c": str(c), "wrap_multiplier": multiplier, "m": str(root),
+                 "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace"), "reencryption_verified": True},
+                ["Textbook RSA was used without randomized padding.", "The message power wraps the modulus only a bounded number of times."],
+                "Find the exact e-th root of c+k*n for bounded k; verify the candidate by modular re-encryption.",
+                {"kind": "rsa_low_exponent", "degree": e, "wrap_multiplier": multiplier, "result_int": str(root), "result_hex": plain.hex()},
+                "Use RSA-OAEP with a maintained cryptographic library."
+            ))
+            break
+
+
+def _rsa_wiener(item, findings):
+    n, e, c = item["n"], item["e"], item["c"]
+    if e is not None and e > 1:
+        recovered = wiener_private_exponent(n, e)
+        if recovered:
+            d, p, q = recovered
+            evidence = {"n": str(n), "e": e, "d": str(d), "p": str(p), "q": str(q)}
+            solver: dict[str, Any] = {"kind": "rsa_wiener", "d": str(d), "p": str(p), "q": str(q)}
+            if c is not None and 0 <= c < n:
+                message = pow(c, d, n)
+                plain = int_to_bytes(message)
+                evidence.update({"plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace")})
+                evidence.update({"c": str(c), "reencryption_verified": pow(message, e, n) == c})
+                solver["result_hex"] = plain.hex()
+            findings.append(Finding(
+                "RSA-WIENER-SMALL-D", "RSA private exponent recovered by Wiener attack", "critical", "certain", item["location"],
+                evidence, ["The public key is RSA.", "The private exponent is small enough to occur in convergents of e/n."],
+                "Expand e/n as a continued fraction. A convergent yields d and factors n exactly.", solver,
+                "Generate RSA keys with a maintained library and reject private exponents below the Wiener bound."
+            ))
+
+
+def _rsa_fermat(item, findings, fermat_steps):
+    n, e, c = item["n"], item["e"], item["c"]
+    factorization = fermat_factor(n, fermat_steps)
+    if factorization:
+        p, q, steps = factorization
+        # Avoid noise for tiny toy values only when factors are not meaningfully close.
+        closeness = q - p
+        if steps <= fermat_steps and closeness * closeness < n:
+            evidence = {"n": str(n), "p": str(p), "q": str(q), "difference": str(closeness), "steps": steps}
+            solver: dict[str, Any] = {"kind": "rsa_fermat", "p": str(p), "q": str(q)}
+            if e and c is not None and math.gcd(e, (p - 1) * (q - 1)) == 1:
+                d = pow(e, -1, (p - 1) * (q - 1))
+                m = pow(c, d, n)
+                plain = int_to_bytes(m)
+                evidence.update({"d": str(d), "c": str(c), "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace"),
+                                 "reencryption_verified": pow(m, e, n) == c})
+                solver.update({"d": str(d), "result_hex": plain.hex()})
+            findings.append(Finding(
+                "RSA-FERMAT-CLOSE-PRIMES", "RSA primes are close enough for Fermat factorization", "critical", "certain", item["location"],
+                evidence, [f"Fermat search reaches the factors within {fermat_steps} steps."],
+                "Write n as a^2-b^2; recover p=a-b and q=a+b, then derive the private key.", solver,
+                "Generate independent primes with a CSPRNG and enforce an adequate distance between p and q."
+            ))
+
+
+def _rsa_small_factor(item, findings):
+    n, e, c = item["n"], item["e"], item["c"]
+    if not item["p"] and not item["q"]:
+        factor = small_factor(n)
         if factor:
             p, q = factor, n // factor
-            evidence: dict[str, Any] = {"n": str(n), "leak": leak_kind, "p": str(p), "q": str(q), "factorization_verified": p * q == n}
-            solver: dict[str, Any] = {"kind": "rsa_parameter_leak", "p": str(p), "q": str(q)}
-            if e and c is not None and math.gcd(e, (p - 1) * (q - 1)) == 1:
-                derived_d = pow(e, -1, (p - 1) * (q - 1))
-                message = pow(c, derived_d, n)
-                plain = int_to_bytes(message)
-                verified = pow(message, e, n) == c
-                evidence.update({"d": str(derived_d), "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace"), "reencryption_verified": verified})
-                solver.update({"d": str(derived_d), "result_hex": plain.hex()})
-            findings.append(Finding(
-                "RSA-PARAMETER-LEAK", "Leaked RSA parameter factors the modulus", "critical", "certain", item["location"],
-                evidence, [f"The structured {leak_kind} value belongs to this RSA key."],
-                "Use the leaked parameter to factor n, derive the private exponent, and decrypt the flag ciphertext.", solver,
-                "Remove private primes and CRT exponents from published artifacts. Rotate the RSA key."
-            ))
-        if item["d"] and e and c is not None and 0 <= c < n:
-            message = pow(c, item["d"], n)
-            if pow(message, e, n) == c:
-                plain = int_to_bytes(message)
-                findings.append(Finding(
-                    "RSA-PRIVATE-EXPONENT-LEAK", "Leaked RSA private exponent decrypts ciphertext", "critical", "certain", item["location"],
-                    {"n": str(n), "e": e, "d": str(item["d"]), "plaintext_hex": plain.hex(),
-                     "plaintext_utf8": plain.decode("utf-8", "replace"), "reencryption_verified": True},
-                    ["The structured d value belongs to this RSA public modulus and exponent."],
-                    "Compute m=c^d mod n. Re-encryption with e verifies the recovered plaintext.",
-                    {"kind": "rsa_private_exponent", "d": str(item["d"]), "result_hex": plain.hex()},
-                    "Never publish the private exponent. Rotate the exposed RSA key."
-                ))
-        if e == 3 and c is not None and 0 <= c < n:
-            root, exact = integer_nth_root(c, 3)
-            if exact:
-                plain = int_to_bytes(root)
-                findings.append(Finding(
-                    "RSA-E3-EXACT-ROOT", "Unpadded RSA message is an exact cube", "critical", "certain", item["location"],
-                    {"n": str(n), "e": 3, "c": str(c), "m": str(root), "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace")},
-                    ["Textbook RSA was used without randomized padding.", "m^3 is smaller than n."],
-                    "Take the integer cube root of c. The exact root is the plaintext integer.",
-                    {"kind": "integer_root", "degree": 3, "result_int": str(root), "result_hex": plain.hex()},
-                    "Use RSA-OAEP with a maintained cryptographic library."
-                ))
-        if e in {3, 5, 7, 11, 17} and c is not None and 0 <= c < n:
-            # Textbook RSA can still be rooted after modular wraparound when m^e=c+k*n
-            # for a small k. The exact modular round trip prevents guessed plaintexts.
-            wrap_limits = {3: 10_000, 5: 2_000, 7: 256, 11: 32, 17: 4}
-            for multiplier in range(0 if e != 3 else 1, wrap_limits[e] + 1):
-                root, exact = integer_nth_root(c + multiplier * n, e)
-                if not exact or pow(root, e, n) != c:
-                    continue
-                plain = int_to_bytes(root)
-                findings.append(Finding(
-                    "RSA-LOW-EXPONENT-SMALL-MESSAGE", "Unpadded low-exponent RSA plaintext recovered", "critical", "certain", item["location"],
-                    {"n": str(n), "e": e, "c": str(c), "wrap_multiplier": multiplier, "m": str(root),
-                     "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace"), "reencryption_verified": True},
-                    ["Textbook RSA was used without randomized padding.", "The message power wraps the modulus only a bounded number of times."],
-                    "Find the exact e-th root of c+k*n for bounded k; verify the candidate by modular re-encryption.",
-                    {"kind": "rsa_low_exponent", "degree": e, "wrap_multiplier": multiplier, "result_int": str(root), "result_hex": plain.hex()},
-                    "Use RSA-OAEP with a maintained cryptographic library."
-                ))
-                break
-        if e is not None and e > 1:
-            recovered = wiener_private_exponent(n, e)
-            if recovered:
-                d, p, q = recovered
-                evidence = {"n": str(n), "e": e, "d": str(d), "p": str(p), "q": str(q)}
-                solver: dict[str, Any] = {"kind": "rsa_wiener", "d": str(d), "p": str(p), "q": str(q)}
-                if c is not None and 0 <= c < n:
-                    message = pow(c, d, n)
-                    plain = int_to_bytes(message)
-                    evidence.update({"plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace")})
-                    evidence.update({"c": str(c), "reencryption_verified": pow(message, e, n) == c})
-                    solver["result_hex"] = plain.hex()
-                findings.append(Finding(
-                    "RSA-WIENER-SMALL-D", "RSA private exponent recovered by Wiener attack", "critical", "certain", item["location"],
-                    evidence, ["The public key is RSA.", "The private exponent is small enough to occur in convergents of e/n."],
-                    "Expand e/n as a continued fraction. A convergent yields d and factors n exactly.", solver,
-                    "Generate RSA keys with a maintained library and reject private exponents below the Wiener bound."
-                ))
-        factorization = fermat_factor(n, fermat_steps)
-        if factorization:
-            p, q, steps = factorization
-            # Avoid noise for tiny toy values only when factors are not meaningfully close.
-            closeness = q - p
-            if steps <= fermat_steps and closeness * closeness < n:
-                evidence = {"n": str(n), "p": str(p), "q": str(q), "difference": str(closeness), "steps": steps}
-                solver: dict[str, Any] = {"kind": "rsa_fermat", "p": str(p), "q": str(q)}
+            closeness = abs(q - p)
+            # Fermat already owns close-prime moduli; report only the weak
+            # small-factor case here to avoid a duplicate finding.
+            if p * q == n and closeness * closeness >= n:
+                evidence = {"n": str(n), "p": str(p), "q": str(q), "factorization_verified": True}
+                solver = {"kind": "rsa_small_factor", "p": str(p), "q": str(q)}
                 if e and c is not None and math.gcd(e, (p - 1) * (q - 1)) == 1:
                     d = pow(e, -1, (p - 1) * (q - 1))
                     m = pow(c, d, n)
                     plain = int_to_bytes(m)
-                    evidence.update({"d": str(d), "c": str(c), "plaintext_hex": plain.hex(), "plaintext_utf8": plain.decode("utf-8", "replace"),
+                    evidence.update({"d": str(d), "c": str(c), "plaintext_hex": plain.hex(),
+                                     "plaintext_utf8": plain.decode("utf-8", "replace"),
                                      "reencryption_verified": pow(m, e, n) == c})
                     solver.update({"d": str(d), "result_hex": plain.hex()})
                 findings.append(Finding(
-                    "RSA-FERMAT-CLOSE-PRIMES", "RSA primes are close enough for Fermat factorization", "critical", "certain", item["location"],
-                    evidence, [f"Fermat search reaches the factors within {fermat_steps} steps."],
-                    "Write n as a^2-b^2; recover p=a-b and q=a+b, then derive the private key.", solver,
-                    "Generate independent primes with a CSPRNG and enforce an adequate distance between p and q."
+                    "RSA-SMALL-FACTOR", "RSA modulus has a recoverable small factor", "critical", "certain", item["location"],
+                    evidence, ["The modulus is not a product of two large, independent primes."],
+                    "Factor n by trial division and bounded Pollard's rho, derive the private key, then decrypt the flag ciphertext.", solver,
+                    "Use two large (>=1024-bit) independent primes from a maintained library; never a smooth or small modulus."
                 ))
 
-        if not item["p"] and not item["q"]:
-            factor = small_factor(n)
-            if factor:
-                p, q = factor, n // factor
-                closeness = abs(q - p)
-                # Fermat already owns close-prime moduli; report only the weak
-                # small-factor case here to avoid a duplicate finding.
-                if p * q == n and closeness * closeness >= n:
-                    evidence = {"n": str(n), "p": str(p), "q": str(q), "factorization_verified": True}
-                    solver = {"kind": "rsa_small_factor", "p": str(p), "q": str(q)}
-                    if e and c is not None and math.gcd(e, (p - 1) * (q - 1)) == 1:
-                        d = pow(e, -1, (p - 1) * (q - 1))
-                        m = pow(c, d, n)
-                        plain = int_to_bytes(m)
-                        evidence.update({"d": str(d), "c": str(c), "plaintext_hex": plain.hex(),
-                                         "plaintext_utf8": plain.decode("utf-8", "replace"),
-                                         "reencryption_verified": pow(m, e, n) == c})
-                        solver.update({"d": str(d), "result_hex": plain.hex()})
-                    findings.append(Finding(
-                        "RSA-SMALL-FACTOR", "RSA modulus has a recoverable small factor", "critical", "certain", item["location"],
-                        evidence, ["The modulus is not a product of two large, independent primes."],
-                        "Factor n by trial division and bounded Pollard's rho, derive the private key, then decrypt the flag ciphertext.", solver,
-                        "Use two large (>=1024-bit) independent primes from a maintained library; never a smooth or small modulus."
-                    ))
-
+def _scan_phase_02(documents, records, rsa, byte_records, ntru_contexts, findings, fermat_steps):
+    """Collect a coherent cryptographic attack family without side effects."""
+    for item in rsa:
+        _rsa_from_parameters(item, findings)
+        _rsa_private_exponent(item, findings)
+        _rsa_exact_cube(item, findings)
+        _rsa_wrapped_root(item, findings)
+        _rsa_wiener(item, findings)
+        _rsa_fermat(item, findings, fermat_steps)
+        _rsa_small_factor(item, findings)
     by_modulus: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     for item in rsa:
         if item["e"] is not None and item["c"] is not None:

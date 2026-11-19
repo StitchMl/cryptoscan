@@ -98,7 +98,8 @@ def _pedersen_parameters(documents: Sequence[Document]) -> tuple[int, int, int, 
     return None
 
 
-def _hash_follows_graph_commitments(documents: Sequence[Document]) -> bool:
+def _hash_function_names(documents: Sequence[Document]) -> set[str]:
+    names: set[str] = set()
     for doc in documents:
         try:
             tree = ast.parse(doc.text)
@@ -121,8 +122,42 @@ def _hash_follows_graph_commitments(documents: Sequence[Document]) -> bool:
                         and "digest()" in text
                         and "str(x)" in text
                         and "for row in G" in text)):
-                return True
-    return False
+                names.add(func.name)
+    return names
+
+
+def _fs_challenge_names(tree: ast.Module, hash_functions: set[str]) -> set[str]:
+    """Find one-bit challenge assignments derived from the hash state.
+
+    Identifier names are irrelevant: trace the hash call's assigned state
+    into its low-bit extraction, then into the verifier's branch condition.
+    """
+    state_names: set[str] = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id in hash_functions):
+            state_names.add(node.targets[0].id)
+    result: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.BinOp)
+                and isinstance(node.value.op, ast.BitAnd)
+                and isinstance(node.value.left, ast.Subscript)
+                and isinstance(node.value.left.value, ast.Name)
+                and node.value.left.value.id in state_names
+                and isinstance(node.value.right, ast.Constant)
+                and node.value.right.value == 1):
+            continue
+        sub = node.value.left.slice
+        if (isinstance(sub, ast.UnaryOp) and isinstance(sub.op, ast.USub)
+                and isinstance(sub.operand, ast.Constant)
+                and sub.operand.value == 1):
+            result.add(node.targets[0].id)
+    return result
 
 
 def extract_instance(documents: Sequence[Document]) -> HamiltonicityInstance | None:
@@ -134,7 +169,8 @@ def extract_instance(documents: Sequence[Document]) -> HamiltonicityInstance | N
         scoped = [candidate for candidate in documents
                   if candidate.scope == doc.scope]
         params = _pedersen_parameters(scoped)
-        if params is None or not _hash_follows_graph_commitments(scoped):
+        hash_functions = _hash_function_names(scoped)
+        if params is None or not hash_functions:
             continue
         p, q, h1, h2 = params
         if p <= q or min(h1, h2) <= 0 or max(h1, h2) >= p:
@@ -144,19 +180,17 @@ def extract_instance(documents: Sequence[Document]) -> HamiltonicityInstance | N
         except SyntaxError:
             continue
         src = ast.unparse(tree)
-        # The verifier must choose the challenge *from* the commitment hash,
-        # with bit 0 allowing a full graph opening, not a cycle witness.
-        if not (re.search(r"FS_state\s*\[\s*-1\s*\]\s*&\s*1", src)
-                and "hash_committed_graph(" in src
-                and "testcycle(" in src
-                and "open_graph(" in src
-                and "permute_graph(" in src):
+        # Detect the challenge by following data flow from a SHA-256 graph
+        # hash into the extracted low bit, not by its Python identifier.
+        challenge_vars = _fs_challenge_names(tree, hash_functions)
+        if not (challenge_vars and "testcycle(" in src
+                and "open_graph(" in src and "permute_graph(" in src):
             continue
         # The unblinded branch must actually be an acceptance path.
         branch_verified = any(
             isinstance(node, ast.If)
             and isinstance(node.test, ast.Name)
-            and node.test.id == "challenge"
+            and node.test.id in challenge_vars
             and any(isinstance(call, ast.Call)
                     and isinstance(call.func, ast.Name)
                     and call.func.id == "open_graph"

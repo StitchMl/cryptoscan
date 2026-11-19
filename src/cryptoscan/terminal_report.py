@@ -97,8 +97,22 @@ def render_findings(
         severity = paint(finding.severity.upper(), finding.severity, color)
         heading = f"{index:02d}  [{severity}] {finding.rule}"
         lines.append(heading)
-        lines.append("    " + finding.title)
-        lines.extend(_summary(finding, width=width))
+        lines.append("    " + paint(finding.title, "label", color))
+        summary = _summary(finding, width=width)
+        if color:
+            status_style = (
+                "good" if finding.recovery_status in {"flag-recovered", "payload-ready"}
+                else "warning"
+            )
+            summary = [
+                line.replace(
+                    "Recovery: " + finding.recovery_status,
+                    "Recovery: " + paint(finding.recovery_status, status_style, True),
+                    1,
+                ) if "Recovery: " in line else line
+                for line in summary
+            ]
+        lines.extend(summary)
         if verbose:
             lines.extend(_details(finding, width=width))
         lines.append(paint("-" * min(width, 98), "muted", color))

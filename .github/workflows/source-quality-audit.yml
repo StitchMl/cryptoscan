@@ -1,0 +1,41 @@
+name: Source quality audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/source-quality-audit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Archive exact checked out code for reproducible offline audit
+        run: |
+          python - <<'PY'
+          import zipfile
+          from pathlib import Path
+          root=Path(".")
+          with zipfile.ZipFile("cryptoscan-audit-source.zip","w",compression=zipfile.ZIP_DEFLATED) as archive:
+              for folder in ("src","tests",".github"):
+                  for path in Path(folder).rglob("*"):
+                      if path.is_file() and "__pycache__" not in path.parts:
+                          archive.write(path)
+              for filename in ("pyproject.toml","requirements.txt","sonar-project.properties","README.md"):
+                  if Path(filename).is_file():
+                      archive.write(filename)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cryptoscan-audit-source
+          path: cryptoscan-audit-source.zip
+          retention-days: 7

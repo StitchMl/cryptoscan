@@ -114,6 +114,19 @@ def _gcm_factories(tree: ast.Module) -> set[str]:
             nonce = expression.args[2]
             if not isinstance(nonce, ast.Name) or nonce.id not in module_names:
                 continue
+            # An initial module-level nonce is not proof of reuse if the
+            # same variable is refreshed later (including inside a loop).
+            writes = 0
+            for assignment in ast.walk(tree):
+                if not isinstance(assignment, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                    continue
+                targets = (assignment.targets if isinstance(assignment, ast.Assign)
+                           else (assignment.target,))
+                if any(isinstance(child, ast.Name) and child.id == nonce.id
+                       for target in targets for child in ast.walk(target)):
+                    writes += 1
+            if writes != 1:
+                continue
             if function is not None:
                 local_writes = set()
                 for child in ast.walk(function):

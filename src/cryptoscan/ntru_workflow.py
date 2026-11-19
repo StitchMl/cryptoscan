@@ -11,6 +11,27 @@ from .ntru_isolation import solve_isolated
 from .parser import Document, scalar_records
 
 
+def _run_ntru_lattice(
+    public: dict, encrypted: dict, context, method: str, bkz: int,
+    timeout: int, write: Callable[[str], Any],
+) -> list[dict]:
+    params = (
+        public["value"], encrypted["value"],
+        context.degree, context.plaintext_modulus, context.ciphertext_modulus,
+        context.f_weight, context.g_weight,
+    )
+    if context.degree > 32:
+        return solve_isolated(
+            *params, bkz=bkz, timeout_seconds=timeout,
+            progress=write, method=method,
+        )
+    if method == "full":
+        return solve(*params, bkz=bkz, progress=write)
+    return solve_folded(
+        *params, initial_degree=64, bkz=bkz, progress=write,
+    )
+
+
 def ntru_lattice_workflow(
     finding: Any, documents: Sequence[Document],
     read: Callable[[str], str] = input,
@@ -78,31 +99,16 @@ def ntru_lattice_workflow(
     bkz_value = read("Optional BKZ block size [0=LLL only]: ").strip() or "0"
     try:
         bkz = int(bkz_value)
+        timeout = 300
         if context.degree > 32:
             write(
                 "Large lattice reduction runs in a separate process so Windows "
                 "reclaims its CPU/RAM allocations when it finishes."
             )
-            timeout_raw = read("Maximum worker duration in seconds [300]: ").strip() or "300"
-            results = solve_isolated(
-                public["value"], encrypted["value"],
-                context.degree, context.plaintext_modulus, context.ciphertext_modulus,
-                context.f_weight, context.g_weight,
-                bkz=bkz, timeout_seconds=int(timeout_raw), progress=write,
-                method=method,
-            )
-        else:
-            results = solve(
-                public["value"], encrypted["value"],
-                context.degree, context.plaintext_modulus, context.ciphertext_modulus,
-                context.f_weight, context.g_weight,
-                bkz=bkz, progress=write,
-            ) if method == "full" else solve_folded(
-                public["value"], encrypted["value"],
-                context.degree, context.plaintext_modulus, context.ciphertext_modulus,
-                context.f_weight, context.g_weight,
-                initial_degree=64, bkz=bkz, progress=write,
-            )
+            timeout = int(read("Maximum worker duration in seconds [300]: ").strip() or "300")
+        results = _run_ntru_lattice(
+            public, encrypted, context, method, bkz, timeout, write,
+        )
     except (ValueError, RuntimeError, ImportError, MemoryError) as exc:
         write("NTRU key recovery stopped: " + str(exc))
         return

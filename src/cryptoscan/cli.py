@@ -13,7 +13,10 @@ from .dghv_workflow import recover_flag as recover_dghv_flag, supported_source a
 from .eclcg_workflow import extract_instance as extract_eclcg_instance, recover_flag as recover_eclcg_flag
 from .fischlin_workflow import recover_flag as recover_fischlin_flag, supported_source as supported_fischlin_source
 from .gcm_hidden_state import recognize_gcm_tag_oracle
-from .gcm_hidden_live import recover_flag as recover_gcm_hidden_flag
+from .gcm_hidden_live import (
+    recover_flag as recover_gcm_hidden_flag,
+    supports_wire_profile as supports_gcm_wire_profile,
+)
 from .parser import collect_documents
 from .scanner import scan
 
@@ -93,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         color = not args.no_color and sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
         print(_text(findings, color))
     if args.solve:
-        if args.host and args.port and recognize_gcm_tag_oracle(documents):
+        if args.host and args.port and supports_gcm_wire_profile(documents):
             try:
                 flag = recover_gcm_hidden_flag(documents, args.host, args.port, timeout=args.timeout)
             except (RuntimeError, ValueError, OSError, ConnectionError) as exc:

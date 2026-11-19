@@ -82,7 +82,7 @@ def test_verbose_does_not_repeat_flag_path():
 def test_report_ansi_does_not_change_visible_text():
     from cryptoscan.terminal_report import visible_width
     result = render_findings([sample()], color=True, verbose=True)
-    clean = re.sub(r"\\x1b\\[[0-9;]*m", "", result)
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", result)
     assert clean == render_findings([sample()], color=False, verbose=True)
     assert all(visible_width(line) <= 100 for line in result.splitlines())
 

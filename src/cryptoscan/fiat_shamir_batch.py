@@ -155,8 +155,20 @@ def extract_instance(documents: Sequence[Document]) -> BatchFiatShamirInstance |
         }
         if not {"check_graph", "testcycle", "open_graph", "permute_graph"} <= called_functions:
             continue
-        src = ast.unparse(tree)
-        if "challenge_bits" not in src or "challenge = " not in src:
+        # Detect the two verification branches by their semantics rather
+        # than names such as 'challenge' or 'challenge_bits'.
+        if not any(
+            isinstance(node, ast.If)
+            and any(isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name)
+                    and call.func.id == "testcycle"
+                    for statement in node.body for call in ast.walk(statement))
+            and any(isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name)
+                    and call.func.id == "open_graph"
+                    for statement in node.orelse for call in ast.walk(statement))
+            for node in ast.walk(tree)
+        ):
             continue
         values = _literal_module_values(tree)
         rounds = values.get("numrounds")

@@ -111,10 +111,9 @@ jobs:
                   "qualifiers": "FIL", "ps": 500,
               })
               files = []
-              print("SAMPLE COMPONENT METRICS", json.dumps(response.get("components", [])[:10])[:5000], flush=True)
               for item in response.get("components", []):
                   metric = {m["metric"]: m.get("value", "0") for m in item.get("measures", [])}
-                  count = float(metric.get("new_duplicated_lines", 0) or metric.get("duplicated_lines", 0))
+                  count = float(metric.get("new_duplicated_lines", 0))
                   if count:
                       files.append((count, item["key"], metric))
               files.sort(reverse=True)
@@ -122,8 +121,7 @@ jobs:
               for count, key, metrics in files[:35]:
                   print(json.dumps({"file": key, "new_lines": count,
                                     "metrics": metrics}), flush=True)
-              extra = [project + ":src/cryptoscan/scanner.py", project + ":src/cryptoscan/gcm_hidden_state.py", project + ":src/cryptoscan/fiat_shamir_batch.py"]
-              for key in list(dict.fromkeys([item[1] for item in files[:12]] + extra)):
+              for _, key, _ in files[:12]:
                   try:
                       duplicates = request("duplications/show", {"key": key})
                       for group in duplicates.get("duplications", [])[:30]:

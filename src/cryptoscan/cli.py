@@ -61,6 +61,50 @@ def _text(findings, color: bool, *, verbose: bool = True) -> str:
     return render_findings(findings, color=color, verbose=verbose)
 
 
+def _execute_recovery(label, solver, *parameters, **options) -> int:
+    """Run exactly one proven strategy and report a remotely/locally verified flag."""
+    try:
+        flag = solver(*parameters, **options)
+    except (RuntimeError, ValueError, OSError, ImportError, ArithmeticError) as exc:
+        print(f"{label} solver failed: {exc}", file=sys.stderr)
+        return 2
+    print(f"FLAG: {flag}")
+    return 0
+
+
+def _solve_documents(args, documents) -> int:
+    """Separate solver selection from parsing, scanning and presentation."""
+    if args.host and args.port:
+        remote = (
+            (extract_batch_fiat_shamir, recover_batch_fs_flag, "Fiat-Shamir transcript-collision"),
+            (extract_fiat_shamir_graph, recover_fs_graph_flag, "Fiat-Shamir grinding"),
+            (supports_gcm_wire_profile, recover_gcm_hidden_flag, "GCM hidden-state"),
+            (supported_fischlin_source, recover_fischlin_flag, "Fischlin"),
+            (supported_dghv_source, recover_dghv_flag, "DGHV"),
+        )
+        for matches, solver, label in remote:
+            if matches(documents):
+                return _execute_recovery(
+                    label, solver, documents, args.host, args.port,
+                    timeout=args.timeout,
+                )
+    else:
+        if extract_eclcg_instance(documents) is not None:
+            return _execute_recovery("ECDSA-LCG", recover_eclcg_flag, documents)
+        if ntru_instances(documents):
+            return _execute_recovery(
+                "NTRU lattice", recover_ntru_flag, documents,
+                bkz=args.bkz_block, backend=args.lattice_backend,
+                initial_degree=args.initial_fold,
+                timeout_seconds=args.lattice_timeout,
+            )
+    print(
+        "No supported source-verified solver for these files and endpoint.",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments and arguments[0] == "doctor":
@@ -91,72 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         color = not args.no_color and os.environ.get("NO_COLOR") is None and (args.color or sys.stdout.isatty())
         print(_text(findings, color, verbose=args.verbose))
     if args.solve:
-        if args.host and args.port and extract_batch_fiat_shamir(documents) is not None:
-            try:
-                flag = recover_batch_fs_flag(documents, args.host, args.port, timeout=args.timeout)
-            except (RuntimeError, ValueError, OSError) as exc:
-                print(f"Fiat-Shamir transcript-collision solver failed: {exc}", file=sys.stderr)
-                return 2
-            print(f"FLAG: {flag}")
-            return 0
-        if args.host and args.port and extract_fiat_shamir_graph(documents) is not None:
-            try:
-                flag = recover_fs_graph_flag(documents, args.host, args.port, timeout=args.timeout)
-            except (RuntimeError, ValueError, OSError) as exc:
-                print(f"Fiat-Shamir grinding solver failed: {exc}", file=sys.stderr)
-                return 2
-            print(f"FLAG: {flag}")
-            return 0
-        if args.host and args.port and supports_gcm_wire_profile(documents):
-            try:
-                flag = recover_gcm_hidden_flag(documents, args.host, args.port, timeout=args.timeout)
-            except (RuntimeError, ValueError, OSError) as exc:
-                print(f"GCM hidden-state solver failed: {exc}", file=sys.stderr)
-                return 2
-            print(f"FLAG: {flag}")
-            return 0
-        if args.host and args.port and supported_fischlin_source(documents):
-            try:
-                flag = recover_fischlin_flag(documents, args.host, args.port, timeout=args.timeout)
-            except (RuntimeError, ValueError, OSError) as exc:
-                print(f"Fischlin solver failed: {exc}", file=sys.stderr)
-                return 2
-            print(f"FLAG: {flag}")
-            return 0
-        if not args.host and extract_eclcg_instance(documents) is not None:
-            try:
-                flag = recover_eclcg_flag(documents)
-            except (RuntimeError, ValueError, ImportError, ArithmeticError) as exc:
-                print(f"ECDSA-LCG solver failed: {exc}", file=sys.stderr)
-                return 2
-            print(f"FLAG: {flag}")
-            return 0
-        if not args.host and ntru_instances(documents):
-            try:
-                flag = recover_ntru_flag(
-                    documents, bkz=args.bkz_block,
-                    backend=args.lattice_backend,
-                    initial_degree=args.initial_fold,
-                    timeout_seconds=args.lattice_timeout,
-                )
-            except (RuntimeError, ValueError, OSError, ImportError) as exc:
-                print(f"NTRU lattice solver failed: {exc}", file=sys.stderr)
-                return 2
-            print(f"FLAG: {flag}")
-            return 0
-        if not (args.host and args.port and supported_dghv_source(documents)):
-            print("No supported source-verified solver for these files and endpoint.", file=sys.stderr)
-            return 2
-        if not supported_dghv_source(documents):
-            print("No supported source-verified automatic solver for these files.", file=sys.stderr)
-            return 2
-        try:
-            flag = recover_dghv_flag(documents, args.host, args.port, timeout=args.timeout)
-        except (ConnectionError, OSError, RuntimeError, ValueError) as exc:
-            print(f"DGHV solver failed: {exc}", file=sys.stderr)
-            return 2
-        print(f"FLAG: {flag}")
-        return 0
+        return _solve_documents(args, documents)
     if not args.no_assist and args.format == "text" and (args.assist or (findings and sys.stdin.isatty() and sys.stdout.isatty())):
         assistant_session(findings, documents=documents)
     return 1 if args.fail_on_findings and findings else 0

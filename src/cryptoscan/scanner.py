@@ -320,7 +320,7 @@ def _repeating_xor_keys(data: bytes, key_size: int) -> list[bytes]:
 def _repeating_xor_plaintext(data: bytes, key: bytes) -> bytes | None:
     plain = bytes(value ^ key[index % len(key)] for index, value in enumerate(data))
     if not re.search(
-        rb"(?:flag|ctf|key)\{[A-Za-z0-9_!@#$%+.,:/=\\-]{4,120}\}",
+        rb"(?:flag|ctf|key)\{[\w!@#$%+.,:/=\\-]{4,120}\}",
         plain, re.IGNORECASE,
     ):
         return None
@@ -345,7 +345,7 @@ def _repeating_xor_candidate(data: bytes) -> tuple[bytes, bytes, float] | None:
     return (best[1], best[2], best[0]) if best else None
 
 
-def _scan_phase_01(records, rsa, findings, fermat_steps):
+def _scan_phase_01(records, rsa, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     # RSA pairwise shared factors.
     for left_index, left in enumerate(rsa):
@@ -1330,7 +1330,7 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
     byte_records = _bytes_records(records, ntru_contexts)
     findings: list[Finding] = []
 
-    _scan_phase_01(records, rsa, findings, fermat_steps)
+    _scan_phase_01(records, rsa, findings)
     _scan_phase_02(rsa, findings, fermat_steps)
     _scan_phase_03(rsa, findings)
     _scan_phase_04(records, findings)

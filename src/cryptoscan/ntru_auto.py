@@ -14,7 +14,7 @@ from .ntru import recognize_ntru, pair_ntru_records
 from .ntru_isolation import solve_isolated
 from .parser import Document, scalar_records
 
-FLAG_RE = re.compile(rb"[A-Za-z0-9_]{2,30}\{[\x20-\x7e]{1,180}\}")
+FLAG_RE = re.compile(rb"\w{2,30}\{[\x20-\x7e]{1,180}\}")
 
 
 def instances(documents: Sequence[Document]) -> list[tuple]:

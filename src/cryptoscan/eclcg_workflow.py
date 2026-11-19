@@ -143,7 +143,7 @@ def recover_flag(documents, progress=print):
             continue
         key = hashlib.sha256(str(d).encode()).digest()
         plaintext = AES.new(key, AES.MODE_CTR, nonce=instance.nonce).decrypt(instance.ct)
-        match = re.search(rb"[A-Za-z0-9_]{2,32}\{[^\r\n]{1,200}\}", plaintext)
+        match = re.search(rb"\w{2,32}\{[^\r\n]{1,200}\}", plaintext)
         if match:
             progress("[ECLCG] Recovered key independently checked against all signatures")
             return match.group(0).decode("ascii")

@@ -259,7 +259,7 @@ def recover_flag(
                 conn.until(instance.prompt)
         response = conn.rest()
         cleaned = re.sub(rb"\x1b\[[0-9;]*m", b"", response)
-        flag = re.search(rb"[A-Za-z0-9_]{2,32}\{[^\r\n{}]{1,256}\}", cleaned)
+        flag = re.search(rb"\w{2,32}\{[^\r\n{}]{1,256}\}", cleaned)
         if flag is None:
             raise RuntimeError("Verifier did not return a flag after batch proof submission")
         progress("[FIAT-SHAMIR] Flag received from remote verifier")

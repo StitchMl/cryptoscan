@@ -71,7 +71,8 @@ def test_zero_and_cycle_proofs_are_distinct_but_hash_identical():
         state = iterated_graph_hash(payload["A"], state, instance.pedersen_params)
     actual = format(int.from_bytes(state, "big"), "b")[-128:].zfill(128)
     assert actual == "".join(map(str, bits))
-    assert any(bits) and not all(bits)
+    assert any(bits)
+    assert not all(bits)
 
 
 def test_noncanonical_commits_are_checked_modulo_prime():

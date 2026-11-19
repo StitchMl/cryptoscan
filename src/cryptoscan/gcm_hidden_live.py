@@ -145,7 +145,7 @@ def recover_flag(
             h = recover_ghash_key_from_u1_tag_differences(deltas)
             progress(f"[GCM] Session {session_index}: GHASH key recovered")
 
-            for attempt in range(max_growth_trials):
+            for _ in range(max_growth_trials):
                 conn.send(b"u1\n"*50 + b"tag\n" + b"u2\ntag\n"*6)
                 captured = conn.tags(7)
                 if identify_growth_prefix(h, captured) is None:

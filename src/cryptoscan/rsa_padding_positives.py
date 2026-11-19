@@ -297,9 +297,10 @@ def recover_pkcs1_positive_padding(
         if not 4 <= count <= len(evidence.positive_multipliers):
             raise ValueError("invalid positive-multiplier count")
         lattice, target, block_scale = _embedding(evidence, count)
-        chosen = backend if backend != "auto" else (
-            "flint" if len(lattice) > 28 else "sympy"
-        )
+        if backend == "auto":
+            chosen = "flint" if len(lattice) > 28 else "sympy"
+        else:
+            chosen = backend
         progress(
             f"PKCS#1 v1.5 positive-sample lattice: {count} constraints, "
             f"dimension {len(lattice)}, backend {chosen}"

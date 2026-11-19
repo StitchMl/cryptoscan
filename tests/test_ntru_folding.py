@@ -31,10 +31,12 @@ def test_folded_key_decryption_on_independent_synthetic_instance():
 def test_fold_lattice_accepts_independent_initial_and_lift_shapes():
     h = [1, 2, 3, 4]
     rows, d = fold_lattice_basis(h, 127)
-    assert d == 4 and len(rows) == 8
+    assert d == 4
+    assert len(rows) == 8
     assert all(len(row) == 8 for row in rows)
     lifted, half = fold_lattice_basis(h, 127, [1, 0])
-    assert half == 2 and all(len(row) == 4 for row in lifted)
+    assert half == 2
+    assert all(len(row) == 4 for row in lifted)
 
 
 def test_invalid_folding_divisor_is_rejected():

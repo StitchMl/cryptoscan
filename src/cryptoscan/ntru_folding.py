@@ -281,7 +281,7 @@ def solve_folded(
         next_candidates: list[list[int]] = []
         seen = set()
         for previous in candidates:
-            rows, unknown = fold_lattice_basis(folded_h, q, previous)
+            rows, _ = fold_lattice_basis(folded_h, q, previous)
             progress(f"[NTRU-FOLD] Degree {degree}; lattice {len(rows)}x{len(rows[0])}")
             reduced = _reduce(rows, backend=backend, bkz=bkz, progress=progress)
             for candidate in _folded_key_candidates(

@@ -164,7 +164,7 @@ def recover_flag(
     for session_no in range(1, max_sessions+1):
         conn = _Connection(host, port, timeout)
         try:
-            status, marker = conn.until_one((prompt, failed))
+            _, marker = conn.until_one((prompt, failed))
             if marker == failed:
                 continue
             for round_no in range(64):
@@ -205,7 +205,7 @@ def recover_flag(
                 if marker == successful:
                     tail = conn.read_tail()
                     combined = response + tail
-                    match = re.search(rb"[A-Za-z0-9_]{2,32}\{[^\r\n{}]+\}", combined)
+                    match = re.search(rb"\w{2,32}\{[^\r\n{}]+\}", combined)
                     if match:
                         flag = match.group(0).decode("ascii")
                         progress("[FISCHLIN] All 64 witness challenges solved")

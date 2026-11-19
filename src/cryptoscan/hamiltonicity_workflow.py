@@ -310,7 +310,7 @@ def recover_flag(
                 progress(f"[FIAT-SHAMIR] Accepted {round_no+1}/{instance.rounds} rounds")
         reply = conn.rest()
         colored = re.sub(rb"\x1b\[[0-9;]*m", b"", reply)
-        match = re.search(rb"[a-zA-Z0-9_]{2,32}\{[^\r\n{}]{1,256}\}", colored)
+        match = re.search(rb"\w{2,32}\{[^\r\n{}]{1,256}\}", colored)
         if not match:
             raise RuntimeError("All rounds accepted, but server did not return a recognizable flag")
         progress(f"[FIAT-SHAMIR] All rounds passed after {total_trials} commitment trials")

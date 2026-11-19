@@ -110,7 +110,7 @@ def _pad_candidates_from_rows(rows: list[int], columns: int,
               for index in free]
     candidates = {base}
     for delta in deltas:
-        candidates |= {value ^ delta for value in list(candidates)}
+        candidates |= {value ^ delta for value in candidates.copy()}
     # Packed variables number the MSB of each GHASH block first.
     return {int(f"{x:0128b}"[::-1], 2) for x in candidates}
 

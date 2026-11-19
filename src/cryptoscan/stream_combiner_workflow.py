@@ -19,7 +19,7 @@ from .lfsr_correlation import (
 )
 from .parser import Document
 
-FLAG = re.compile(rb"[a-zA-Z0-9_]{2,32}\{[\x20-\x7e]{1,180}\}")
+FLAG = re.compile(rb"\w{2,32}\{[\x20-\x7e]{1,180}\}")
 
 
 def _integer_expression(node: ast.expr, variables: dict[str, int]) -> int:

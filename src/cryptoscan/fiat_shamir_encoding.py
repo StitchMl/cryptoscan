@@ -185,7 +185,7 @@ def verify_equivocal_graph_proof(
 ) -> bool:
     """Independently check the two verifier branches and identical hashing."""
     try:
-        p, q, h1, h2 = params
+        p, _, h1, h2 = params
         n = len(public_graph)
         if len(zero) != n or len(one) != n:
             return False

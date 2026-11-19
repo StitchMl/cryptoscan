@@ -117,55 +117,82 @@ def _is_json_payload(node: ast.AST) -> tuple[str, ...] | None:
     return keys
 
 
-def _build_signature(node: ast.FunctionDef) -> tuple[str, ...] | None:
-    """Recognize the supplied custom GCM token layout, not arbitrary GCM use."""
-    fields = None
-    gcm_constructed = any(
+def _has_custom_gcm(node: ast.AST) -> bool:
+    return any(
         isinstance(part, ast.Call)
-        and isinstance(part.func, ast.Name) and part.func.id == "GCM"
+        and isinstance(part.func, ast.Name)
+        and part.func.id == "GCM"
         for part in ast.walk(node)
     )
+
+
+def _is_hex_pair_join(call: ast.Call) -> bool:
+    if not (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "join"
+        and isinstance(call.func.value, ast.Constant)
+        and call.func.value.value == ";"
+        and len(call.args) == 1
+        and isinstance(call.args[0], (ast.Tuple, ast.List))
+    ):
+        return False
+    elements = call.args[0].elts
+    return len(elements) == 2 and all(
+        isinstance(part, ast.Call)
+        and isinstance(part.func, ast.Attribute)
+        and part.func.attr == "hex"
+        for part in elements
+    )
+
+
+def _build_signature(node: ast.FunctionDef) -> tuple[str, ...] | None:
+    """Recognize a source-derived custom GCM token serialization."""
+    if not _has_custom_gcm(node):
+        return None
+    fields = None
     encrypted = False
-    returned_pair = False
+    serialized = False
     for statement in ast.walk(node):
         if isinstance(statement, ast.Assign):
-            result = _is_json_payload(statement.value)
-            if result:
-                fields = result
+            parsed = _is_json_payload(statement.value)
+            if parsed:
+                fields = parsed
         if isinstance(statement, ast.Call) and isinstance(statement.func, ast.Attribute):
-            if statement.func.attr == "encrypt" and len(statement.args) == 1:
-                encrypted = True
-            if statement.func.attr == "join" and statement.func.value and isinstance(statement.func.value, ast.Constant) and statement.func.value.value == ";":
-                if statement.args and isinstance(statement.args[0], (ast.List, ast.Tuple)):
-                    elements = statement.args[0].elts
-                    if len(elements) == 2 and all(isinstance(part, ast.Call) and isinstance(part.func, ast.Attribute)
-                                                  and part.func.attr == "hex" for part in elements):
-                        returned_pair = True
-    return fields if fields and encrypted and returned_pair and gcm_constructed else None
+            encrypted |= statement.func.attr == "encrypt" and len(statement.args) == 1
+            serialized |= _is_hex_pair_join(statement)
+    return fields if fields and encrypted and serialized else None
+
+
+def _decryption_status_names(node: ast.FunctionDef) -> set[str]:
+    statuses = set()
+    for statement in ast.walk(node):
+        if not (
+            isinstance(statement, ast.Assign)
+            and isinstance(statement.value, ast.Call)
+            and isinstance(statement.value.func, ast.Attribute)
+            and statement.value.func.attr == "decrypt"
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Tuple)
+        ):
+            continue
+        target = statement.targets[0]
+        if len(target.elts) == 2 and isinstance(target.elts[1], ast.Name):
+            statuses.add(target.elts[1].id)
+    return statuses
 
 
 def _verification_signature(node: ast.FunctionDef) -> bool:
-    decrypted = False
-    gcm_constructed = any(
-        isinstance(part, ast.Call)
-        and isinstance(part.func, ast.Name) and part.func.id == "GCM"
+    if not _has_custom_gcm(node):
+        return False
+    statuses = _decryption_status_names(node)
+    if not statuses:
+        return False
+    return not any(
+        isinstance(part, ast.Name)
+        and isinstance(part.ctx, ast.Load)
+        and part.id in statuses
         for part in ast.walk(node)
     )
-    uses_auth = False
-    status_names: set[str] = set()
-    for part in ast.walk(node):
-        if isinstance(part, ast.Assign) and isinstance(part.value, ast.Call) and isinstance(part.value.func, ast.Attribute):
-            if part.value.func.attr == "decrypt" and len(part.targets) == 1 and isinstance(part.targets[0], ast.Tuple):
-                target = part.targets[0]
-                if len(target.elts) == 2 and isinstance(target.elts[1], ast.Name):
-                    decrypted = True
-                    status_names.add(target.elts[1].id)
-    if not (decrypted and status_names and gcm_constructed):
-        return False
-    for part in ast.walk(node):
-        if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Load) and part.id in status_names:
-            uses_auth = True
-    return not uses_auth
 
 
 def _equality_guard(item: ast.stmt) -> tuple[str, str] | None:
@@ -233,19 +260,8 @@ def _gcm_iv_signature(node: ast.AST) -> str | None:
     return ast.dump(initializers[0].args[1], include_attributes=False)
 
 
-def discover_token_recipes(documents: Sequence[Document]) -> list[TokenRecipe]:
-    """Require a matching builder AND verifier in the same challenge scope."""
-    builders = []
-    verifiers = []
-    for doc, function in _functions(documents):
-        fields = _build_signature(function)
-        if fields:
-            builders.append((doc, function, fields))
-        if _verification_signature(function):
-            checks = _required_equality_checks(function)
-            if checks:
-                verifiers.append((doc, function, checks))
-    cookie_names: dict[str, str] = {}
+def _cookie_names_in_scope(documents: Sequence[Document]) -> dict[str, str]:
+    names: dict[str, str] = {}
     for document in documents:
         if not document.path.lower().endswith(".py"):
             continue
@@ -264,26 +280,50 @@ def discover_token_recipes(documents: Sequence[Document]) -> list[TokenRecipe]:
             and isinstance(call.args[0].value, str)
         ]
         if len(set(matches)) == 1:
-            cookie_names[document.scope] = matches[0]
-    recipes = []
-    for doc, function, fields in builders:
-        for other, verifier, checks in verifiers:
-            if doc.scope != other.scope:
-                continue
-            if doc.path != other.path or function.name == verifier.name:
-                continue
-            builder_iv = _gcm_iv_signature(function)
-            verifier_iv = _gcm_iv_signature(verifier)
-            if builder_iv is None or builder_iv != verifier_iv:
-                continue
-            if not all(name in fields for name, _ in checks):
-                continue
-            recipes.append(TokenRecipe(
-                _context(doc, function), _context(other, verifier), fields,
-                tuple(name for name, _ in checks), checks,
-                cookie_names.get(doc.scope), True, "json-utf8/hex-ct-semicolon-hex-tag"
-            ))
-    return recipes
+            names[document.scope] = matches[0]
+    return names
+
+
+def _matching_token_recipe(
+    builder: tuple, verifier: tuple, cookie_names: dict[str, str],
+) -> TokenRecipe | None:
+    doc, function, fields = builder
+    other, verify_function, checks = verifier
+    if doc.scope != other.scope:
+        return None
+    if doc.path != other.path or function.name == verify_function.name:
+        return None
+    builder_iv = _gcm_iv_signature(function)
+    if builder_iv is None or builder_iv != _gcm_iv_signature(verify_function):
+        return None
+    if not all(name in fields for name, _ in checks):
+        return None
+    return TokenRecipe(
+        _context(doc, function), _context(other, verify_function), fields,
+        tuple(name for name, _ in checks), checks,
+        cookie_names.get(doc.scope), True, "json-utf8/hex-ct-semicolon-hex-tag",
+    )
+
+
+def discover_token_recipes(documents: Sequence[Document]) -> list[TokenRecipe]:
+    """Require a matching builder AND verifier in the same challenge scope."""
+    builders = []
+    verifiers = []
+    for doc, function in _functions(documents):
+        fields = _build_signature(function)
+        if fields:
+            builders.append((doc, function, fields))
+        if _verification_signature(function):
+            checks = _required_equality_checks(function)
+            if checks:
+                verifiers.append((doc, function, checks))
+    cookie_names = _cookie_names_in_scope(documents)
+    return [
+        recipe for builder in builders for verifier in verifiers
+        if (recipe := _matching_token_recipe(
+            builder, verifier, cookie_names,
+        )) is not None
+    ]
 
 
 def linked_recipe(finding: Any, recipes: Sequence[TokenRecipe]) -> TokenRecipe | None:

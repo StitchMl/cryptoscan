@@ -326,7 +326,7 @@ def solve_linear_hash(
     if full_max // low_modulus > 1_000_000:
         raise ValueError("lost high base digits exceed search limit")
     expression = re.compile(context.flag_regex)
-    prefix = re.match(r"^\^([A-Za-z_](?a:\\w*))\\\{", context.flag_regex)
+    prefix = re.match(r"^\^([A-Za-z_](?a:\w*))\\\{", context.flag_regex)
     answers: set[str] = set()
     if prefix is not None:
         for solution in solutions:

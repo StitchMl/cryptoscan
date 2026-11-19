@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from cryptoscan.gcm_hidden_state import (
     gf128_mul, gf128_ghash, recognize_gcm_tag_oracle,
+    recover_ghash_key_from_u1_tag_differences,
 )
 from cryptoscan.parser import Document, collect_documents
 from cryptoscan.scanner import scan
@@ -75,3 +76,34 @@ def test_ghash_matches_pycryptodome_gcm():
         cipher.update(aad)
         ciphertext, tag = cipher.encrypt_and_digest(pt)
         assert int.from_bytes(tag, "big") == pad ^ gf128_ghash(h,aad,ciphertext)
+
+
+def test_recover_ghash_key_from_real_aes_gcm_u1_tag_differences():
+    import random
+
+    AES = pytest.importorskip("Crypto.Cipher.AES")
+    rng = random.Random(1319)
+    key = bytes(range(16))
+    nonce = b"0123456789ab"
+    h = int.from_bytes(AES.new(key, AES.MODE_ECB).encrypt(bytes(16)), "big")
+    aad, plaintext = (rng.randbytes(12), rng.randbytes(12))
+
+    def tag(ad, pt):
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        cipher.update(ad)
+        cipher.encrypt(pt)
+        return cipher.digest()
+
+    previous = tag(aad, plaintext)
+    differences = []
+    for _ in range(150):
+        if rng.randrange(2):
+            aad = rng.randbytes(12)
+        else:
+            plaintext = rng.randbytes(12)
+        now = tag(aad, plaintext)
+        differences.append(bytes(a^b for a,b in zip(previous, now)))
+        previous = now
+
+    recovered = recover_ghash_key_from_u1_tag_differences(differences)
+    assert recovered == h

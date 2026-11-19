@@ -90,6 +90,34 @@ batch and returned the flag in GitHub Actions run 44545924933. The
 full protocol adapter was verified on this specific authorized service;
 other challenge instances require their own independent verification.
 
+## Correlation attacks against LFSR stream combiners
+
+CryptoScan can recognize source-defined stream ciphers built from parallel
+LFSRs with public feedback masks, repeated output clocks, and a Boolean
+combiner. When a same-scope output file exposes known plaintext and
+ciphertext, the optional offline solver:
+
+1. derives the Boolean truth table and per-register correlations from the
+   source, rather than searching for a challenge name;
+2. finds sparse degree-three feedback multiples over GF(2);
+3. performs a fast correlation attack to recover biased register states;
+4. solves the remaining unknown register bits with packed GF(2) linear algebra;
+5. verifies **every available known keystream bit** before attempting to
+   recover a flag from the following ciphertext.
+
+```powershell
+cryptoscan . --no-assist
+cryptoscan . --solve
+```
+
+The Hyper512 HITCON benchmark includes the original 32,768 known
+keystream bits and randomized independent LFSR states in regression
+tests. The solver does not contain precomputed LFSR states, known flag
+strings, or challenge-specific feedback polynomials. This attack is
+applicable only when the Boolean combiner and polynomial structure
+satisfy its mathematical preconditions, and it may require multiple
+noise-correction schedules.
+
 ## Fiat-Shamir low-entropy challenge grinding
 
 CryptoScan detects a class of noninteractive proof flaws in which a prover

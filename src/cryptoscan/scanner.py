@@ -31,6 +31,7 @@ from .mlwe import recognize_weak_mlwe_ring
 from .gcm_overlap_detector import counter_overlap_lines
 from .gcm_hidden_state import recognize_gcm_tag_oracle
 from .gcm_hidden_live import supports_wire_profile as supports_gcm_wire_profile
+from .hamiltonicity_workflow import extract_instance as extract_fiat_shamir_graph
 from .aead_diagnostics import unused_validation_flags
 from .parser import (
     Document,
@@ -1300,6 +1301,32 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
              "Compute SHA-256 message representatives modulo the curve order.",
              "Recover nonce relations using an orthogonal-lattice attack.",
              "Verify any recovered private key before claiming flag recovery."],
+        ))
+    fs_graph = extract_fiat_shamir_graph(documents)
+    if fs_graph is not None:
+        findings.append(Finding(
+            "FIAT-SHAMIR-GRINDABLE-CHALLENGE",
+            "Low-entropy Fiat-Shamir challenge permits selective commitment grinding",
+            "critical", "high", f"{fs_graph.source_path}:challenge",
+            {"challenge_bits": 1, "rounds": fs_graph.rounds,
+             "graph_vertices": len(fs_graph.graph), "expected_trials_per_round": 2,
+             "source_verified": True, "live_server_verified": False},
+            ["The prover chooses and hashes commitments before sending each proof.",
+             "The challenge is derived from a publicly computable hash bit.",
+             "At least one challenge branch can be satisfied using only a public graph opening."],
+            "Generate correctly opened Pedersen graph commitments, locally evaluate "
+            "the Fiat-Shamir hash, and resample random commitments until the "
+            "verifier selects the graph-opening branch. Repeat across rounds.",
+            {"kind": "fiat_shamir_challenge_grinding",
+             "primitive": "bounded_challenge_grinding",
+             "protocol": "pedersen_graph_opening",
+             "requires": ["explicit_authorized_host", "port"]},
+            "Bind non-interactive proofs to an appropriate soundness-preserving "
+            "transformation and account for malicious commitment grinding.",
+            ["Extract the active public graph, Pedersen parameters, and hash transcript.",
+             "Generate and independently verify a graph-opening transcript.",
+             "Grind the challenge hash to the opening branch before submission.",
+             "Submit each transcript to an authorized verifier and check its response."],
         ))
     for oracle in recognize_gcm_tag_oracle(documents):
         findings.append(Finding(

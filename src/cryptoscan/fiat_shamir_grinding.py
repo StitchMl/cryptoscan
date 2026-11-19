@@ -109,11 +109,19 @@ def grind_pedersen_graph_opening(
         new_state = iterated_graph_hash(commitments, state, params)
         if new_state[-1] & (1 << challenge_bit) == target:
             return commitments, [list(range(len(adjacency))), openings], new_state, attempts
-        randomizer = randint(q + 1)
-        if not 0 <= randomizer <= q:
-            raise ValueError("Invalid supplied Pedersen randomizer")
-        commitments[0][0] = (pow(h1, value, p) * pow(h2, randomizer, p)) % p
-        openings[0][0] = [value, randomizer]
+        if attempts % (q + 1) == 0:
+            # When the group is tiny, changing only one commitment can
+            # exhaust every possible opening without hitting the desired
+            # hash bit. Refresh the full commitment matrix to escape that
+            # orbit; this is also safe for arbitrary source parameters.
+            commitments, openings = pedersen_commit_matrix(
+                adjacency, params, randint=randint)
+        else:
+            randomizer = randint(q + 1)
+            if not 0 <= randomizer <= q:
+                raise ValueError("Invalid supplied Pedersen randomizer")
+            commitments[0][0] = (pow(h1, value, p) * pow(h2, randomizer, p)) % p
+            openings[0][0] = [value, randomizer]
     raise RuntimeError("No acceptable Fiat-Shamir challenge within trial budget")
 
 

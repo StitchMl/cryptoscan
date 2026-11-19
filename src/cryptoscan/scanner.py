@@ -30,6 +30,7 @@ from .ntru import recognize_ntru, is_polynomial_coefficients, analyze_ntru_vecto
 from .mlwe import recognize_weak_mlwe_ring
 from .gcm_overlap_detector import counter_overlap_lines
 from .gcm_hidden_state import recognize_gcm_tag_oracle
+from .gcm_hidden_live import supports_wire_profile as supports_gcm_wire_profile
 from .aead_diagnostics import unused_validation_flags
 from .parser import (
     Document,
@@ -1309,7 +1310,8 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
              "tag_oracle": True, "chosen_state_mutations": ["u1", "u2"],
              "timeout_seconds": oracle.timeout_seconds,
              "pow_difficulty": oracle.pow_difficulty,
-             "automatic_recovery_implemented": True,
+             "automatic_recovery_implemented": supports_gcm_wire_profile(documents),
+             "wire_profile_supported": supports_gcm_wire_profile(documents),
              "live_server_verified": False},
             ["The same key and nonce are used in every AES-GCM instance.",
              "The oracle returns GCM tags for hidden AAD/plaintext.",
@@ -1318,7 +1320,8 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
             "Use tag differences and u1 resets to infer the 128-bit GHASH key "
             "through GF(2)-linear constraints. Then use u2 length extensions "
             "to solve for the hidden state and the empty-message authentication pad.",
-            {"kind": "gcm_hidden_state_linear_algebra", "implemented": True,
+            {"kind": "gcm_hidden_state_linear_algebra",
+             "implemented": supports_gcm_wire_profile(documents),
              "algebra": "GF(2^128)", "requires": ["tag transcript", "state mutations"]},
             "Use a fresh GCM nonce per encryption and avoid exposing tag oracles "
             "over a hidden, attacker-mutatable authentication state.",

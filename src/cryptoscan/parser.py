@@ -46,50 +46,62 @@ def _scope(relative_name: str, fallback: str = ".") -> str:
     return parts[0].casefold()
 
 
+def _documents_in_file(root: Path, path: Path) -> list[Document]:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return []
+    relative = path.relative_to(root).as_posix()
+    scope = _scope(relative)
+    suffixes = "".join(path.suffixes).casefold()
+    if path.suffix.casefold() == ".zip":
+        return _zip_documents(
+            raw, relative, _scope(relative, Path(relative).stem.casefold()),
+        )
+    if suffixes.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz")):
+        archive_scope = Path(relative).name.casefold().split(".tar", 1)[0]
+        return _tar_documents(
+            path, relative, _scope(relative, archive_scope),
+        )
+    if path.suffix.casefold() in {".der", ".cer"}:
+        keys = der_rsa_public_keys(raw)
+        return [Document(relative, "", keys, scope, hashlib.sha256(raw).hexdigest())] if keys else []
+    if b"\0" in raw[:4096]:
+        return []
+    text = raw.decode("utf-8", errors="replace")
+    data = None
+    if path.suffix.casefold() == ".json" or text.lstrip().startswith(("{", "[")):
+        with contextlib.suppress(json.JSONDecodeError):
+            data = json.loads(text)
+    return [Document(
+        relative, text, data, scope, hashlib.sha256(raw).hexdigest(),
+    )]
+
+
 def collect_documents(targets: Iterable[str]) -> list[Document]:
     files: list[tuple[Path, Path]] = []
     for raw in targets:
         target = Path(raw).resolve()
         if target.is_dir():
-            files.extend((target, p) for p in target.rglob("*") if p.is_file() and not _ignored(p.relative_to(target).as_posix()))
+            files.extend(
+                (target, path) for path in target.rglob("*")
+                if path.is_file()
+                and not _ignored(path.relative_to(target).as_posix())
+            )
         elif target.is_file() and not _ignored(target.name):
             files.append((target.parent, target))
-    documents: list[Document] = []
-    for root, path in sorted(files, key=lambda pair: pair[1].as_posix().casefold()):
-        try:
-            raw = path.read_bytes()
-        except OSError:
-            continue
-        suffixes = "".join(path.suffixes).casefold()
-        if path.suffix.casefold() == ".zip":
-            relative = path.relative_to(root).as_posix()
-            documents.extend(_zip_documents(raw, relative, _scope(relative, Path(relative).stem.casefold())))
-            continue
-        if suffixes.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz")):
-            relative = path.relative_to(root).as_posix()
-            documents.extend(_tar_documents(path, relative, _scope(relative, Path(relative).name.casefold().split(".tar", 1)[0])))
-            continue
-        if path.suffix.casefold() in {".der", ".cer"}:
-            keys = der_rsa_public_keys(raw)
-            if keys:
-                relative = path.relative_to(root).as_posix()
-                documents.append(Document(relative, "", keys, _scope(relative), hashlib.sha256(raw).hexdigest()))
-            continue
-        if b"\0" in raw[:4096]:
-            continue
-        text = raw.decode("utf-8", errors="replace")
-        data = None
-        if path.suffix.casefold() == ".json" or text.lstrip().startswith(("{", "[")):
-            with contextlib.suppress(json.JSONDecodeError):
-                data = json.loads(text)
-        relative = path.relative_to(root).as_posix()
-        documents.append(Document(relative, text, data, _scope(relative), hashlib.sha256(raw).hexdigest()))
-    # Avoid cross-challenge deduplication. Identical source templates may
-    # occur in independent CTF folders with different companion outputs.
-    # Deduplicating by digest alone would discard one folder's source and
-    # prevent scope-local correlation with its ciphertexts.
+    documents = [
+        document
+        for root, path in sorted(
+            files, key=lambda pair: pair[1].as_posix().casefold(),
+        )
+        for document in _documents_in_file(root, path)
+    ]
+    # Do not discard identically named templates from independent challenges.
     unique: dict[tuple[str, str], Document] = {}
-    for document in sorted(documents, key=lambda item: ("!/" in item.path, item.path.casefold())):
+    for document in sorted(
+        documents, key=lambda item: ("!/" in item.path, item.path.casefold()),
+    ):
         unique.setdefault((document.scope, document.digest), document)
     return list(unique.values())
 
@@ -240,32 +252,37 @@ def pem_rsa_public_keys(text: str) -> list[dict[str, int]]:
     return found
 
 
+def _parse_rsa_der_variant(der: bytes, is_spki: bool) -> dict[str, int] | None:
+    candidate = der
+    if is_spki:
+        outer, end = _der_value(candidate, 0, 0x30)
+        if end != len(candidate):
+            return None
+        _, offset = _der_value(outer, 0, 0x30)
+        bits, offset = _der_value(outer, offset, 0x03)
+        if offset != len(outer) or not bits or bits[0] != 0:
+            return None
+        candidate = bits[1:]
+    sequence, end = _der_value(candidate, 0, 0x30)
+    if end != len(candidate):
+        return None
+    n_raw, offset = _der_value(sequence, 0, 0x02)
+    e_raw, offset = _der_value(sequence, offset, 0x02)
+    if offset != len(sequence):
+        return None
+    modulus, exponent = int.from_bytes(n_raw, "big"), int.from_bytes(e_raw, "big")
+    return {"n": modulus, "e": exponent} if modulus > 3 and exponent > 1 else None
+
+
 def der_rsa_public_keys(der: bytes, spki: bool | None = None) -> list[dict[str, int]]:
     attempts = (False, True) if spki is None else (spki,)
     for is_spki in attempts:
         try:
-            candidate = der
-            if is_spki:
-                outer, end = _der_value(candidate, 0, 0x30)
-                if end != len(candidate):
-                    continue
-                _, offset = _der_value(outer, 0, 0x30)
-                bits, offset = _der_value(outer, offset, 0x03)
-                if offset != len(outer) or not bits or bits[0] != 0:
-                    continue
-                candidate = bits[1:]
-            sequence, end = _der_value(candidate, 0, 0x30)
-            if end != len(candidate):
-                continue
-            n_raw, offset = _der_value(sequence, 0, 0x02)
-            e_raw, offset = _der_value(sequence, offset, 0x02)
-            if offset != len(sequence):
-                continue
-            n, e = int.from_bytes(n_raw, "big"), int.from_bytes(e_raw, "big")
-            if n > 3 and e > 1:
-                return [{"n": n, "e": e}]
+            parsed = _parse_rsa_der_variant(der, is_spki)
         except ValueError:
             continue
+        if parsed is not None:
+            return [parsed]
     return []
 
 

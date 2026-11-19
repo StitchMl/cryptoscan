@@ -40,3 +40,11 @@ def test_fold_lattice_accepts_independent_initial_and_lift_shapes():
 def test_invalid_folding_divisor_is_rejected():
     with pytest.raises(ValueError):
         fold_poly([1, 2, 3], 2)
+
+
+def test_cyclic_key_rotations_share_one_equivalence_class():
+    from cryptoscan.ntru_folding import _canonical_rotation
+    key = (0, 1, 1, 0, 1, 0, 0, 2)
+    assert {_canonical_rotation(key[i:] + key[:i]) for i in range(len(key))} == {
+        _canonical_rotation(key)
+    }

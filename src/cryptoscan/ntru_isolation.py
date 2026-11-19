@@ -139,5 +139,5 @@ def solve_isolated(
             })
         progress("Isolated NTRU process exited; native FLINT memory released.")
         return decoded
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("Invalid response from isolated NTRU worker") from exc

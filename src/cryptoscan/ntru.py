@@ -104,9 +104,7 @@ def analyze_ntru_vectors(
         ciphertext_evaluation
         - context.plaintext_modulus * public_evaluation * context.r_weight
     ) % q
-    candidate_weights = tuple(
-        weight for weight in range(message_weight_residue, context.degree + 1, q)
-    )
+    candidate_weights = tuple(range(message_weight_residue, context.degree + 1, q))
     return NTRUProjection(
         public_evaluation,
         expected,

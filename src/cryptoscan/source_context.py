@@ -194,7 +194,7 @@ def _required_equality_checks(node: ast.FunctionDef) -> tuple[tuple[str, str], .
                 and isinstance(right.value, str)):
             continue
         checks.append((left.slice.value, right.value))
-    if not checks or set(name for name, _ in checks) != subscript_keys:
+    if not checks or {name for name, _ in checks} != subscript_keys:
         return None
     if len({name for name, _ in checks}) != len(checks):
         return None

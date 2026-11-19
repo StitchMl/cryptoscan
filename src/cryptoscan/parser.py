@@ -229,7 +229,7 @@ def scalar_records(text: str) -> list[dict[str, Any]]:
 def pem_rsa_public_keys(text: str) -> list[dict[str, int]]:
     """Parse RSA PKCS#1 and SubjectPublicKeyInfo PEM without external packages."""
     found: list[dict[str, int]] = []
-    pattern = re.compile(r"-----BEGIN (RSA PUBLIC KEY|PUBLIC KEY)-----\s*(.*?)\s*-----END \1-----", re.DOTALL)
+    pattern = re.compile(r"-----BEGIN (RSA PUBLIC KEY|PUBLIC KEY)-----([A-Za-z0-9+/=\s]{0,32768})-----END \1-----")
     for label, body in pattern.findall(text):
         try:
             der = base64.b64decode(re.sub(r"\s+", "", body), validate=True)

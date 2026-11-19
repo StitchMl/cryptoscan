@@ -95,7 +95,7 @@ def _decode(encoded: str) -> Any:
         if len(plain) > MAX_UNCOMPRESSED:
             raise ValueError("uncompressed sample is too large")
         return ast.literal_eval(plain.decode("utf8"))
-    except (OSError, UnicodeDecodeError, SyntaxError, ValueError,
+    except (OSError, SyntaxError, ValueError,
             TypeError, RecursionError, OverflowError) as exc:
         raise ValueError("invalid bounded gzip/base64/literal sample") from exc
 

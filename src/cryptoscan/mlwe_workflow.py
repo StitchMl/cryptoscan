@@ -100,5 +100,5 @@ def interactive_mlwe_workflow(
             play_ctf_tcp(host, port, context, write)
         else:
             write("Cancelled; no network activity.")
-    except (OSError, TimeoutError, ValueError, RuntimeError) as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         write("MLWE workflow stopped: " + str(exc))

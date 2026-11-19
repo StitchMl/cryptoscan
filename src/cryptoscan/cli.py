@@ -94,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.host and args.port and extract_batch_fiat_shamir(documents) is not None:
             try:
                 flag = recover_batch_fs_flag(documents, args.host, args.port, timeout=args.timeout)
-            except (RuntimeError, ValueError, OSError, ConnectionError) as exc:
+            except (RuntimeError, ValueError, OSError) as exc:
                 print(f"Fiat-Shamir transcript-collision solver failed: {exc}", file=sys.stderr)
                 return 2
             print(f"FLAG: {flag}")
@@ -102,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.host and args.port and extract_fiat_shamir_graph(documents) is not None:
             try:
                 flag = recover_fs_graph_flag(documents, args.host, args.port, timeout=args.timeout)
-            except (RuntimeError, ValueError, OSError, ConnectionError) as exc:
+            except (RuntimeError, ValueError, OSError) as exc:
                 print(f"Fiat-Shamir grinding solver failed: {exc}", file=sys.stderr)
                 return 2
             print(f"FLAG: {flag}")
@@ -110,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.host and args.port and supports_gcm_wire_profile(documents):
             try:
                 flag = recover_gcm_hidden_flag(documents, args.host, args.port, timeout=args.timeout)
-            except (RuntimeError, ValueError, OSError, ConnectionError) as exc:
+            except (RuntimeError, ValueError, OSError) as exc:
                 print(f"GCM hidden-state solver failed: {exc}", file=sys.stderr)
                 return 2
             print(f"FLAG: {flag}")
@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.host and args.port and supported_fischlin_source(documents):
             try:
                 flag = recover_fischlin_flag(documents, args.host, args.port, timeout=args.timeout)
-            except (RuntimeError, ValueError, OSError, ConnectionError) as exc:
+            except (RuntimeError, ValueError, OSError) as exc:
                 print(f"Fischlin solver failed: {exc}", file=sys.stderr)
                 return 2
             print(f"FLAG: {flag}")

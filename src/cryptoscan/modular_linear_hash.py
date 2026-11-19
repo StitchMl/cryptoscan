@@ -53,7 +53,6 @@ def recognize_linear_hash(documents: Sequence[Document]) -> list[LinearHashConte
             scopes.setdefault(document.scope, []).append(document)
     found = []
     for scope, docs in scopes.items():
-        all_text = "\n".join(doc.text for doc in docs)
         core = next((
             doc for doc in docs
             if "Zmod(n)" in doc.text
@@ -103,7 +102,7 @@ def recognize_linear_hash(documents: Sequence[Document]) -> list[LinearHashConte
             continue
         flag_regex = pattern.group(2)
         try:
-            compiled = re.compile(flag_regex)
+            re.compile(flag_regex)
         except re.error:
             continue
         if not flag_regex.startswith("^") or not flag_regex.endswith("$"):

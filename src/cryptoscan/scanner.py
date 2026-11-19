@@ -226,7 +226,7 @@ def _clone_mt19937(outputs: list[int]) -> tuple[int, bool] | None:
         return None
     clone = random.Random()
     clone.setstate((3, (*state, 624), None))
-    return clone.getrandbits(32), True  # NOSONAR: reconstructs a target MT19937 state to predict its output; not for security
+    return clone.getrandbits(32), True
 
 
 def _sha1_compress(block: bytes, state: tuple[int, int, int, int, int]) -> tuple[int, int, int, int, int]:

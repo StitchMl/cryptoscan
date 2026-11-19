@@ -147,25 +147,19 @@ def find_linear_hash_data(
     return matrices[0], outputs[0]
 
 
-def recover_small_alphabet_vectors(
+def _modular_elimination(
     matrix: list[list[int]], output: bytes, modulus: int,
-    alphabet: tuple[int, ...], *, max_guesses: int = 250_000,
-) -> tuple[list[list[int]], int]:
-    """Unit-pivot modular elimination, then enumerate bounded free variables."""
-    rows = len(matrix)
-    columns = len(matrix[0]) if matrix else 0
-    if not rows or not columns or any(len(row) != columns for row in matrix):
-        raise ValueError("invalid matrix")
-    if len(output) != rows:
-        raise ValueError("output does not match matrix row count")
-    augmented = [[int(x) % modulus for x in row] + [out % modulus]
-                 for row, out in zip(matrix, output)]
-    perm = list(range(columns))
+) -> tuple[list[list[int]], list[int], int]:
+    rows, columns = len(matrix), len(matrix[0])
+    augmented = [
+        [int(value) % modulus for value in row] + [out % modulus]
+        for row, out in zip(matrix, output)
+    ]
+    permutation = list(range(columns))
     rank = 0
     for position in range(min(rows, columns)):
         selected = next((
-            (i, j)
-            for j in range(position, columns)
+            (i, j) for j in range(position, columns)
             for i in range(position, rows)
             if math.gcd(augmented[i][j], modulus) == 1
         ), None)
@@ -175,7 +169,7 @@ def recover_small_alphabet_vectors(
         augmented[position], augmented[i] = augmented[i], augmented[position]
         for row in augmented:
             row[position], row[j] = row[j], row[position]
-        perm[position], perm[j] = perm[j], perm[position]
+        permutation[position], permutation[j] = permutation[j], permutation[position]
         inverse = pow(augmented[position][position], -1, modulus)
         augmented[position] = [
             value * inverse % modulus for value in augmented[position]
@@ -190,6 +184,55 @@ def recover_small_alphabet_vectors(
                     for a, b in zip(augmented[i], augmented[position])
                 ]
         rank += 1
+    return augmented, permutation, rank
+
+
+def _candidate_from_free_variables(
+    free_values: tuple[int, ...], augmented: list[list[int]],
+    permutation: list[int], rank: int, modulus: int,
+    permitted: dict[int, int],
+) -> list[int] | None:
+    columns = len(permutation)
+    values = [0] * columns
+    for index, value in enumerate(free_values, start=rank):
+        values[index] = value
+    for index in range(rank):
+        residual = (
+            augmented[index][-1]
+            - sum(augmented[index][j] * values[j]
+                  for j in range(rank, columns))
+        ) % modulus
+        if residual not in permitted:
+            return None
+        values[index] = permitted[residual]
+    candidate = [0] * columns
+    for index, original in enumerate(permutation):
+        candidate[original] = values[index]
+    return candidate
+
+
+def _satisfies_linear_hash(
+    matrix: list[list[int]], output: bytes,
+    candidate: list[int], modulus: int,
+) -> bool:
+    return all(
+        sum(a * x for a, x in zip(row, candidate)) % modulus == out
+        for row, out in zip(matrix, output)
+    )
+
+
+def recover_small_alphabet_vectors(
+    matrix: list[list[int]], output: bytes, modulus: int,
+    alphabet: tuple[int, ...], *, max_guesses: int = 250_000,
+) -> tuple[list[list[int]], int]:
+    """Unit-pivot elimination followed by bounded free-variable enumeration."""
+    rows = len(matrix)
+    columns = len(matrix[0]) if matrix else 0
+    if not rows or not columns or any(len(row) != columns for row in matrix):
+        raise ValueError("invalid matrix")
+    if len(output) != rows:
+        raise ValueError("output does not match matrix row count")
+    augmented, permutation, rank = _modular_elimination(matrix, output, modulus)
     free_count = columns - rank
     if len(alphabet) ** free_count > max_guesses:
         raise ValueError(
@@ -197,30 +240,42 @@ def recover_small_alphabet_vectors(
             f"over {len(alphabet)} values"
         )
     permitted = {value % modulus: value for value in alphabet}
-    solutions: list[list[int]] = []
+    solutions = []
     for free_values in itertools.product(alphabet, repeat=free_count):
-        values = [0] * columns
-        for j, value in enumerate(free_values, start=rank):
-            values[j] = value
-        for i in range(rank):
-            residual = (
-                augmented[i][-1]
-                - sum(augmented[i][j] * values[j]
-                      for j in range(rank, columns))
-            ) % modulus
-            if residual not in permitted:
-                break
-            values[i] = permitted[residual]
-        else:
-            candidate = [0] * columns
-            for j, original in enumerate(perm):
-                candidate[original] = values[j]
-            if all(
-                sum(a * x for a, x in zip(row, candidate)) % modulus == out
-                for row, out in zip(matrix, output)
-            ):
-                solutions.append(candidate)
+        candidate = _candidate_from_free_variables(
+            free_values, augmented, permutation, rank, modulus, permitted,
+        )
+        if candidate is not None and _satisfies_linear_hash(
+                matrix, output, candidate, modulus):
+            solutions.append(candidate)
     return solutions, rank
+
+
+def _verify_linear_hash_flag(
+    number: int, context: LinearHashContext,
+    expression: re.Pattern[str], prefix: str,
+    matrix: list[list[int]], output: bytes,
+) -> str | None:
+    padded_xor = number.to_bytes(context.secret_bytes, "little")
+    secret = bytes(byte ^ context.block_bytes for byte in padded_xor)
+    try:
+        decoded = secret.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    candidate = prefix + "{" + decoded + "}"
+    if not expression.fullmatch(candidate):
+        return None
+    # Independently reconstruct the complete source-defined serialization.
+    raw = bytes(byte ^ context.block_bytes for byte in secret)
+    integer = int.from_bytes(raw, "little")
+    base = len(context.alphabet)
+    digits = []
+    for _ in range(context.columns):
+        digits.append(context.alphabet[integer % base])
+        integer //= base
+    if _satisfies_linear_hash(matrix, output, digits, context.modulus):
+        return candidate
+    return None
 
 
 def solve_linear_hash(
@@ -239,39 +294,21 @@ def solve_linear_hash(
     if full_max // low_modulus > 1_000_000:
         raise ValueError("lost high base digits exceed search limit")
     expression = re.compile(context.flag_regex)
-    answers = set()
-    for solution in solutions:
-        low = sum(
-            context.alphabet.index(value) * base ** index
-            for index, value in enumerate(solution)
-        )
-        for multiple in range((full_max - 1 - low) // low_modulus + 1):
-            number = low + multiple * low_modulus
-            padded_xor = number.to_bytes(context.secret_bytes, "little")
-            secret = bytes(byte ^ context.block_bytes for byte in padded_xor)
-            try:
-                decoded = secret.decode("ascii")
-            except UnicodeDecodeError:
-                continue
-            # Get prefix/suffix from the *observed source regex*, not a CTF name.
-            prefix = re.match(r"^\^([A-Za-z_][A-Za-z_0-9]*)\\\{", context.flag_regex)
-            if prefix is None:
-                continue
-            possible = prefix.group(1) + "{" + decoded + "}"
-            if not expression.fullmatch(possible):
-                continue
-            # Check the whole source-defined serialization independently.
-            raw = bytes(byte ^ context.block_bytes for byte in secret)
-            integer = int.from_bytes(raw, "little")
-            digits = []
-            for _ in range(context.columns):
-                digits.append(context.alphabet[integer % base])
-                integer //= base
-            if all(
-                sum(a * d for a, d in zip(row, digits)) % context.modulus == out
-                for row, out in zip(matrix, output)
-            ):
-                answers.add(possible)
+    prefix = re.match(r"^\^([A-Za-z_][A-Za-z_0-9]*)\\\{", context.flag_regex)
+    answers: set[str] = set()
+    if prefix is not None:
+        for solution in solutions:
+            low = sum(
+                context.alphabet.index(value) * base ** index
+                for index, value in enumerate(solution)
+            )
+            for multiple in range((full_max - 1 - low) // low_modulus + 1):
+                candidate = _verify_linear_hash_flag(
+                    low + multiple * low_modulus, context,
+                    expression, prefix.group(1), matrix, output,
+                )
+                if candidate is not None:
+                    answers.add(candidate)
     return LinearHashResult(
         tuple(sorted(answers)), len(solutions), rank,
         context.columns - rank, True,

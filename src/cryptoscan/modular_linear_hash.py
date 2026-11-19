@@ -46,74 +46,116 @@ def _constant(text: str, name: str) -> int | None:
     return int(matches[0]) if len(matches) == 1 else None
 
 
-def recognize_linear_hash(documents: Sequence[Document]) -> list[LinearHashContext]:
+def _is_linear_core(doc: Document) -> bool:
+    return (
+        "Zmod(n)" in doc.text
+        and bool(re.search(r"\bMatrix\s*\(\s*Zn\s*,\s*k\s*,\s*l\s*,", doc.text))
+        and bool(re.search(r"\bbytes\s*\(\s*A\s*\*\s*x\s*\)", doc.text))
+    )
+
+
+def _is_linear_utility(doc: Document) -> bool:
+    required = (
+        r"\b256\s*\*\*\s*i\b",
+        r"\bpad\s*\(\s*a\s*,\s*BLOCK_LEN\s*\)",
+        r"\bxor\s*\(\s*out\s*,",
+        r"\bbtq\s*\(\s*out\s*\)\s*\[\s*:\s*l\s*\]",
+    )
+    return (
+        "charset" in doc.text and "btq" in doc.text
+        and all(re.search(pattern, doc.text) for pattern in required)
+    )
+
+
+def _analyze_linear_hash_pair(
+    scope: str, core: Document, utility: Document,
+) -> LinearHashContext | None:
+    modulus = _constant(core.text, "n")
+    shape = re.search(r"\bk\s*,\s*l\s*=\s*(\d+)\s*,\s*(\d+)", core.text)
+    block_bytes = _constant(utility.text, "BLOCK_LEN")
+    secret = re.search(
+        r"assert\s+len\s*\(\s*FLAG\s*\)\s*==\s*(\d+)", core.text,
+    )
+    alphabet_match = re.search(
+        r"(?m)^\s*charset\s*=\s*(\[[^\r\n]*\])", utility.text,
+    )
+    pattern = re.search(
+        r"\bmatch\s*\(\s*r?(['\"])(.*?)\1\s*,\s*FLAG\s*\)",
+        core.text,
+    )
+    if not all((modulus, shape, block_bytes, secret, alphabet_match, pattern)):
+        return None
+    try:
+        alphabet = ast.literal_eval(alphabet_match.group(1))
+    except (SyntaxError, ValueError):
+        return None
+    if not (isinstance(alphabet, list)
+            and all(type(value) is int for value in alphabet)
+            and len(set(alphabet)) == len(alphabet)):
+        return None
+    rows, columns = map(int, shape.groups())
+    secret_bytes = int(secret.group(1))
+    if not (
+        2 <= modulus <= 65536
+        and 1 <= rows <= 256 and rows <= columns <= 256
+        and 1 <= block_bytes <= 32 and secret_bytes == block_bytes
+        and 2 <= len(alphabet) <= 16
+    ):
+        return None
+    flag_regex = pattern.group(2)
+    try:
+        re.compile(flag_regex)
+    except re.error:
+        return None
+    if not flag_regex.startswith("^") or not flag_regex.endswith("$"):
+        return None
+    location = core.text.find("Zmod(n)")
+    return LinearHashContext(
+        core.path, scope, core.text.count("\n", 0, location) + 1,
+        modulus, rows, columns, block_bytes, secret_bytes,
+        tuple(alphabet), flag_regex,
+    )
+
+
+def recognize_linear_hash(
+    documents: Sequence[Document],
+) -> list[LinearHashContext]:
     scopes: dict[str, list[Document]] = {}
     for document in documents:
         if document.path.lower().endswith((".sage", ".py")):
             scopes.setdefault(document.scope, []).append(document)
     found = []
     for scope, docs in scopes.items():
-        core = next((
-            doc for doc in docs
-            if "Zmod(n)" in doc.text
-            and re.search(r"\bMatrix\s*\(\s*Zn\s*,\s*k\s*,\s*l\s*,", doc.text)
-            and re.search(r"\bbytes\s*\(\s*A\s*\*\s*x\s*\)", doc.text)
-        ), None)
-        if core is None:
+        core = next((doc for doc in docs if _is_linear_core(doc)), None)
+        utility = next((doc for doc in docs if _is_linear_utility(doc)), None)
+        if core is None or utility is None:
             continue
-        utility = next((
-            doc for doc in docs
-            if "charset" in doc.text
-            and "btq" in doc.text
-            and re.search(r"\b256\s*\*\*\s*i\b", doc.text)
-            and re.search(r"\bpad\s*\(\s*a\s*,\s*BLOCK_LEN\s*\)", doc.text)
-            and re.search(r"\bxor\s*\(\s*out\s*,", doc.text)
-            and re.search(r"\bbtq\s*\(\s*out\s*\)\s*\[\s*:\s*l\s*\]", doc.text)
-        ), None)
-        if utility is None:
-            continue
-        n = _constant(core.text, "n")
-        shape = re.search(r"\bk\s*,\s*l\s*=\s*(\d+)\s*,\s*(\d+)", core.text)
-        block = _constant(utility.text, "BLOCK_LEN")
-        secret = re.search(
-            r"assert\s+len\s*\(\s*FLAG\s*\)\s*==\s*(\d+)", core.text
-        )
-        alphabet_match = re.search(r"(?m)^\s*charset\s*=\s*(\[[^\r\n]*\])", utility.text)
-        pattern = re.search(
-            r"\bmatch\s*\(\s*r?(['\"])(.*?)\1\s*,\s*FLAG\s*\)",
-            core.text,
-        )
-        if not all((n, shape, block, secret, alphabet_match, pattern)):
-            continue
-        try:
-            charset = ast.literal_eval(alphabet_match.group(1))
-        except (SyntaxError, ValueError):
-            continue
-        if not (isinstance(charset, list)
-                and all(type(item) is int for item in charset)
-                and len(set(charset)) == len(charset)):
-            continue
-        rows, columns = map(int, shape.groups())
-        secret_length = int(secret.group(1))
-        if not (2 <= n <= 65536
-                and 1 <= rows <= 256 and rows <= columns <= 256
-                and 1 <= block <= 32 and secret_length == block
-                and 2 <= len(charset) <= 16):
-            continue
-        flag_regex = pattern.group(2)
-        try:
-            re.compile(flag_regex)
-        except re.error:
-            continue
-        if not flag_regex.startswith("^") or not flag_regex.endswith("$"):
-            continue
-        location = core.text.find("Zmod(n)")
-        found.append(LinearHashContext(
-            core.path, scope, core.text.count("\n", 0, location) + 1,
-            n, rows, columns, block, secret_length,
-            tuple(charset), flag_regex,
-        ))
+        context = _analyze_linear_hash_pair(scope, core, utility)
+        if context is not None:
+            found.append(context)
     return found
+
+
+def _matrix_from_literal(doc: Document, context: LinearHashContext) -> list[list[int]] | None:
+    if not doc.path.lower().endswith((".txt", ".json")):
+        return None
+    text = doc.text.strip()
+    if not text.startswith("["):
+        return None
+    try:
+        candidate = ast.literal_eval(text)
+    except (ValueError, SyntaxError, RecursionError):
+        return None
+    if not isinstance(candidate, list) or len(candidate) != context.rows:
+        return None
+    if not all(
+        isinstance(row, list) and len(row) == context.columns
+        and all(type(value) is int and 0 <= value < context.modulus
+                for value in row)
+        for row in candidate
+    ):
+        return None
+    return candidate
 
 
 def find_linear_hash_data(
@@ -124,20 +166,10 @@ def find_linear_hash_data(
     for doc in documents:
         if doc.scope != context.scope:
             continue
+        candidate = _matrix_from_literal(doc, context)
+        if candidate is not None:
+            matrices.append(candidate)
         text = doc.text.strip()
-        if doc.path.lower().endswith((".txt", ".json")) and text.startswith("["):
-            try:
-                candidate = ast.literal_eval(text)
-            except (ValueError, SyntaxError, RecursionError):
-                continue
-            if (isinstance(candidate, list)
-                and len(candidate) == context.rows
-                and all(isinstance(row, list)
-                        and len(row) == context.columns
-                        and all(type(value) is int
-                                and 0 <= value < context.modulus for value in row)
-                        for row in candidate)):
-                matrices.append(candidate)
         if (doc.path.lower().endswith(".txt")
                 and re.fullmatch(r"[0-9a-fA-F]+", text)
                 and len(text) == 2 * context.rows):

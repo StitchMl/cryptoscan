@@ -83,6 +83,24 @@ def _constants(tree: ast.Module) -> dict[str, int]:
     return result
 
 
+def _register_definition(
+    node: ast.AST, constants: dict[str, int],
+) -> tuple[str, int, int] | None:
+    if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+        return None
+    target, value = node.targets[0], node.value
+    if not (isinstance(target, ast.Attribute)
+            and isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and len(value.args) == 3):
+        return None
+    degree, mask = value.args[0], value.args[2]
+    if not (isinstance(degree, ast.Constant) and type(degree.value) is int
+            and isinstance(mask, ast.Name) and mask.id in constants):
+        return None
+    return target.attr, degree.value, constants[mask.id]
+
+
 def _registers(tree: ast.Module) -> tuple[int, dict[str, int]] | None:
     constants = _constants(tree)
     for cls in tree.body:
@@ -91,24 +109,14 @@ def _registers(tree: ast.Module) -> tuple[int, dict[str, int]] | None:
         for method in cls.body:
             if not isinstance(method, ast.FunctionDef) or method.name != "__init__":
                 continue
-            regs: dict[str, int] = {}
-            degrees: set[int] = set()
-            for node in ast.walk(method):
-                if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-                    continue
-                target, value = node.targets[0], node.value
-                if not (isinstance(target, ast.Attribute)
-                        and isinstance(value, ast.Call)
-                        and isinstance(value.func, ast.Name)
-                        and len(value.args) == 3
-                        and isinstance(value.args[0], ast.Constant)
-                        and isinstance(value.args[2], ast.Name)
-                        and value.args[2].id in constants):
-                    continue
-                degrees.add(value.args[0].value)
-                regs[target.attr] = constants[value.args[2].id]
-            if len(regs) >= 2 and len(degrees) == 1:
-                return degrees.pop(), regs
+            definitions = [
+                parsed for node in ast.walk(method)
+                if (parsed := _register_definition(node, constants)) is not None
+            ]
+            degrees = {degree for _, degree, _ in definitions}
+            registers = {name: mask for name, _, mask in definitions}
+            if len(registers) >= 2 and len(degrees) == 1:
+                return degrees.pop(), registers
     return None
 
 
@@ -144,6 +152,18 @@ def _hash_input(method: ast.FunctionDef) -> ast.expr | None:
     return None
 
 
+def _symbol_definition(
+    node: ast.stmt, registers: dict[str, int],
+) -> tuple[str, int, int] | None:
+    if not (isinstance(node, ast.Assign) and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)):
+        return None
+    calls = _clock_calls(node.value)
+    if calls is None or calls[0] not in registers:
+        return None
+    return node.targets[0].id, registers[calls[0]], calls[1]
+
+
 def _combiner_from_method(
     method: ast.FunctionDef, registers: dict[str, int],
     degree: int, path: str,
@@ -151,19 +171,11 @@ def _combiner_from_method(
     expression = _hash_input(method)
     if expression is None:
         return None
-    symbols: list[str] = []
-    masks: list[int] = []
-    clocks: list[int] = []
-    for node in method.body:
-        if not (isinstance(node, ast.Assign) and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)):
-            continue
-        calls = _clock_calls(node.value)
-        if calls is None or calls[0] not in registers:
-            continue
-        symbols.append(node.targets[0].id)
-        masks.append(registers[calls[0]])
-        clocks.append(calls[1])
+    variables = [
+        parsed for node in method.body
+        if (parsed := _symbol_definition(node, registers)) is not None
+    ]
+    symbols = tuple(name for name, _, _ in variables)
     if not 2 <= len(symbols) <= 6 or len(set(symbols)) != len(symbols):
         return None
     try:
@@ -171,8 +183,23 @@ def _combiner_from_method(
         _integer_expression(expression, dict.fromkeys(symbols, 1))
     except ValueError:
         return None
-    return StreamCombiner(degree, tuple(masks), tuple(clocks),
-                          tuple(symbols), expression, path)
+    masks = tuple(mask for _, mask, _ in variables)
+    clocks = tuple(clock for _, _, clock in variables)
+    return StreamCombiner(degree, masks, clocks, symbols, expression, path)
+
+
+def _class_bit_combiner(
+    cls: ast.AST, registers: dict[str, int],
+    degree: int, path: str,
+) -> StreamCombiner | None:
+    if not isinstance(cls, ast.ClassDef):
+        return None
+    for method in cls.body:
+        if isinstance(method, ast.FunctionDef) and method.name == "bit":
+            candidate = _combiner_from_method(method, registers, degree, path)
+            if candidate is not None:
+                return candidate
+    return None
 
 
 def parse_stream_combiner(source: str, path: str) -> StreamCombiner | None:
@@ -187,20 +214,13 @@ def parse_stream_combiner(source: str, path: str) -> StreamCombiner | None:
     degree, registers = data
     if not 8 <= degree <= 256:
         return None
-    # Require a right-shift LFSR with parity feedback and one-bit output.
-    if not any(
-        isinstance(node, ast.Attribute) and node.attr == "bit_count"
-        for node in ast.walk(tree)
-    ):
+    if not any(isinstance(node, ast.Attribute) and node.attr == "bit_count"
+               for node in ast.walk(tree)):
         return None
     for cls in tree.body:
-        if not isinstance(cls, ast.ClassDef):
-            continue
-        for method in cls.body:
-            if isinstance(method, ast.FunctionDef) and method.name == "bit":
-                result = _combiner_from_method(method, registers, degree, path)
-                if result is not None:
-                    return result
+        candidate = _class_bit_combiner(cls, registers, degree, path)
+        if candidate is not None:
+            return candidate
     return None
 
 
@@ -344,6 +364,60 @@ def _full_keystream(
     ]
 
 
+def _sparse_candidates(
+    model: StreamCombiner, observed_length: int,
+) -> list[tuple[int, int, float, tuple[int, int]]]:
+    candidates = []
+    for probability, index in _affinities(model):
+        if abs(probability - 0.5) < 0.05:
+            continue
+        triples = low_weight_trinomials(
+            model.masks[index], model.degree,
+            maximum_degree=min(2048, observed_length - 1),
+        )
+        if triples:
+            candidates.append((triples[0][0], index, probability, triples[0]))
+    return sorted(candidates)
+
+
+def _correlated_register(
+    model: StreamCombiner, observed: list[int], index: int,
+    probability: float, triple: tuple[int, int], max_iterations: int,
+    progress: Callable[[str], None],
+) -> int:
+    for correction_rate in (32, 24, 16, 40, 64):
+        try:
+            result = correlation_recover(
+                observed, model.masks[index], model.degree, probability, triple,
+                max_iterations=max_iterations, flip_divisor=correction_rate,
+                progress=progress,
+            )
+            return result.initial_state
+        except RuntimeError:
+            continue
+    raise RuntimeError("Fast correlation did not converge under available noise schedules")
+
+
+def _recover_biased_registers(
+    model: StreamCombiner, observed: list[int],
+    max_iterations: int, progress: Callable[[str], None],
+) -> tuple[dict[int, int], dict[int, list[int]]]:
+    candidates = _sparse_candidates(model, len(observed))
+    if len(candidates) < 2:
+        raise RuntimeError("Not enough biased LFSRs with sparse feedback multiples")
+    seeds: dict[int, int] = {}
+    recovered: dict[int, list[int]] = {}
+    for _, index, probability, triple in candidates[:2]:
+        seed = _correlated_register(
+            model, observed, index, probability, triple, max_iterations, progress,
+        )
+        seeds[index] = seed
+        recovered[index] = lfsr_bits(
+            seed, model.masks[index], model.degree, len(observed),
+        )
+    return seeds, recovered
+
+
 def recover_stream_cipher(
     instance: StreamCipherInstance, *,
     progress: Callable[[str], None] = print,
@@ -354,40 +428,9 @@ def recover_stream_cipher(
     observed = unpack_bits(instance.known_stream)
     if len(model.masks) != 4 or len(observed) < 16 * model.degree:
         raise ValueError("Unsupported short or non-four-register instance")
-    candidates = []
-    for probability, index in _affinities(model):
-        if abs(probability - 0.5) < 0.05:
-            continue
-        multiples = low_weight_trinomials(
-            model.masks[index], model.degree,
-            maximum_degree=min(2048, len(observed) - 1),
-        )
-        if multiples:
-            candidates.append((min(pair[0] for pair in multiples),
-                               index, probability, multiples[0]))
-    if len(candidates) < 2:
-        raise RuntimeError("Not enough biased LFSR outputs with sparse feedback multiples")
-    seeds: dict[int, int] = {}
-    recovered: dict[int, list[int]] = {}
-    for _, index, probability, triple in sorted(candidates)[:2]:
-        correlation = None
-        for correction_rate in (32, 24, 16, 40, 64):
-            try:
-                correlation = correlation_recover(
-                    observed, model.masks[index], model.degree, probability, triple,
-                    max_iterations=max_iterations, flip_divisor=correction_rate,
-                    progress=progress,
-                )
-                break
-            except RuntimeError:
-                continue
-        if correlation is None:
-            raise RuntimeError("Fast correlation did not converge under available noise schedules")
-        seeds[index] = correlation.initial_state
-        recovered[index] = lfsr_bits(
-            correlation.initial_state, model.masks[index],
-            model.degree, len(observed),
-        )
+    seeds, recovered = _recover_biased_registers(
+        model, observed, max_iterations, progress,
+    )
     seeds.update(_solve_remaining_states(model, observed, recovered))
     generated = _full_keystream(
         model, seeds, len(observed) + len(instance.ciphertext) * 8,

@@ -14,6 +14,7 @@ import re
 import socket
 from collections.abc import Callable, Sequence
 
+from .network_policy import connect_authorized
 from .parser import Document
 
 
@@ -82,7 +83,7 @@ def identify_simulated_branch(proof: dict[str, int], leaked_witness: int,
 
 class _Connection:
     def __init__(self, host: str, port: int, timeout: float):
-        self.sock = socket.create_connection((host, port), timeout=timeout)
+        self.sock = connect_authorized(host, port, timeout)
         self.sock.settimeout(timeout)
         self.buffer = b""
 

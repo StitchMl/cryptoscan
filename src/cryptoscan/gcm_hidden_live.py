@@ -11,6 +11,7 @@ from .gcm_hidden_state import (
     recognize_gcm_tag_oracle, recover_ghash_key_from_u1_tag_differences,
 )
 from .gcm_hidden_growth import identify_growth_prefix, recover_empty_gcm_tag_candidates
+from .network_policy import connect_authorized
 from .parser import Document
 
 
@@ -42,7 +43,7 @@ def supports_wire_profile(documents: Sequence[Document]) -> bool:
 
 class _Connection:
     def __init__(self, host: str, port: int, timeout: float):
-        self.sock = socket.create_connection((host, port), timeout=timeout)
+        self.sock = connect_authorized(host, port, timeout)
         self.sock.settimeout(timeout)
         self.buffer = b""
 

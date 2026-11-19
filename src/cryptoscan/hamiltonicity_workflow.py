@@ -17,6 +17,7 @@ from .fiat_shamir_grinding import (
     grind_pedersen_graph_opening,
     verify_pedersen_graph_opening,
 )
+from .network_policy import connect_authorized
 from .parser import Document
 
 
@@ -230,7 +231,7 @@ def extract_instance(documents: Sequence[Document]) -> HamiltonicityInstance | N
 
 class _Connection:
     def __init__(self, host: str, port: int, timeout: float):
-        self.sock = socket.create_connection((host, port), timeout=timeout)
+        self.sock = connect_authorized(host, port, timeout)
         self.sock.settimeout(timeout)
         self.buffer = b""
 

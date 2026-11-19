@@ -143,10 +143,10 @@ def test_network_mode_only_uses_user_host(monkeypatch):
         def sendall(self, data):
             observed.append(data)
     calls = []
-    def connect(address, timeout):
-        calls.append(address)
+    def connect(host, port, timeout):
+        calls.append((host, port))
         return FakeSocket()
-    monkeypatch.setattr("cryptoscan.mlwe_workflow.socket.create_connection", connect)
+    monkeypatch.setattr("cryptoscan.mlwe_workflow.connect_authorized", connect)
     output = []
     play_ctf_tcp("ctf.example", 12345, ctx, output.append, max_rounds=2)
     assert calls == [("ctf.example", 12345)]

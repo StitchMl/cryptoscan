@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from .mlwe import MLWEContext, classify_capture, recognize_weak_mlwe_ring
+from .network_policy import connect_authorized
 from .parser import Document
 
 
@@ -57,7 +58,7 @@ def play_ctf_tcp(
     """Only connect after the user explicitly supplies a CTF server host/port."""
     if not host or not 1 <= port <= 65535:
         raise ValueError("enter a valid explicit CTF host and port")
-    with socket.create_connection((host, port), timeout=30) as sock:
+    with connect_authorized(host, port, 30) as sock:
         sock.settimeout(30)
         for count in range(max_rounds):
             prompt = _read_to_prompt(sock)

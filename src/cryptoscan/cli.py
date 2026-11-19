@@ -9,6 +9,7 @@ from . import __version__
 from .cookie import main as cookie_main
 from .assistant import assistant_session
 from .diagnostics import diagnose_runtime
+from .dghv_workflow import recover_flag as recover_dghv_flag, supported_source as supported_dghv_source
 from .parser import collect_documents
 from .scanner import scan
 
@@ -25,6 +26,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-assist", action="store_true", help="never start guided CLI")
     parser.add_argument("--fermat-steps", type=int, default=100_000, help="maximum Fermat iterations per RSA modulus")
     parser.add_argument("--fail-on-findings", action="store_true", help="return exit status 1 when findings exist")
+    parser.add_argument("--solve", action="store_true", help="run a source-verified supported CTF solver (opt-in network)")
+    parser.add_argument("--host", help="authorized CTF service hostname for --solve")
+    parser.add_argument("--port", type=int, help="authorized CTF service TCP port for --solve")
+    parser.add_argument("--timeout", type=float, default=30.0, help="network socket timeout for --solve")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -70,6 +75,10 @@ def main(argv: list[str] | None = None) -> int:
         _parser().error("--fermat-steps must be non-negative")
     if args.assist and args.no_assist:
         _parser().error("--assist and --no-assist cannot be combined")
+    if args.solve and (args.format == "json" or args.assist or args.no_assist):
+        _parser().error("--solve cannot be combined with --format json, --assist, or --no-assist")
+    if args.solve and (not args.host or not args.port):
+        _parser().error("--solve requires explicit --host and --port")
     if args.assist and args.format == "json":
         _parser().error("--assist cannot be combined with --format json")
     documents = collect_documents(args.targets)
@@ -79,6 +88,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         color = not args.no_color and sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
         print(_text(findings, color))
+    if args.solve:
+        if not supported_dghv_source(documents):
+            print("No supported source-verified automatic solver for these files.", file=sys.stderr)
+            return 2
+        try:
+            flag = recover_dghv_flag(documents, args.host, args.port, timeout=args.timeout)
+        except (ConnectionError, OSError, RuntimeError, ValueError) as exc:
+            print(f"DGHV solver failed: {exc}", file=sys.stderr)
+            return 2
+        print(f"FLAG: {flag}")
+        return 0
     if not args.no_assist and args.format == "text" and (args.assist or (findings and sys.stdin.isatty() and sys.stdout.isatty())):
         assistant_session(findings, documents=documents)
     return 1 if args.fail_on_findings and findings else 0

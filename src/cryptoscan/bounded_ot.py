@@ -111,18 +111,26 @@ def _round_count(tree: ast.Module, fn_name: str) -> int | None:
 
 
 def _prompts(tree: ast.Module) -> tuple[str, str, str] | None:
-    matches = []
-    for node in ast.walk(tree):
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                and node.func.id == "input" and len(node.args) == 1
-                and isinstance(node.args[0], ast.Constant)
-                and isinstance(node.args[0].value, str)):
-            matches.append((getattr(node, "lineno", 0), node.args[0].value))
-    matches.sort()
-    if len(matches) != 3 or any(not x[1] or len(x[1]) > 128 for x in matches):
+    """Find public-key and two-round prompts by their function structure."""
+    prompt_groups: dict[str, list[str]] = {}
+    for fn in tree.body:
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        values = []
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "input" and len(node.args) == 1
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)):
+                values.append((node.lineno, node.args[0].value))
+        if values:
+            prompt_groups[fn.name] = [value for _, value in sorted(values)]
+    single = [v[0] for v in prompt_groups.values() if len(v) == 1]
+    double = [v for v in prompt_groups.values() if len(v) == 2]
+    if len(single) != 1 or len(double) != 1:
         return None
-    # Source establishes key request, encrypted selection, then recovered pair.
-    return matches[0][1], matches[1][1], matches[2][1]
+    result = (single[0], *double[0])
+    return result if all(value and len(value) <= 128 for value in result) else None
 
 
 def extract_instance(documents: Sequence[Document]) -> BoundedOT | None:

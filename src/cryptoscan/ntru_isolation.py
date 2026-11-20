@@ -14,6 +14,32 @@ from collections.abc import Callable
 from typing import Any
 
 
+def _consume_worker_output(
+    stream: Any, output: list[str], logs: list[str],
+    progress: Callable[[str], None],
+) -> None:
+    for line in stream:
+        if line.lstrip().startswith('{"results":'):
+            output.append(line)
+            continue
+        logs.append(line)
+        if line.strip():
+            progress(line.rstrip())
+
+
+def _terminate_worker(worker: subprocess.Popen) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(worker.pid), "/T", "/F"],
+            capture_output=True, text=True, check=False,
+        )
+        return
+    try:
+        os.killpg(worker.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def _run_streamed_worker(
     data: str,
     timeout_seconds: int,
@@ -36,17 +62,11 @@ def _run_streamed_worker(
     output: list[str] = []
     logs: list[str] = []
 
-    def consume_output() -> None:
-        assert worker.stdout is not None
-        for line in worker.stdout:
-            if line.lstrip().startswith('{"results":'):
-                output.append(line)
-            else:
-                logs.append(line)
-                if line.strip():
-                    progress(line.rstrip())
-
-    reader = threading.Thread(target=consume_output, daemon=True)
+    assert worker.stdout is not None
+    reader = threading.Thread(
+        target=_consume_worker_output,
+        args=(worker.stdout, output, logs, progress), daemon=True,
+    )
     reader.start()
     try:
         assert worker.stdin is not None
@@ -54,16 +74,7 @@ def _run_streamed_worker(
         worker.stdin.close()
         status = worker.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
-        if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/PID", str(worker.pid), "/T", "/F"],
-                capture_output=True, text=True, check=False,
-            )
-        else:
-            try:
-                os.killpg(worker.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        _terminate_worker(worker)
         worker.wait()
         raise RuntimeError(
             f"NTRU worker stopped after {timeout_seconds}s; process group terminated."
@@ -73,8 +84,28 @@ def _run_streamed_worker(
     return subprocess.CompletedProcess(command, status, "".join(output), "".join(logs))
 
 
+def _decode_results(stdout: str) -> list[dict[str, Any]]:
+    response = json.loads(stdout)
+    results = response["results"]
+    if not isinstance(results, list) or len(results) > 16:
+        raise ValueError("invalid worker result")
+    decoded = []
+    for item in results:
+        if not isinstance(item, dict):
+            raise ValueError("invalid worker candidate")
+        plaintext = bytes.fromhex(item["plaintext_hex"])
+        if len(plaintext) > 4096 or not item["public_relation_verified"]:
+            raise ValueError("invalid worker plaintext")
+        decoded.append({
+            "plaintext": plaintext,
+            "public_relation_verified": True,
+            "flag_shaped": bool(item["flag_shaped"]),
+        })
+    return decoded
+
+
 def solve_isolated(
-    h: list[int], ct: list[int], n: int, p: int, q: int,
+    h: list[int], ct: list[int], p: int, q: int,
     df: int, dg: int, *, bkz: int = 0,
     timeout_seconds: int = 300,
     method: str = "full",
@@ -92,7 +123,7 @@ def solve_isolated(
     if not 1 <= timeout_seconds <= 3600:
         raise ValueError("worker timeout must be between 1 and 3600 seconds")
     data = json.dumps({
-        "h": h, "ct": ct, "n": n, "p": p, "q": q,
+        "h": h, "ct": ct, "n": len(h), "p": p, "q": q,
         "df": df, "dg": dg, "bkz": bkz, "method": method,
         "backend": backend, "initial_degree": initial_degree,
     })
@@ -121,22 +152,7 @@ def solve_isolated(
             + (detail or "no details; system may have terminated it")
         )
     try:
-        response = json.loads(completed.stdout)
-        results = response["results"]
-        if not isinstance(results, list) or len(results) > 16:
-            raise ValueError("invalid worker result")
-        decoded = []
-        for item in results:
-            if not isinstance(item, dict):
-                raise ValueError("invalid worker candidate")
-            plaintext = bytes.fromhex(item["plaintext_hex"])
-            if len(plaintext) > 4096 or not item["public_relation_verified"]:
-                raise ValueError("invalid worker plaintext")
-            decoded.append({
-                "plaintext": plaintext,
-                "public_relation_verified": True,
-                "flag_shaped": bool(item["flag_shaped"]),
-            })
+        decoded = _decode_results(completed.stdout)
         progress("Isolated NTRU process exited; native FLINT memory released.")
         return decoded
     except (KeyError, TypeError, ValueError) as exc:

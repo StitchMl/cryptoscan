@@ -34,6 +34,9 @@ class Finding:
 
     def _verify_rsa(self) -> bool:
         """Verify RSA results by exact factors, modular equations or re-encryption."""
+        return self._verify_rsa_factoring() or self._verify_rsa_messages()
+
+    def _verify_rsa_factoring(self) -> bool:
         if self.rule == "RSA-SHARED-PRIME":
             factor = int(self.evidence["gcd"])
             return factor * int(self.evidence["q1"]) == int(self.evidence["n1"]) and factor * int(self.evidence["q2"]) == int(self.evidence["n2"])
@@ -45,6 +48,12 @@ class Finding:
             return self.evidence.get("factorization_verified") is True and (
                 "result_hex" not in self.solver or self.evidence.get("reencryption_verified") is True
             )
+        if self.rule in {"RSA-WIENER-SMALL-D", "RSA-FERMAT-CLOSE-PRIMES", "RSA-SMALL-FACTOR"}:
+            factors_match = int(self.evidence["p"]) * int(self.evidence["q"]) == int(self.evidence["n"])
+            return factors_match and ("result_hex" not in self.solver or self.evidence.get("reencryption_verified") is True)
+        return False
+
+    def _verify_rsa_messages(self) -> bool:
         if self.rule == "RSA-PRIVATE-EXPONENT-LEAK":
             return self.evidence.get("reencryption_verified") is True
         if self.rule == "RSA-E3-EXACT-ROOT":
@@ -53,9 +62,6 @@ class Finding:
             return self.evidence.get("reencryption_verified") is True and pow(
                 int(self.evidence["m"]), int(self.evidence["e"]), int(self.evidence["n"])
             ) == int(self.evidence["c"])
-        if self.rule in {"RSA-WIENER-SMALL-D", "RSA-FERMAT-CLOSE-PRIMES", "RSA-SMALL-FACTOR"}:
-            factors_match = int(self.evidence["p"]) * int(self.evidence["q"]) == int(self.evidence["n"])
-            return factors_match and ("result_hex" not in self.solver or self.evidence.get("reencryption_verified") is True)
         if self.rule == "RSA-COMMON-MODULUS":
             return self.evidence.get("reencryption_verified") is True
         if self.rule == "RSA-HASTAD-BROADCAST":
@@ -64,6 +70,9 @@ class Finding:
 
     def _verify_other_attacks(self) -> bool:
         """Verify non-RSA arithmetic and ciphertext transformations."""
+        return self._verify_signature_and_prng() or self._verify_cipher_attacks()
+
+    def _verify_signature_and_prng(self) -> bool:
         if self.rule == "SIGNATURE-NONCE-REUSE":
             q, r = int(self.evidence["q"]), int(self.evidence["r"])
             nonce, private = int(self.evidence["nonce_k"]), int(self.evidence["private_key_x"])
@@ -84,6 +93,9 @@ class Finding:
             return self.evidence.get("state_roundtrip_verified") is True and (
                 "prediction_verified" not in self.evidence or self.evidence.get("prediction_verified") is True
             )
+        return False
+
+    def _verify_cipher_attacks(self) -> bool:
         if self.rule == "DH-DEGENERATE-GENERATOR":
             return int(self.evidence["g"]) % int(self.evidence["p"]) in (0, 1, int(self.evidence["p"]) - 1)
         if self.rule == "DH-SMALL-GROUP":

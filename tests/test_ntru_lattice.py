@@ -140,7 +140,7 @@ def test_isolated_ntru_worker_recovers_small_synthetic_plaintext():
     degree, p, q, df, dg, dr, h, ct, plaintext, _ = synthetic(n=16, seed=83)
     output = []
     found = solve_isolated(
-        h, ct, degree, p, q, df, dg,
+        h, ct, p, q, df, dg,
         timeout_seconds=120, progress=output.append,
     )
     assert any(item["plaintext"] == plaintext for item in found)
@@ -157,7 +157,7 @@ def test_isolated_worker_timeout_releases_child_process(monkeypatch):
 
     monkeypatch.setattr("cryptoscan.ntru_isolation.subprocess.run", timeout)
     with pytest.raises(RuntimeError, match="resources released"):
-        solve_isolated([1]*64, [2]*64, 64, 2, 127, 3, 3,
+        solve_isolated([1]*64, [2]*64, 2, 127, 3, 3,
                        timeout_seconds=1, progress=lambda _: None)
 
 
@@ -172,7 +172,7 @@ def test_isolated_worker_error_is_propagated(monkeypatch):
         ),
     )
     with pytest.raises(RuntimeError, match="invalid lattice"):
-        solve_isolated([1]*64, [2]*64, 64, 2, 127, 3, 3,
+        solve_isolated([1]*64, [2]*64, 2, 127, 3, 3,
                        progress=lambda _: None)
 
 
@@ -181,7 +181,7 @@ def test_streamed_ntru_worker_recovers_small_synthetic_key():
     degree, p, q, df, dg, _, h, ct, plaintext, _ = synthetic(n=16, seed=83)
     messages = []
     candidates = solve_isolated(
-        h, ct, degree, p, q, df, dg,
+        h, ct, p, q, df, dg,
         timeout_seconds=120, stream=True,
         progress=messages.append,
     )

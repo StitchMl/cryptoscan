@@ -22,7 +22,7 @@ def _run_ntru_lattice(
     )
     if context.degree > 32:
         return solve_isolated(
-            *params, bkz=bkz, timeout_seconds=timeout,
+            *params[:2], *params[3:], bkz=bkz, timeout_seconds=timeout,
             progress=write, method=method,
         )
     if method == "full":
@@ -32,11 +32,9 @@ def _run_ntru_lattice(
     )
 
 
-def ntru_lattice_workflow(
-    finding: Any, documents: Sequence[Document],
-    read: Callable[[str], str] = input,
-    write: Callable[[str], Any] = print,
-) -> None:
+def _unique_instance(
+    finding: Any, documents: Sequence[Document], write: Callable[[str], Any],
+) -> tuple[Any, dict, dict] | None:
     source_path = finding.evidence.get("source_path")
     contexts = [
         context for context in recognize_ntru(documents)
@@ -44,7 +42,7 @@ def ntru_lattice_workflow(
     ]
     if len(contexts) != 1:
         write("Cannot identify a unique source-derived NTRU implementation.")
-        return
+        return None
     context = contexts[0]
     records = []
     for document in documents:
@@ -57,17 +55,12 @@ def ntru_lattice_workflow(
     pairs = pair_ntru_records(records, context)
     if len(pairs) != 1:
         write("Need exactly one matching public polynomial and ciphertext in scan evidence.")
-        return
+        return None
     public, encrypted = pairs[0]
-    write(
-        f"Source-derived NTRU: n={context.degree}, p={context.plaintext_modulus}, "
-        f"q={context.ciphertext_modulus}, df={context.f_weight}, dg={context.g_weight}"
-    )
-    foldable = (
-        context.degree >= 64 and
-        context.degree % 64 == 0 and
-        (context.degree // 64) & ((context.degree // 64) - 1) == 0
-    )
+    return context, public, encrypted
+
+
+def _describe_attack(context: Any, foldable: bool, write: Callable[[str], Any]) -> None:
     if foldable:
         write(
             "NTRU folding attack available: degrees "
@@ -85,17 +78,65 @@ def ntru_lattice_workflow(
             write("Native Windows lattice backend: python-flint (FLINT LLL, no BKZ).")
         else:
             write("Lattice backend: fpylll when installed, otherwise python-flint.")
+
+
+def _choose_method(
+    foldable: bool, read: Callable[[str], str], write: Callable[[str], Any],
+) -> str | None:
+    if not foldable:
+        return "full"
+    choice = read("Attack method [fold/full, default fold]: ").strip().lower()
+    if choice in {"fold", "full"}:
+        return choice
+    if choice:
+        write("Unsupported attack method; select fold or full.")
+        return None
+    return "fold"
+
+
+def _report_results(results: list[dict], write: Callable[[str], Any]) -> None:
+    if not results:
+        write(
+            "No source-compatible private key with printable plaintext was recovered. "
+            "This does NOT imply the instance is secure; a stronger lattice reduction "
+            "or a different attack may be required."
+        )
+        return
+    write(f"Recovered {len(results)} mathematically checked plaintext candidate(s).")
+    for index, result in enumerate(results, 1):
+        write(f"Candidate {index}: " + result["plaintext"].decode("ascii"))
+        write(
+            "Public-key relation verified: YES; flag-shaped: "
+            + ("YES" if result["flag_shaped"] else "NO")
+        )
+    write("Candidate recovery is offline; it is not a verified remote flag submission.")
+
+
+def ntru_lattice_workflow(
+    finding: Any, documents: Sequence[Document],
+    read: Callable[[str], str] = input,
+    write: Callable[[str], Any] = print,
+) -> None:
+    instance = _unique_instance(finding, documents, write)
+    if instance is None:
+        return
+    context, public, encrypted = instance
+    write(
+        f"Source-derived NTRU: n={context.degree}, p={context.plaintext_modulus}, "
+        f"q={context.ciphertext_modulus}, df={context.f_weight}, dg={context.g_weight}"
+    )
+    foldable = (
+        context.degree >= 64 and
+        context.degree % 64 == 0 and
+        (context.degree // 64) & ((context.degree // 64) - 1) == 0
+    )
+    _describe_attack(context, foldable, write)
     if read("Attempt lattice private-key recovery? [y/N]: ").strip().lower() not in {"y", "yes"}:
         write("No computation started.")
         return
-    method = "fold" if foldable else "full"
-    if foldable:
-        choice = read("Attack method [fold/full, default fold]: ").strip().lower()
-        if choice in {"fold", "full"}:
-            method = choice
-        elif choice:
-            write("Unsupported attack method; select fold or full.")
-            return
+    method = _choose_method(foldable, read, write)
+    if method is None:
+        return
     bkz_value = read("Optional BKZ block size [0=LLL only]: ").strip() or "0"
     try:
         bkz = int(bkz_value)
@@ -112,18 +153,4 @@ def ntru_lattice_workflow(
     except (ValueError, RuntimeError, ImportError, MemoryError) as exc:
         write("NTRU key recovery stopped: " + str(exc))
         return
-    if not results:
-        write(
-            "No source-compatible private key with printable plaintext was recovered. "
-            "This does NOT imply the instance is secure; a stronger lattice reduction "
-            "or a different attack may be required."
-        )
-        return
-    write(f"Recovered {len(results)} mathematically checked plaintext candidate(s).")
-    for index, result in enumerate(results, 1):
-        write(f"Candidate {index}: " + result["plaintext"].decode("ascii"))
-        write(
-            "Public-key relation verified: YES; flag-shaped: "
-            + ("YES" if result["flag_shaped"] else "NO")
-        )
-    write("Candidate recovery is offline; it is not a verified remote flag submission.")
+    _report_results(results, write)

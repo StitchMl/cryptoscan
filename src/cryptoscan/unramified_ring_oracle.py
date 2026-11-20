@@ -234,7 +234,12 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
     key = hashlib.sha256("||".join(map(str, collected)).encode()).digest()
     try:
         iv, ciphertext = map(bytes.fromhex, final)
-        # This is decrypt-only compatibility with a remote legacy CBC format;\n        # no user-controlled data is encrypted or authenticated by CryptoScan.\n        plaintext = unpad(AES.new(key, AES.MODE_CBC, iv=iv).decrypt(ciphertext),  # NOSONAR\n                          AES.block_size)
+        # Decrypt-only compatibility with a legacy remote CBC ciphertext.
+        # CryptoScan does not produce ciphertext under this mode.
+        plaintext = unpad(
+            AES.new(key, AES.MODE_CBC, iv=iv).decrypt(ciphertext),  # NOSONAR
+            AES.block_size,
+        )
     except ValueError as exc:
         raise RuntimeError("ring-derived AES key did not decrypt the ciphertext") from exc
     result = plaintext.decode("utf-8", errors="replace")

@@ -94,7 +94,7 @@ def test_windows_powershell_delegates_worker_to_wsl(monkeypatch):
     def fake_run(command, **_):
         commands.append(command)
         if command[1:3] == ["--exec", "wslpath"]:
-            return SimpleNamespace(returncode=0, stdout="/mnt/c/repo/sage_ring_iso_worker.py\\n",
+            return SimpleNamespace(returncode=0, stdout="/mnt/c/repo/sage_ring_iso_worker.py\n",
                                    stderr="")
         if command[1:4] == ["--exec", "/bin/sh", "-c"]:
             return SimpleNamespace(returncode=0, stdout="/usr/bin/sage\n", stderr="")

@@ -25,27 +25,32 @@ def _literal_count(node: ast.AST) -> int | None:
     return None
 
 
+def _count_random_tail(expression: ast.AST) -> int | None:
+    if not isinstance(expression, ast.BinOp) or not isinstance(expression.op, ast.Add):
+        return None
+    if not isinstance(expression.left, ast.List) or len(expression.left.elts) != 1:
+        return None
+    if not isinstance(expression.right, ast.ListComp):
+        return None
+    items = [item for item in ast.walk(expression.right.elt)
+             if isinstance(item, ast.Call) and isinstance(item.func, ast.Attribute)
+             and item.func.attr == "getrandbits"]
+    if not items or len(expression.right.generators) != 1:
+        return None
+    sequence = expression.right.generators[0].iter
+    if not (isinstance(sequence, ast.Call) and isinstance(sequence.func, ast.Name)
+            and sequence.func.id == "range" and len(sequence.args) == 1):
+        return None
+    count = _literal_count(sequence.args[0])
+    return count + 1 if count is not None and 1 <= count <= 256 else None
+
+
 def _coefficient_count(tree: ast.Module) -> int | None:
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.BinOp):
-            continue
-        expr = node.value
-        if not isinstance(expr.op, ast.Add) or not isinstance(expr.left, ast.List):
-            continue
-        if len(expr.left.elts) != 1 or not isinstance(expr.right, ast.ListComp):
-            continue
-        generators = [item for item in ast.walk(expr.right.elt)
-                      if isinstance(item, ast.Call) and isinstance(item.func, ast.Attribute)
-                      and item.func.attr == "getrandbits"]
-        if not generators or len(expr.right.generators) != 1:
-            continue
-        source = expr.right.generators[0].iter
-        if not (isinstance(source, ast.Call) and isinstance(source.func, ast.Name)
-                and source.func.id == "range" and len(source.args) == 1):
-            continue
-        count = _literal_count(source.args[0])
-        if count is not None and 1 <= count <= 256:
-            return count + 1
+        if isinstance(node, ast.Assign):
+            count = _count_random_tail(node.value)
+            if count is not None:
+                return count
     return None
 
 
@@ -246,7 +251,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         ciphertext = int(wire.line())
         raw = pow(ciphertext, exponent, modulus)
     payload = raw.to_bytes((raw.bit_length() + 7) // 8, "big")
-    candidate = re.search(rb"([A-Za-z0-9_]{2,32}\{[^\r\n{}]{1,180}\})$", payload)
+    candidate = re.search(rb"(\w{2,32}\{[^\r\n{}]{1,180}\})$", payload)
     if not candidate:
         raise RuntimeError("RSA plaintext did not end in a flag-shaped suffix")
     return candidate.group(1).decode("utf-8", "replace")

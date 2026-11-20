@@ -9,6 +9,7 @@ import ast
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import socket
@@ -195,8 +196,17 @@ def _sage_worker_command() -> list[str]:
             _wsl_sage_executable(wsl)
         )
         if sage:
-            return [wsl, "--exec", sage, "-python",
-                    _wsl_worker_path(wsl, worker)]
+            worker_path = _wsl_worker_path(wsl, worker)
+            if "/envs/" in sage:
+                environment = posixpath.dirname(posixpath.dirname(sage))
+                root = posixpath.dirname(posixpath.dirname(environment))
+                hook = posixpath.join(root, "etc", "profile.d", "conda.sh")
+                return [
+                    wsl, "--exec", "/bin/bash", "-c",
+                    'source "$1" && conda activate "$2" && exec "$3" -python "$4"',
+                    "cryptoscan-sage", hook, environment, sage, worker_path,
+                ]
+            return [wsl, "--exec", sage, "-python", worker_path]
     if local:
         return [local, "-python", str(worker)]
     raise RuntimeError(

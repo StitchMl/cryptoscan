@@ -65,3 +65,21 @@ def test_fplll_backend_isolated_protocol(monkeypatch):
         return subprocess.CompletedProcess(args, 0, "[[1 2]\n[3 4]]", "")
     monkeypatch.setattr(ntru_folding.subprocess, "run", mock_run)
     assert ntru_folding._reduce(rows, backend="fplll", bkz=2, progress=lambda _: None) == rows
+
+
+def test_ntru_dispatch_matches_isolated_solver_signature(monkeypatch):
+    import inspect
+
+    from cryptoscan import ntru_isolation
+
+    signature = inspect.signature(ntru_isolation.solve_isolated)
+    calls = []
+
+    def checked_solver(*args, **kwargs):
+        calls.append(signature.bind(*args, **kwargs))
+        return [{"plaintext": b"CTF{signature_ok}", "public_relation_verified": True}]
+
+    monkeypatch.setattr("cryptoscan.ntru_auto.solve_isolated", checked_solver)
+    docs = collect_documents([str(FIXTURE)])
+    assert recover_flag(docs, progress=lambda _: None) == "CTF{signature_ok}"
+    assert len(calls) == 1

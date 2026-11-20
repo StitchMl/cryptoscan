@@ -379,7 +379,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         response = _final_server_response(wire, sock)
     if "well done!" not in response:
         raise RuntimeError("verifier did not complete: " + response[-300:])
-    flag = re.search(r"(?:b['\\"])?(\w{2,32}\{[^\r\n}]{1,180}\})", response)
+    flag = re.search(r"(\w{2,32}\{[^\r\n}]{1,180}\})", response)
     if flag is None:
         raise RuntimeError("protocol completed without flag-shaped response")
     return flag.group(1)

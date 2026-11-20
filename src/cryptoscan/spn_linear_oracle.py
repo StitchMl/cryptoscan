@@ -376,13 +376,18 @@ class _Dialogue:
     def __init__(self, sock: socket.socket):
         self.sock = sock
         self.buffer = bytearray()
+        self.stage = 'waiting for initial prompt'
 
     def until(self, marker: str, limit: int = 8192) -> str:
         needle = marker.encode()
         while needle not in self.buffer:
             chunk = self.sock.recv(65536)
             if not chunk:
-                raise ConnectionError('service closed before prompt')
+                preview = bytes(self.buffer[-160:]).decode('utf-8', 'replace')
+                raise ConnectionError(
+                    f'service closed during {self.stage}; expected {marker!r}; '
+                    f'buffered output suffix={preview!r}'
+                )
             self.buffer.extend(chunk)
             if len(self.buffer) > limit:
                 raise ValueError('unbounded service response')
@@ -446,10 +451,13 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         sock.settimeout(timeout)
         wire = _Dialogue(sock)
         wire.until(model.first_prompt)
+        wire.stage = 'sending chosen plaintext'
         wire.send(chosen.hex().encode('ascii'))
+        wire.stage = 'waiting for bulk encryption response'
         cipher = _oracle_ciphertexts(wire, len(plaintexts), model.block_bytes)
         decoder = _prepare_decoder(cipher, verification)
-        for _ in range(model.rounds):
+        for round_index in range(model.rounds):
+            wire.stage = f'challenge round {round_index + 1} of {model.rounds}'
             encrypted = _challenge_ciphertext(wire, model.block_bytes)
             wire.until(model.guess_prompt)
             decoded = decoder(encrypted).to_bytes(model.block_bytes, 'big')
@@ -458,6 +466,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
             if decoded[-pad_length:] != bytes([pad_length]) * pad_length:
                 raise RuntimeError('recovered message failed PKCS#7 validation')
             wire.send(decoded[:model.message_bytes].hex().encode('ascii'))
+        wire.stage = 'waiting for final verification result'
         final = wire.line()
         match = re.search(r'(\w{2,32}\{[^\r\n}]{1,180}\})', final)
         if not match:

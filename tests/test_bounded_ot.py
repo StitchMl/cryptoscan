@@ -89,6 +89,10 @@ def test_chosen_ciphertext_recovers_independent_message_pairs():
             nonce = (m0 + 7) * 11 + m1 + 1
             R = nonce * generator + ((m1 - m0) % order) * choice_R
             S = nonce * H + m0 * generator + ((m1 - m0) % order) * choice_S
-            plaintext_point = S + (-(secret * R))
-            address = (int(plaintext_point.x), int(plaintext_point.y)) if not plaintext_point.is_point_at_infinity() else (-1, -1)
-            assert table[address] == (m0, m1)
+            response = json.dumps({"Rx": int(R.x), "Ry": int(R.y),
+                                   "Sx": int(S.x), "Sy": int(S.y)})
+            class Reply:
+                def line(self):
+                    return response
+
+            assert _recover_reply(Reply(), ECC.EccPoint, secret, table) == (m0, m1)

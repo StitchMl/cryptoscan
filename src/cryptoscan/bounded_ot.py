@@ -166,6 +166,12 @@ def extract_instance(documents: Sequence[Document]) -> BoundedOT | None:
                     continue
                 if any(n not in names for n in (a, b, choice)):
                     continue
+                # A membership check can make a malicious non-bit selection
+                # invalid. Decline source models where the input is checked.
+                if any(isinstance(node, (ast.If, ast.Assert, ast.Raise))
+                       and choice in _names(node)
+                       for node in ast.walk(fn)):
+                    continue
                 rounds = _round_count(tree, fn.name)
                 prompts = _prompts(tree)
                 if rounds is None or prompts is None or not 1 <= rounds <= 4096:

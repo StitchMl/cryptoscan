@@ -62,9 +62,10 @@ def _function_roles(functions):
         if {"Zmod", "GF"} <= names and {"quo", "is_irreducible"} <= attrs:
             builders.add(name)
         identifiers = {node.id for node in ast.walk(fn) if isinstance(node, ast.Name)}
-        if ("poly" in identifiers and any(
-                isinstance(node, ast.Attribute) and node.attr == "parent"
-                for node in ast.walk(fn))):
+        if (any(isinstance(node, ast.Attribute) and node.attr == "parent"
+                for node in ast.walk(fn))
+                and any(isinstance(node, ast.keyword) and node.arg is not None
+                        for node in ast.walk(fn))):
             evaluations.add(name)
     return builders, evaluations
 

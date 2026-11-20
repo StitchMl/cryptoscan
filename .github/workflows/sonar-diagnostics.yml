@@ -15,6 +15,9 @@ on:
       - "tests/test_unramified_ring_oracle.py"
       - "src/cryptoscan/threshold_rsa.py"
       - "tests/test_threshold_rsa.py"
+      - "src/cryptoscan/pairing_confirmation.py"
+      - "src/cryptoscan/sage_pairing_confirmation_worker.py"
+      - "tests/test_pairing_confirmation.py"
   workflow_dispatch:
 
 permissions:

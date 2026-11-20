@@ -8,6 +8,8 @@ on:
       - "src/cryptoscan/or_sigma.py"
       - "src/cryptoscan/bounded_ot.py"
       - "src/cryptoscan/cli.py"
+      - "src/cryptoscan/spn_linear_oracle.py"
+      - "tests/test_spn_linear_oracle.py"
   workflow_dispatch:
 
 permissions:

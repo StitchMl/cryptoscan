@@ -182,6 +182,19 @@ def _wsl_worker_path(wsl_exe: str, worker: Path) -> str:
     return path
 
 
+def _conda_wsl_command(wsl: str, sage: str, worker_path: str) -> list[str]:
+    environment = posixpath.dirname(posixpath.dirname(sage))
+    root = posixpath.dirname(posixpath.dirname(environment))
+    hook = posixpath.join(root, "etc", "profile.d", "conda.sh")
+    python_executable = posixpath.join(environment, "bin", "python")
+    return [
+        wsl, "--exec", "/bin/bash", "-c",
+        'source "$1" && conda activate "$2" && exec "$3" "$4"',
+        "cryptoscan-sage", hook, environment,
+        python_executable, worker_path,
+    ]
+
+
 def _sage_worker_command() -> list[str]:
     worker = Path(__file__).with_name("sage_ring_iso_worker.py").resolve()
     configured = os.getenv("CRYPTOSCAN_SAGE")
@@ -200,16 +213,7 @@ def _sage_worker_command() -> list[str]:
         if sage:
             worker_path = _wsl_worker_path(wsl, worker)
             if "/envs/" in sage:
-                environment = posixpath.dirname(posixpath.dirname(sage))
-                root = posixpath.dirname(posixpath.dirname(environment))
-                hook = posixpath.join(root, "etc", "profile.d", "conda.sh")
-                python_executable = posixpath.join(environment, "bin", "python")
-                return [
-                    wsl, "--exec", "/bin/bash", "-c",
-                    'source "$1" && conda activate "$2" && exec "$3" "$4"',
-                    "cryptoscan-sage", hook, environment,
-                    python_executable, worker_path,
-                ]
+                return _conda_wsl_command(wsl, sage, worker_path)
             return [wsl, "--exec", sage, "-python", worker_path]
     if local:
         return [local, "-python", str(worker)]

@@ -21,6 +21,8 @@ from typing import Sequence
 
 from .parser import Document
 
+DEFAULT_SAGE_WORKER = "sage_ring_iso_worker.py"
+
 
 @dataclass(frozen=True)
 class UnramifiedRingOracle:
@@ -202,8 +204,8 @@ def _local_sage_command(executable: str, worker: Path) -> list[str]:
     return [executable, "-python", str(worker)]
 
 
-def _sage_worker_command(worker_name: str = "sage_ring_iso_worker.py") -> list[str]:
-    if worker_name not in ("sage_ring_iso_worker.py", "sage_pairing_confirmation_worker.py"):
+def _sage_worker_command(worker_name: str = DEFAULT_SAGE_WORKER) -> list[str]:
+    if worker_name not in (DEFAULT_SAGE_WORKER, "sage_pairing_confirmation_worker.py"):
         raise ValueError("unsupported Sage worker")
     worker = Path(__file__).with_name(worker_name).resolve()
     configured = os.getenv("CRYPTOSCAN_SAGE")

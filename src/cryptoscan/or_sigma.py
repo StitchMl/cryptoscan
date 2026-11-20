@@ -269,82 +269,117 @@ def _publics(section: str) -> tuple[int, int]:
     return mapping[0], mapping[1]
 
 
+def _challenge_bits(source: str) -> int:
+    required = ("Special Soundness!", FIRST_TRANSCRIPT, SECOND_TRANSCRIPT,
+                "give me a witness!", "give me satisfying transcript")
+    if not all(fragment in source for fragment in required):
+        raise ValueError("unsupported interactive protocol")
+    widths = [int(number) for number in
+              re.findall(r"2\\s*\\*\\*\\s*(\\d+)\\s*-\\s*1", source)]
+    if not widths or len(set(widths)) != 1 or not 1 <= widths[0] <= 4096:
+        raise ValueError("unsupported challenge domain")
+    return widths[0]
+
+
+def _send_sequence(wire: _Dialogue, exchanges: Sequence[tuple[bytes, int]]) -> None:
+    for prompt, value in exchanges:
+        wire.read_to(prompt)
+        wire.send(value)
+
+
+def _correctness_phase(wire: _Dialogue, instance: OrSchnorr, bits: int) -> None:
+    wire.read_to(b"a0:")
+    first, randomizer = first_round(instance, bits)
+    wire.send(first.commitments[0])
+    wire.read_to(b"a1:")
+    wire.send(first.commitments[1])
+    message = wire.read_to(b"e0:")
+    match = re.search(r"verifier sends s\\s*=\\s*(\\d+)", message)
+    if match is None:
+        raise ValueError("missing initial challenge")
+    proof = respond(instance, first, randomizer, int(match.group(1)))
+    wire.send(proof.challenges[0])
+    _send_sequence(wire, (
+        (b"e1:", proof.challenges[1]),
+        (b"z0:", proof.responses[0]),
+        (b"z1:", proof.responses[1]),
+    ))
+
+
+def _rewind_fields(segment: str):
+    if FIRST_TRANSCRIPT not in segment or SECOND_TRANSCRIPT not in segment:
+        raise ValueError("missing rewound transcripts")
+    pre, rest = segment.split(FIRST_TRANSCRIPT, 1)
+    left, right = rest.split(SECOND_TRANSCRIPT, 1)
+    c1 = re.search(r"(?m)^\\s*s\\s*=\\s*(\\d+)\\s*$", left)
+    c2 = re.search(r"(?m)^\\s*s\\*\\s*=\\s*(\\d+)\\s*$", right)
+    if c1 is None or c2 is None:
+        raise ValueError("missing rewind challenges")
+    return (_publics(pre), int(c1.group(1)), _transcript(left, False),
+            int(c2.group(1)), _transcript(right, True))
+
+
+def _soundness_phase(wire: _Dialogue, instance: OrSchnorr) -> None:
+    segment = wire.read_to(b"give me a witness!")
+    publics, challenge1, transcript1, challenge2, transcript2 = _rewind_fields(segment)
+    witness = extract_witness(instance.p, instance.q, instance.g, publics,
+                              challenge1, transcript1, challenge2, transcript2)
+    wire.send(witness)
+
+
+def _simulator_phase(wire: _Dialogue, instance: OrSchnorr, bits: int) -> None:
+    segment = wire.read_to(b"a0:")
+    match = re.search(r"give me satisfying transcript for s\\s*=\\s*(\\d+)", segment)
+    if match is None:
+        raise ValueError("missing simulator challenge")
+    publics = _publics(segment)
+    challenge = int(match.group(1))
+    proof = simulate(instance.p, instance.q, instance.g, publics, challenge, bits)
+    if not verify(instance.p, instance.g, publics, proof, challenge):
+        raise RuntimeError("invalid locally simulated transcript")
+    wire.send(proof.commitments[0])
+    _send_sequence(wire, (
+        (b"a1:", proof.commitments[1]),
+        (b"e0:", proof.challenges[0]),
+        (b"e1:", proof.challenges[1]),
+        (b"z0:", proof.responses[0]),
+        (b"z1:", proof.responses[1]),
+    ))
+
+
+def _final_server_response(wire: _Dialogue, sock: socket.socket) -> str:
+    result = bytearray(wire.buffer)
+    while True:
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        result.extend(chunk)
+        if len(result) > 65536:
+            raise ValueError("oversized final response")
+    return result.decode("utf-8", "replace")
+
+
 def recover_flag(documents: Sequence[Document], host: str, port: int, *,
                  timeout: float = 30.0) -> str:
     """Network adapter only for a source-confirmed three-stage wire profile."""
     instance = extract_instance(documents)
     if instance is None:
         raise ValueError("unsupported source model")
-    source = "\n".join(d.text for d in documents if d.path.lower().endswith(".py"))
-    required = ("Special Soundness!", FIRST_TRANSCRIPT, SECOND_TRANSCRIPT,
-                "give me a witness!", "give me satisfying transcript")
-    if not all(text in source for text in required):
-        raise ValueError("unsupported interactive protocol")
-    widths = [int(value) for value in re.findall(r"2\s*\*\*\s*(\d+)\s*-\s*1", source)]
-    if not widths or len(set(widths)) != 1 or not 1 <= widths[0] <= 4096:
-        raise ValueError("unsupported challenge domain")
-    bits = widths[0]
+    source = "\\n".join(d.text for d in documents if d.path.lower().endswith(".py"))
+    bits = _challenge_bits(source)
     with socket.create_connection((host, port), timeout=timeout) as sock:
         sock.settimeout(timeout)
         wire = _Dialogue(sock)
-        wire.read_to(b"a0:")
-        first, randomizer = first_round(instance, bits)
-        wire.send(first.commitments[0])
-        wire.read_to(b"a1:")
-        wire.send(first.commitments[1])
-        message = wire.read_to(b"e0:")
-        match = re.search(r"verifier sends s\s*=\s*(\d+)", message)
-        if not match:
-            raise ValueError("missing initial challenge")
-        proof = respond(instance, first, randomizer, int(match.group(1)))
-        wire.send(proof.challenges[0])
-        for prompt, value in zip((b"e1:", b"z0:", b"z1:"),
-                                 (proof.challenges[1], *proof.responses), strict=True):
-            wire.read_to(prompt)
-            wire.send(value)
-        segment = wire.read_to(b"give me a witness!")
-        if FIRST_TRANSCRIPT not in segment or SECOND_TRANSCRIPT not in segment:
-            raise ValueError("missing rewound transcripts")
-        pre, rest = segment.split(FIRST_TRANSCRIPT, 1)
-        left, right = rest.split(SECOND_TRANSCRIPT, 1)
-        c1 = re.search(r"(?m)^\s*s\s*=\s*(\d+)\s*$", left)
-        c2 = re.search(r"(?m)^\s*s\*\s*=\s*(\d+)\s*$", right)
-        if not c1 or not c2:
-            raise ValueError("missing rewind challenges")
-        witness = extract_witness(instance.p, instance.q, instance.g, _publics(pre),
-                                  int(c1.group(1)), _transcript(left, False),
-                                  int(c2.group(1)), _transcript(right, True))
-        wire.send(witness)
-        segment = wire.read_to(b"a0:")
-        match = re.search(r"give me satisfying transcript for s\s*=\s*(\d+)", segment)
-        if not match:
-            raise ValueError("missing simulator challenge")
-        publics = _publics(segment)
-        challenge = int(match.group(1))
-        proof = simulate(instance.p, instance.q, instance.g, publics, challenge, bits)
-        if not verify(instance.p, instance.g, publics, proof, challenge):
-            raise RuntimeError("invalid locally simulated transcript")
-        wire.send(proof.commitments[0])
-        for prompt, value in zip((b"a1:", b"e0:", b"e1:", b"z0:", b"z1:"),
-                                 (proof.commitments[1], *proof.challenges, *proof.responses),
-                                 strict=True):
-            wire.read_to(prompt)
-            wire.send(value)
-        trailer = bytearray(wire.buffer)
-        while True:
-            try:
-                chunk = sock.recv(4096)
-            except socket.timeout:
-                break
-            if not chunk:
-                break
-            trailer.extend(chunk)
-            if len(trailer) > 65536:
-                raise ValueError("oversized final response")
-        text = trailer.decode("utf-8", "replace")
-        if "well done!" not in text:
-            raise RuntimeError("verifier did not complete: " + text[-300:])
-        flag = re.search(r"(?:b['\"])?(\\w{2,32}\{[^\r\n}]{1,180}\})", text)
-        if flag is None:
-            raise RuntimeError("protocol completed without flag-shaped response")
-        return flag.group(1)
+        _correctness_phase(wire, instance, bits)
+        _soundness_phase(wire, instance)
+        _simulator_phase(wire, instance, bits)
+        response = _final_server_response(wire, sock)
+    if "well done!" not in response:
+        raise RuntimeError("verifier did not complete: " + response[-300:])
+    flag = re.search(r"(?:b['\\\"])?(\\w{2,32}\\{[^\\r\\n}]{1,180}\\})", response)
+    if flag is None:
+        raise RuntimeError("protocol completed without flag-shaped response")
+    return flag.group(1)

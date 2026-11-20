@@ -236,9 +236,13 @@ class _SageWorker:
                 f"{type(exc).__name__}: {exc}"
             ) from exc
         if not response:
+            status = self.process.poll()
+            details = ""
+            if status is not None and self.process.stderr is not None:
+                details = self.process.stderr.read()[-1200:]
             raise RuntimeError(
                 f"Sage worker exited during {message.get('mode', 'unknown')}; "
-                f"process return code {self.process.poll()}"
+                f"process return code {status}; stderr tail={details!r}"
             )
         try:
             result = json.loads(response)

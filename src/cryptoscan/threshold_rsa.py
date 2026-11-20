@@ -238,7 +238,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         for count in range(2, instance.coefficient_count + 2):
             script.extend((2, count))
         script.append(3)
-        sock.sendall(("\\n".join(map(str, script)) + "\\n").encode("ascii"))
+        sock.sendall(("\n".join(map(str, script)) + "\n").encode("ascii"))
         shares = []
         for count in range(1, instance.coefficient_count + 2):
             if count > 1:

@@ -195,16 +195,20 @@ def _conda_wsl_command(wsl: str, sage: str, worker_path: str) -> list[str]:
     ]
 
 
+def _local_sage_command(executable: str, worker: Path) -> list[str]:
+    normalized = executable.replace("\\", "/")
+    if "/envs/" in normalized:
+        return [posixpath.join(posixpath.dirname(normalized), "python"), str(worker)]
+    return [executable, "-python", str(worker)]
+
+
 def _sage_worker_command() -> list[str]:
     worker = Path(__file__).with_name("sage_ring_iso_worker.py").resolve()
     configured = os.getenv("CRYPTOSCAN_SAGE")
     local = configured or shutil.which("sage")
     if local and sys.platform != "win32":
-        if "/envs/" in local.replace("\\", "/"):
-            return [posixpath.join(posixpath.dirname(local.replace("\\\\", "/")), "python"),\n                    str(worker)]
-        return [local, "-python", str(worker)]
-    # Native Windows Sage is uncommon. Keep the Windows CLI, and delegate only
-    # the algebraic worker to the user's existing WSL distribution.
+        return _local_sage_command(local, worker)
+    # Windows remains the frontend; only the algebraic worker runs in WSL.
     wsl = shutil.which("wsl.exe") if sys.platform == "win32" else None
     if wsl:
         sage = configured if configured and configured.startswith("/") else (
@@ -216,7 +220,7 @@ def _sage_worker_command() -> list[str]:
                 return _conda_wsl_command(wsl, sage, worker_path)
             return [wsl, "--exec", sage, "-python", worker_path]
     if local:
-        return [local, "-python", str(worker)]
+        return _local_sage_command(local, worker)
     raise RuntimeError(
         "SageMath is required for unramified ring arithmetic. "
         "On Windows, keep running cryptoscan in PowerShell and install Sage "
@@ -224,7 +228,6 @@ def _sage_worker_command() -> list[str]:
         "CryptoScan will launch the WSL worker automatically. "
         "Optionally set CRYPTOSCAN_SAGE to the Linux absolute path of sage."
     )
-
 
 class _SageWorker:
     def __init__(self):

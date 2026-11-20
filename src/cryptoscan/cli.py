@@ -25,6 +25,7 @@ from .ntru_auto import instances as ntru_instances, recover_flag as recover_ntru
 from .stream_combiner_workflow import recognize_stream_cipher, recover_stream_cipher
 from .or_sigma import extract_instance as extract_or_schnorr, recover_flag as recover_or_schnorr_flag
 from .bounded_ot import extract_instance as extract_bounded_ot, recover_flag as recover_bounded_ot_flag
+from .spn_linear_oracle import extract_instance as extract_linear_spn, recover_flag as recover_linear_spn_flag
 from .terminal_report import render_findings
 
 COLORS = {"critical": "\033[91m", "high": "\033[31m", "medium": "\033[33m", "low": "\033[36m"}
@@ -76,6 +77,11 @@ def _execute_recovery(label, solver, *parameters, **options) -> int:
 
 
 def _solve_remote(args, documents) -> int | None:
+    if extract_linear_spn(documents) is not None:
+        return _execute_recovery(
+            "Chosen-plaintext linear SPN", recover_linear_spn_flag, documents,
+            args.host, args.port, timeout=args.timeout,
+        )
     if extract_bounded_ot(documents) is not None:
         return _execute_recovery(
             "Bounded EC-ElGamal OT", recover_bounded_ot_flag, documents,
@@ -170,6 +176,9 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    if extract_linear_spn(documents) is not None:
+        print("Detected: chosen-plaintext recoverable linear/S-box/linear cipher; "
+              "single-query permutation decoder available.")
     if extract_bounded_ot(documents) is not None:
         print("Detected: homomorphic encrypted-choice OT without bit-membership proof; "
               "bounded-message recovery supported.")

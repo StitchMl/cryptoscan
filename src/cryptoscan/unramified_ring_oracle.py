@@ -201,7 +201,7 @@ def _sage_worker_command() -> list[str]:
     local = configured or shutil.which("sage")
     if local and sys.platform != "win32":
         if "/envs/" in local.replace("\\", "/"):
-            return [str(Path(local).with_name("python")), str(worker)]
+            return [posixpath.join(posixpath.dirname(local.replace("\\\\", "/")), "python"),\n                    str(worker)]
         return [local, "-python", str(worker)]
     # Native Windows Sage is uncommon. Keep the Windows CLI, and delegate only
     # the algebraic worker to the user's existing WSL distribution.

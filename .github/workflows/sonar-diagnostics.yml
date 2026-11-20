@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/sonar-diagnostics.yml"
+      - "src/cryptoscan/or_sigma.py"
+      - "src/cryptoscan/bounded_ot.py"
+      - "src/cryptoscan/cli.py"
   workflow_dispatch:
 
 permissions:

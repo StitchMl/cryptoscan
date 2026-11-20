@@ -284,7 +284,7 @@ def _recover_reply(wire: _Socket, ecc_point, secret: int,
             "OT response is missing valid elliptic-curve coordinates: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
-    point = right - secret * left
+    point = right + (-(secret * left))
     address = ((int(point.x), int(point.y))
                if not point.is_point_at_infinity() else (-1, -1))
     messages = table.get(address)

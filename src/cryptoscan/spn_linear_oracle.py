@@ -281,7 +281,7 @@ def _component(oracle, output_forms, directions, dimension, bits_per_slot):
 
 
 def _recover_components(oracle: Sequence[int], *, slots: int = 16,
-                        bits_per_slot: int = 8, dimension: int = 16):
+                        bits_per_slot: int = 8, dimension: int = 13):
     groups = _derivative_groups(oracle, slots, bits_per_slot)
     if len(groups) != slots:
         raise ValueError(f'derivative decomposition found {len(groups)} of {slots} byte spaces')
@@ -333,8 +333,8 @@ def _invert_linear_columns(columns: Sequence[int]):
 
 def recover_permutation(oracle: Sequence[int], basis_outputs: Sequence[int],
                         verification: Sequence[tuple[int, int]]):
-    """Build a validated cipher-to-plaintext decoder from a 2^16 affine oracle."""
-    if len(oracle) != 1 << 16 or len(basis_outputs) != 128:
+    """Build a validated cipher-to-plaintext decoder from a 2^13 affine oracle."""
+    if len(oracle) != 1 << 13 or len(basis_outputs) != 128:
         raise ValueError('incorrect chosen-plaintext oracle dimensions')
     components = _recover_components(oracle)
     columns = [_local_coordinates(cipher, oracle[0], components)
@@ -350,7 +350,7 @@ def recover_permutation(oracle: Sequence[int], basis_outputs: Sequence[int],
     return decrypt
 
 
-def _subspace(rng: random.Random, dimension: int = 16) -> list[int]:
+def _subspace(rng: random.Random, dimension: int = 13) -> list[int]:
     result = []
     while len(result) < dimension:
         candidate = rng.getrandbits(128)
@@ -365,9 +365,9 @@ def _subspace(rng: random.Random, dimension: int = 16) -> list[int]:
 
 def _probes():
     rng = random.Random(secrets.randbits(64))
-    subsets = (_subspace(rng), _subspace(rng))
+    subsets = tuple(_subspace(rng) for _ in range(3))
     verification = tuple(rng.getrandbits(128) for _ in range(24))
-    plaintext = (*subsets[0], *subsets[1],
+    plaintext = (*subsets[0], *subsets[1], *subsets[2],
                  *(1 << bit for bit in range(128)), *verification)
     return plaintext, verification
 
@@ -421,17 +421,18 @@ def _challenge_ciphertext(wire: _Dialogue, block_bytes: int) -> int:
 
 
 def _prepare_decoder(ciphertexts: Sequence[int], verification_plain: Sequence[int]):
-    offset = 2 * (1 << 16)
+    subspace_size = 1 << 13
+    offset = 3 * subspace_size
     basis = ciphertexts[offset:offset + 128]
     verification_cipher = ciphertexts[offset + 128:]
     checks = list(zip(verification_plain, verification_cipher, strict=True))
-    for attempt in range(2):
-        subspace = ciphertexts[attempt * (1 << 16):(attempt + 1) * (1 << 16)]
+    for attempt in range(3):
+        subspace = ciphertexts[attempt * subspace_size:(attempt + 1) * subspace_size]
         try:
             return recover_permutation(subspace, basis, checks)
         except ValueError:
             continue
-    raise RuntimeError('two independent chosen-input spaces failed decomposition')
+    raise RuntimeError('three independent chosen-input spaces failed decomposition')
 
 
 def recover_flag(documents: Sequence[Document], host: str, port: int, *,

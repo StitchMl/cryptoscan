@@ -63,7 +63,7 @@ def _synthetic_oracle(seed: int):
            for slot in range(16)):
         return None
 
-    intermediate = [0] * (1 << 16)
+    intermediate = [0] * (1 << 13)
     for index in range(1, len(intermediate)):
         bit = index & -index
         intermediate[index] = (

@@ -138,7 +138,7 @@ def test_windows_conda_sage_activates_environment_before_worker(monkeypatch):
     assert "conda activate" in command[4]
     assert command[6] == "/home/example/miniforge3/etc/profile.d/conda.sh"
     assert command[7] == "/home/example/miniforge3/envs/sage"
-    assert command[8] == "/home/example/miniforge3/envs/sage/bin/sage"
+    assert command[8] == "/home/example/miniforge3/envs/sage/bin/python"
     assert command[9] == "/mnt/c/worker.py"
 
 
@@ -150,6 +150,17 @@ def test_windows_missing_sage_reports_actionable_error(monkeypatch):
     monkeypatch.setattr(module.shutil, "which", lambda _: None)
     with pytest.raises(RuntimeError, match="keep running cryptoscan in PowerShell"):
         module._sage_worker_command()
+
+
+def test_unix_conda_sage_uses_environment_python(monkeypatch):
+    import cryptoscan.unramified_ring_oracle as module
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    monkeypatch.delenv("CRYPTOSCAN_SAGE", raising=False)
+    monkeypatch.setattr(module.shutil, "which", lambda name:
+                        "/opt/miniforge3/envs/math/bin/sage" if name == "sage" else None)
+    command = module._sage_worker_command()
+    assert command[0] == "/opt/miniforge3/envs/math/bin/python"
+    assert command[1].endswith("sage_ring_iso_worker.py")
 
 
 def test_unix_keeps_native_sage_worker(monkeypatch):

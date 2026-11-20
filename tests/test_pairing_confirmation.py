@@ -167,15 +167,15 @@ def test_synthetic_pairing_dialogue_without_sage(monkeypatch):
         try:
             with right, right.makefile("rwb", buffering=0) as channel:
                 channel.write(
-                    b"Public parameters\\n"
+                    b"Public parameters\n"
                     + json.dumps({"P_G1": [1, 2], "Q": [3, 4],
                                   "P_G2": ["a+1", "a+2"]}).encode()
-                    + b"\\nhandle: "
+                    + b"\nhandle: "
                 )
                 username = channel.readline().decode().strip()
                 if username != "cryptoscan_participant":
                     raise RuntimeError("incorrect synthetic username")
-                channel.write(b"Private key preview\\nsignature: ")
+                channel.write(b"Private key preview\nsignature: ")
                 signature = json.loads(channel.readline())
                 if signature != [[1, 2], ["a", "b"]]:
                     raise RuntimeError("incorrect synthetic signature")
@@ -186,10 +186,10 @@ def test_synthetic_pairing_dialogue_without_sage(monkeypatch):
                 channel.write(b"signer: ")
                 if channel.readline().strip() != b"root":
                     raise RuntimeError("incorrect synthetic target identity")
-                channel.write(b"C = [5,6]\\nproof values: ")
+                channel.write(b"C = [5,6]\nproof values: ")
                 if json.loads(channel.readline()) != ["z", "w"]:
                     raise RuntimeError("incorrect synthetic pairing responses")
-                channel.write(b"TST{synthetic_test_only}\\n")
+                channel.write(b"TST{synthetic_test_only}\n")
         except BaseException as exc:
             failure.append(exc)
 

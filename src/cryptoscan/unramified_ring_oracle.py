@@ -13,6 +13,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -184,11 +185,11 @@ def _sage_worker_command() -> list[str]:
     worker = Path(__file__).with_name("sage_ring_iso_worker.py").resolve()
     configured = os.getenv("CRYPTOSCAN_SAGE")
     local = configured or shutil.which("sage")
-    if local and os.name != "nt":
+    if local and sys.platform != "win32":
         return [local, "-python", str(worker)]
     # Native Windows Sage is uncommon. Keep the Windows CLI, and delegate only
     # the algebraic worker to the user's existing WSL distribution.
-    wsl = shutil.which("wsl.exe") if os.name == "nt" else None
+    wsl = shutil.which("wsl.exe") if sys.platform == "win32" else None
     if wsl:
         sage = configured if configured and configured.startswith("/") else (
             _wsl_sage_executable(wsl)

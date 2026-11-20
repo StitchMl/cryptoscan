@@ -75,49 +75,55 @@ def _execute_recovery(label, solver, *parameters, **options) -> int:
     return 0
 
 
+def _solve_remote(args, documents) -> int | None:
+    if extract_bounded_ot(documents) is not None:
+        return _execute_recovery(
+            "Bounded EC-ElGamal OT", recover_bounded_ot_flag, documents,
+            args.host, args.port, timeout=args.timeout,
+        )
+    if extract_or_schnorr(documents) is not None:
+        return _execute_recovery(
+            "OR-Schnorr protocol", recover_or_schnorr_flag, documents,
+            args.host, args.port, timeout=args.timeout,
+        )
+    supported = (
+        (extract_batch_fiat_shamir, recover_batch_fs_flag, "Fiat-Shamir transcript-collision"),
+        (extract_fiat_shamir_graph, recover_fs_graph_flag, "Fiat-Shamir grinding"),
+        (supports_gcm_wire_profile, recover_gcm_hidden_flag, "GCM hidden-state"),
+        (supported_fischlin_source, recover_fischlin_flag, "Fischlin"),
+        (supported_dghv_source, recover_dghv_flag, "DGHV"),
+    )
+    for matches, solver, label in supported:
+        if matches(documents):
+            return _execute_recovery(
+                label, solver, documents, args.host, args.port, timeout=args.timeout,
+            )
+    return None
+
+
+def _solve_offline(args, documents) -> int | None:
+    streams = recognize_stream_cipher(documents)
+    if streams:
+        return _execute_recovery("LFSR correlation", recover_stream_cipher, streams[0])
+    if extract_eclcg_instance(documents) is not None:
+        return _execute_recovery("ECDSA-LCG", recover_eclcg_flag, documents)
+    if ntru_instances(documents):
+        return _execute_recovery(
+            "NTRU lattice", recover_ntru_flag, documents,
+            bkz=args.bkz_block, backend=args.lattice_backend,
+            initial_degree=args.initial_fold, timeout_seconds=args.lattice_timeout,
+        )
+    return None
+
+
 def _solve_documents(args, documents) -> int:
     """Separate solver selection from parsing, scanning and presentation."""
-    if args.host and args.port:
-        if extract_bounded_ot(documents) is not None:
-            return _execute_recovery(
-                "Bounded EC-ElGamal OT", recover_bounded_ot_flag, documents,
-                args.host, args.port, timeout=args.timeout,
-            )
-        if extract_or_schnorr(documents) is not None:
-            return _execute_recovery(
-                "OR-Schnorr protocol", recover_or_schnorr_flag, documents,
-                args.host, args.port, timeout=args.timeout,
-            )
-        remote = (
-            (extract_batch_fiat_shamir, recover_batch_fs_flag, "Fiat-Shamir transcript-collision"),
-            (extract_fiat_shamir_graph, recover_fs_graph_flag, "Fiat-Shamir grinding"),
-            (supports_gcm_wire_profile, recover_gcm_hidden_flag, "GCM hidden-state"),
-            (supported_fischlin_source, recover_fischlin_flag, "Fischlin"),
-            (supported_dghv_source, recover_dghv_flag, "DGHV"),
-        )
-        for matches, solver, label in remote:
-            if matches(documents):
-                return _execute_recovery(
-                    label, solver, documents, args.host, args.port,
-                    timeout=args.timeout,
-                )
-    else:
-        streams = recognize_stream_cipher(documents)
-        if streams:
-            return _execute_recovery("LFSR correlation", recover_stream_cipher, streams[0])
-        if extract_eclcg_instance(documents) is not None:
-            return _execute_recovery("ECDSA-LCG", recover_eclcg_flag, documents)
-        if ntru_instances(documents):
-            return _execute_recovery(
-                "NTRU lattice", recover_ntru_flag, documents,
-                bkz=args.bkz_block, backend=args.lattice_backend,
-                initial_degree=args.initial_fold,
-                timeout_seconds=args.lattice_timeout,
-            )
-    print(
-        "No supported source-verified solver for these files and endpoint.",
-        file=sys.stderr,
-    )
+    result = (_solve_remote(args, documents) if args.host and args.port
+              else _solve_offline(args, documents))
+    if result is not None:
+        return result
+    print("No supported source-verified solver for these files and endpoint.",
+          file=sys.stderr)
     return 2
 
 
@@ -148,8 +154,7 @@ def _should_assist(args, findings) -> bool:
     return bool(args.assist or (findings and sys.stdin.isatty() and sys.stdout.isatty()))
 
 
-def main(argv: list[str] | None = None) -> int:
-    arguments = list(sys.argv[1:] if argv is None else argv)
+def _special_command(arguments: list[str]) -> int | list[str]:
     if arguments and arguments[0] == "doctor":
         return diagnose_runtime()
     if arguments and arguments[0] == "cookie":
@@ -158,18 +163,32 @@ def main(argv: list[str] | None = None) -> int:
         if len(arguments) == 1:
             assistant_session()
             return 0
-        arguments = arguments[1:] + ["--assist"]
-    args = _parser().parse_args(arguments)
+        return arguments[1:] + ["--assist"]
+    return arguments
+
+
+def _report_supported_protocols(args, documents) -> None:
+    if args.format != "text":
+        return
+    if extract_bounded_ot(documents) is not None:
+        print("Detected: homomorphic encrypted-choice OT without bit-membership proof; "
+              "bounded-message recovery supported.")
+    if extract_or_schnorr(documents) is not None:
+        print("Supported interactive protocol: Schnorr OR proof "
+              "(witness, special-soundness extraction, HVZK simulation).")
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    command = _special_command(arguments)
+    if isinstance(command, int):
+        return command
+    args = _parser().parse_args(command)
     _validate_arguments(args)
     documents = collect_documents(args.targets)
     findings = scan(documents, args.fermat_steps)
     _print_report(args, findings)
-    if args.format == "text" and extract_bounded_ot(documents) is not None:
-        print("Detected: homomorphic encrypted-choice OT without bit-membership proof; "
-              "bounded-message recovery supported.")
-    if args.format == "text" and extract_or_schnorr(documents) is not None:
-        print("Supported interactive protocol: Schnorr OR proof "
-              "(witness, special-soundness extraction, HVZK simulation).")
+    _report_supported_protocols(args, documents)
     if args.solve:
         return _solve_documents(args, documents)
     if _should_assist(args, findings):

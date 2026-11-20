@@ -189,7 +189,7 @@ class _Stream:
         self.sock = sock
         self.buffer = bytearray()
 
-    def until(self, token: bytes, limit: int = 16384) -> str:
+    def until(self, token: bytes, limit: int = 262144) -> str:
         while token not in self.buffer:
             chunk = self.sock.recv(65536)
             if not chunk:
@@ -232,19 +232,23 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         wire = _Stream(sock)
         modulus = _parsed_number(wire.line(), "n")
         public_exponent = _parsed_number(wire.line(), "e")
+        # Pipeline deterministic menu answers to save round trips under short
+        # service deadlines. The source has been checked for this protocol.
+        script = [1]
+        for count in range(2, instance.coefficient_count + 2):
+            script.extend((2, count))
+        script.append(3)
+        sock.sendall(("\\n".join(map(str, script)) + "\\n").encode("ascii"))
         shares = []
         for count in range(1, instance.coefficient_count + 2):
             if count > 1:
                 wire.until(b"> ")
-                wire.send(2)
             wire.until(b"? ")
-            wire.send(count)
             shares.append(_parsed_number(wire.line(), "part"))
         exponent = recover_private_exponent(
             modulus, public_exponent, shares, relation=weights
         )
         wire.until(b"> ")
-        wire.send(3)
         announcement = wire.line()
         if "Bye" not in announcement:
             raise RuntimeError(f"unexpected RSA completion: {announcement[:120]!r}")

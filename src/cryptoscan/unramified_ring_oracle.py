@@ -326,12 +326,12 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
             for k, degrees in model.rounds:
                 polynomials, point = _stage(
                     f"reading ring parameters k={k}, degrees={degrees}",
-                    lambda: _read_parameters(wire, degrees),
+                    lambda degrees=degrees: _read_parameters(wire, degrees),
                 )
                 first = worker.ask({"mode": "begin", "k": k, "degrees": degrees,
                                     "polynomials": polynomials, "point": point})
                 _stage("sending mapped ring point",
-                       lambda: wire.send(",".join(str(int(value))
+                       lambda first=first: wire.send(",".join(str(int(value))
                                                   for value in first["point"])))
                 answer = _integers(
                     _stage("reading ring oracle evaluation", wire.line), len(point)

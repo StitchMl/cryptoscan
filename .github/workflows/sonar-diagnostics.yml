@@ -10,6 +10,9 @@ on:
       - "src/cryptoscan/cli.py"
       - "src/cryptoscan/spn_linear_oracle.py"
       - "tests/test_spn_linear_oracle.py"
+      - "src/cryptoscan/unramified_ring_oracle.py"
+      - "src/cryptoscan/sage_ring_iso_worker.py"
+      - "tests/test_unramified_ring_oracle.py"
   workflow_dispatch:
 
 permissions:

@@ -9,37 +9,44 @@ import ast
 import json
 import sys
 
-from sage.all import GF, PolynomialRing, Zmod, matrix
+from sage.all import GF, PolynomialRing, Zmod, identity_matrix, matrix
+
+
+def _arithmetic(node, variables):
+    left = _safe_value(node.left, variables)
+    right = _safe_value(node.right, variables)
+    if isinstance(node.op, ast.Add):
+        return left + right
+    if isinstance(node.op, ast.Sub):
+        return left - right
+    if isinstance(node.op, ast.Mult):
+        return left * right
+    if isinstance(node.op, ast.Pow):
+        if (not isinstance(node.right, ast.Constant)
+                or type(node.right.value) is not int
+                or not 0 <= node.right.value <= 64):
+            raise ValueError("invalid polynomial power")
+        return left ** right
+    raise ValueError("unsupported polynomial operator")
+
+
+def _safe_value(node, variables):
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return node.value
+    if isinstance(node, ast.Name) and node.id in variables:
+        return variables[node.id]
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        return -_safe_value(node.operand, variables)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd):
+        return _safe_value(node.operand, variables)
+    if isinstance(node, ast.BinOp):
+        return _arithmetic(node, variables)
+    raise ValueError("unsupported polynomial expression")
 
 
 def safe_expression(source, variables):
     expression = ast.parse(source.replace("^", "**"), mode="eval").body
-
-    def parse(node):
-        if isinstance(node, ast.Constant) and type(node.value) is int:
-            return node.value
-        if isinstance(node, ast.Name) and node.id in variables:
-            return variables[node.id]
-        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-            return -parse(node.operand)
-        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd):
-            return parse(node.operand)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            return parse(node.left) + parse(node.right)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub):
-            return parse(node.left) - parse(node.right)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
-            return parse(node.left) * parse(node.right)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
-            if (not isinstance(node.right, ast.Constant)
-                    or type(node.right.value) is not int
-                    or not 0 <= node.right.value <= 64):
-                raise ValueError("invalid polynomial power")
-            return parse(node.left) ** node.right.value
-        raise ValueError("unsupported polynomial expression")
-
-    return parse(expression)
-
+    return _safe_value(expression, variables)
 
 class RingIsomorphism:
     def __init__(self, precision, degrees, printed):
@@ -87,7 +94,7 @@ class RingIsomorphism:
         self.change = matrix(self.base, self.dimension, self.dimension,
                              lambda i, j: columns[j][i])
         self.inverse = self.change.inverse()
-        if self.inverse * self.change != matrix.identity(self.base, self.dimension):
+        if self.inverse * self.change != identity_matrix(self.base, self.dimension):
             raise ValueError("basis matrix is not invertible")
 
     def _coordinates(self, element):

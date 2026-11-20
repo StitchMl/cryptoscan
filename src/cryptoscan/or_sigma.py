@@ -33,43 +33,72 @@ class Transcript:
     responses: tuple[int, int]
 
 
+_OPERATIONS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.FloorDiv: operator.floordiv,
+    ast.Pow: operator.pow,
+    ast.LShift: operator.lshift,
+}
+FIRST_TRANSCRIPT = "transcript 1:"
+SECOND_TRANSCRIPT = "transcript 2:"
+
+
+def _limited_operation(node: ast.BinOp, variables: dict[str, int]) -> int:
+    left = _evaluate_constant(node.left, variables)
+    right = _evaluate_constant(node.right, variables)
+    if max(abs(left).bit_length(), abs(right).bit_length()) > 8192:
+        raise ValueError("oversized expression")
+    if isinstance(node.op, ast.Pow) and not 0 <= right <= 1024:
+        raise ValueError("oversized exponent")
+    if isinstance(node.op, ast.LShift) and not 0 <= right <= 8192:
+        raise ValueError("oversized shift")
+    result = _OPERATIONS[type(node.op)](left, right)
+    if abs(result).bit_length() > 8192:
+        raise ValueError("oversized expression")
+    return result
+
+
+def _evaluate_constant(expr: ast.expr, variables: dict[str, int]) -> int:
+    if isinstance(expr, ast.Constant) and type(expr.value) is int:
+        return expr.value
+    if isinstance(expr, ast.Name) and expr.id in variables:
+        return variables[expr.id]
+    if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.USub):
+        return -_evaluate_constant(expr.operand, variables)
+    if isinstance(expr, ast.BinOp) and type(expr.op) in _OPERATIONS:
+        return _limited_operation(expr, variables)
+    raise ValueError("nonconstant expression")
+
+
+def _simple_assignment(node: ast.stmt) -> tuple[str, ast.expr] | None:
+    if isinstance(node, ast.Assign) and len(node.targets) == 1:
+        target = node.targets[0]
+        value = node.value
+    elif isinstance(node, ast.AnnAssign):
+        target = node.target
+        value = node.value
+    else:
+        return None
+    if isinstance(target, ast.Name) and value is not None:
+        return target.id, value
+    return None
+
+
 def _constants(source: str) -> dict[str, int]:
     tree = ast.parse(source)
-    result: dict[str, int] = {}
-    operations = {ast.Add: operator.add, ast.Sub: operator.sub,
-                  ast.Mult: operator.mul, ast.FloorDiv: operator.floordiv,
-                  ast.Pow: operator.pow, ast.LShift: operator.lshift}
-
-    def evaluate(expr: ast.expr) -> int:
-        if isinstance(expr, ast.Constant) and type(expr.value) is int:
-            return expr.value
-        if isinstance(expr, ast.Name) and expr.id in result:
-            return result[expr.id]
-        if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.USub):
-            return -evaluate(expr.operand)
-        if isinstance(expr, ast.BinOp) and type(expr.op) in operations:
-            left, right = evaluate(expr.left), evaluate(expr.right)
-            if max(abs(left).bit_length(), abs(right).bit_length()) > 8192:
-                raise ValueError("oversized expression")
-            if isinstance(expr.op, ast.Pow) and not 0 <= right <= 1024:
-                raise ValueError("oversized exponent")
-            if isinstance(expr.op, ast.LShift) and not 0 <= right <= 8192:
-                raise ValueError("oversized shift")
-            value = operations[type(expr.op)](left, right)
-            if abs(value).bit_length() > 8192:
-                raise ValueError("oversized expression")
-            return value
-        raise ValueError("nonconstant expression")
-
-    for stmt in tree.body:
-        target = stmt.targets[0] if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 else (
-            stmt.target if isinstance(stmt, ast.AnnAssign) else None)
-        if isinstance(target, ast.Name) and getattr(stmt, "value", None) is not None:
-            try:
-                result[target.id] = evaluate(stmt.value)
-            except (ValueError, ArithmeticError, OverflowError):
-                pass
-    return result
+    values: dict[str, int] = {}
+    for statement in tree.body:
+        assignment = _simple_assignment(statement)
+        if assignment is None:
+            continue
+        name, expression = assignment
+        try:
+            values[name] = _evaluate_constant(expression, values)
+        except (ValueError, ArithmeticError):
+            pass
+    return values
 
 
 def _verifier(source: str) -> bool:
@@ -232,7 +261,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
     if instance is None:
         raise ValueError("unsupported source model")
     source = "\n".join(d.text for d in documents if d.path.lower().endswith(".py"))
-    required = ("Special Soundness!", "transcript 1:", "transcript 2:",
+    required = ("Special Soundness!", FIRST_TRANSCRIPT, SECOND_TRANSCRIPT,
                 "give me a witness!", "give me satisfying transcript")
     if not all(text in source for text in required):
         raise ValueError("unsupported interactive protocol")
@@ -259,10 +288,10 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
             wire.read_to(prompt)
             wire.send(value)
         segment = wire.read_to(b"give me a witness!")
-        if "transcript 1:" not in segment or "transcript 2:" not in segment:
+        if FIRST_TRANSCRIPT not in segment or SECOND_TRANSCRIPT not in segment:
             raise ValueError("missing rewound transcripts")
-        pre, rest = segment.split("transcript 1:", 1)
-        left, right = rest.split("transcript 2:", 1)
+        pre, rest = segment.split(FIRST_TRANSCRIPT, 1)
+        left, right = rest.split(SECOND_TRANSCRIPT, 1)
         c1 = re.search(r"(?m)^\s*s\s*=\s*(\d+)\s*$", left)
         c2 = re.search(r"(?m)^\s*s\*\s*=\s*(\d+)\s*$", right)
         if not c1 or not c2:
@@ -300,7 +329,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         text = trailer.decode("utf-8", "replace")
         if "well done!" not in text:
             raise RuntimeError("verifier did not complete: " + text[-300:])
-        flag = re.search(r"(?:b['\"])?([A-Za-z0-9_]{2,32}\{[^\r\n}]{1,180}\})", text)
+        flag = re.search(r"(?:b['\"])?(\\w{2,32}\{[^\r\n}]{1,180}\})", text)
         if flag is None:
             raise RuntimeError("protocol completed without flag-shaped response")
         return flag.group(1)

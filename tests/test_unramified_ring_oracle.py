@@ -51,7 +51,10 @@ def test_recognizes_unrelated_symbol_names_and_ring_dimensions():
 
 def test_rejects_non_algebraic_oracle_source():
     text = invented_source().replace("residue = polynomials.quo(minimum)",
-                                    "residue = minimum")
+                                    "residue = minimum").replace(
+        'base = base["a"].quo(base["a"].gen()^count + 1)',
+        'base = base["a"].gen()^count + 1',
+    )
     assert extract_instance([Document("new_protocol.sage", text, None)]) is None
 
 

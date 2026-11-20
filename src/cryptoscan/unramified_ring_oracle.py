@@ -210,20 +210,36 @@ def _sage_worker_command() -> list[str]:
 
 class _SageWorker:
     def __init__(self):
-        self.process = subprocess.Popen(
-            _sage_worker_command(),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", bufsize=1,
-        )
+        command = _sage_worker_command()
+        try:
+            self.process = subprocess.Popen(
+                command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1,
+            )
+        except OSError as exc:
+            raise RuntimeError(
+                "Sage worker could not be started via "
+                + ("WSL" if "wsl" in command[0].lower() else "local Sage")
+                + f": {type(exc).__name__}: {exc}"
+            ) from exc
 
     def ask(self, message: dict) -> dict:
         if self.process.stdin is None or self.process.stdout is None:
             raise RuntimeError("Sage worker pipes unavailable")
-        self.process.stdin.write(json.dumps(message) + "\n")
-        self.process.stdin.flush()
-        response = self.process.stdout.readline()
+        try:
+            self.process.stdin.write(json.dumps(message) + "\n")
+            self.process.stdin.flush()
+            response = self.process.stdout.readline()
+        except OSError as exc:
+            raise RuntimeError(
+                f"Sage worker pipe failure during {message.get('mode', 'unknown')}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
         if not response:
-            raise RuntimeError("Sage worker terminated before replying")
+            raise RuntimeError(
+                f"Sage worker exited during {message.get('mode', 'unknown')}; "
+                f"process return code {self.process.poll()}"
+            )
         try:
             result = json.loads(response)
         except json.JSONDecodeError as exc:
@@ -233,13 +249,23 @@ class _SageWorker:
         return result
 
     def close(self) -> None:
-        if self.process.poll() is None:
-            self.process.terminate()
+        """Do not mask the original solver error with pipe-cleanup failures."""
+        for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+        if self.process.poll() is not None:
+            return
         try:
-            self.process.communicate(timeout=2)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.communicate()
+            self.process.terminate()
+            self.process.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                self.process.kill()
+            except OSError:
+                pass
 
 
 def _integers(line: str, count: int) -> list[int]:
@@ -250,6 +276,13 @@ def _integers(line: str, count: int) -> list[int]:
         return [int(field) for field in fields]
     except ValueError as exc:
         raise ValueError("non-integer ring coefficient") from exc
+
+
+def _stage(label: str, operation):
+    try:
+        return operation()
+    except OSError as exc:
+        raise RuntimeError(f"{label}: {type(exc).__name__}: {exc}") from exc
 
 
 def _read_parameters(wire: _Socket, degrees: tuple[int, ...]):
@@ -269,21 +302,29 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
     model = extract_instance(documents)
     if model is None:
         raise ValueError("unsupported unramified ring evaluation source")
-    worker = _SageWorker()
+    worker = _stage("starting Sage worker", _SageWorker)
     collected = []
     try:
-        with socket.create_connection((host, port), timeout=timeout) as connection:
+        with _stage("opening TCP connection", lambda: socket.create_connection(
+                (host, port), timeout=timeout)) as connection:
             connection.settimeout(timeout)
             wire = _Socket(connection)
             for k, degrees in model.rounds:
-                polynomials, point = _read_parameters(wire, degrees)
+                polynomials, point = _stage(
+                    f"reading ring parameters k={k}, degrees={degrees}",
+                    lambda: _read_parameters(wire, degrees),
+                )
                 first = worker.ask({"mode": "begin", "k": k, "degrees": degrees,
                                     "polynomials": polynomials, "point": point})
-                wire.send(",".join(str(int(value)) for value in first["point"]))
-                answer = _integers(wire.line(), len(point))
+                _stage("sending mapped ring point",
+                       lambda: wire.send(",".join(str(int(value))
+                                                  for value in first["point"])))
+                answer = _integers(
+                    _stage("reading ring oracle evaluation", wire.line), len(point)
+                )
                 second = worker.ask({"mode": "evaluate", "point": answer})
                 collected.extend(second["coefficients"])
-            final = wire.line().split()
+            final = _stage("reading final AES output", wire.line).split()
     finally:
         worker.close()
     if len(final) != 2:

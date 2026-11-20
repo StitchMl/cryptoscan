@@ -123,11 +123,11 @@ def test_windows_conda_sage_activates_environment_before_worker(monkeypatch):
 
     def fake_run(command, **_):
         if command[1:3] == ["--exec", "wslpath"]:
-            return SimpleNamespace(returncode=0, stdout="/mnt/c/worker.py\\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="/mnt/c/worker.py\n", stderr="")
         if command[1:4] == ["--exec", "/bin/sh", "-c"]:
             return SimpleNamespace(
                 returncode=0,
-                stdout="/home/example/miniforge3/envs/sage/bin/sage\\n",
+                stdout="/home/example/miniforge3/envs/sage/bin/sage\n",
                 stderr="",
             )
         raise AssertionError(f"unexpected command: {command!r}")

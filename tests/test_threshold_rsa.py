@@ -136,10 +136,10 @@ def test_synthetic_tcp_reshare_protocol():
                     def read():
                         return wire.readline().strip().decode()
 
-                    send(f"n = {modulus}\\ne = {exponent}\\n")
+                    send(f"n = {modulus}\ne = {exponent}\n")
                     for count in range(1, 7):
                         if count > 1:
-                            send("Select:\\n1) Decrypt\\n2) Reshare\\n3) Enough\\n> ")
+                            send("Select:\n1) Decrypt\n2) Reshare\n3) Enough\n> ")
                             if read() != "2":
                                 raise RuntimeError("synthetic server expected reshare action")
                         send("With how many friends? ")
@@ -148,13 +148,13 @@ def test_synthetic_tcp_reshare_protocol():
                         value = sum(coefficient * count**index for index, coefficient
                                     in enumerate(polynomial[:count+1]))
                         share = ((-1)**(count-1) * (count+1) * value) % phi
-                        send(f"Here is your part: {share}\\n")
-                    send("Select:\\n1) Decrypt\\n2) Reshare\\n3) Enough\\n> ")
+                        send(f"Here is your part: {share}\n")
+                    send("Select:\n1) Decrypt\n2) Reshare\n3) Enough\n> ")
                     if read() != "3":
                         raise RuntimeError("synthetic server expected termination action")
                     known = b"TOY{synthetic}"
                     encrypted = pow(int.from_bytes(known, "big"), exponent, modulus)
-                    send(f"Bye bye, take this with you!\\n{encrypted}\\n")
+                    send(f"Bye bye, take this with you!\n{encrypted}\n")
         except BaseException as exc:
             problems.append(exc)
 

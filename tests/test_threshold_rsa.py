@@ -102,3 +102,68 @@ def test_full_sized_kernel_is_practical_and_exact():
     weights = interpolation_kernel(100)
     assert len(weights) == 101
     assert max(abs(value).bit_length() for value in weights) < 20000
+
+
+def test_synthetic_tcp_reshare_protocol():
+    """End-to-end testing on a locally generated toy modulus, never a CTF key."""
+    import socket
+    import threading
+    from cryptoscan.threshold_rsa import recover_flag
+
+    with socket.socket() as finder:
+        finder.bind(("127.0.0.1", 0))
+        port = finder.getsockname()[1]
+
+    problems = []
+
+    def simulated_server():
+        try:
+            rng = random.Random(123)
+            p = 340282366920938463463374607431768211507
+            q = 340282366920938463463374607431768211297
+            modulus, phi, exponent = p*q, (p-1)*(q-1), 65537
+            secret = pow(exponent, -1, phi)
+            polynomial = [secret] + [rng.getrandbits(256) for _ in range(4)]
+            with socket.socket() as listener:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(("127.0.0.1", port))
+                listener.listen(1)
+                connection, _ = listener.accept()
+                with connection, connection.makefile("rwb", buffering=0) as wire:
+                    def send(text):
+                        wire.write(text.encode())
+
+                    def read():
+                        return wire.readline().strip().decode()
+
+                    send(f"n = {modulus}\\ne = {exponent}\\n")
+                    for count in range(1, 7):
+                        if count > 1:
+                            send("Select:\\n1) Decrypt\\n2) Reshare\\n3) Enough\\n> ")
+                            assert read() == "2"
+                        send("With how many friends? ")
+                        assert int(read()) == count
+                        value = sum(coefficient * count**index for index, coefficient
+                                    in enumerate(polynomial[:count+1]))
+                        share = ((-1)**(count-1) * (count+1) * value) % phi
+                        send(f"Here is your part: {share}\\n")
+                    send("Select:\\n1) Decrypt\\n2) Reshare\\n3) Enough\\n> ")
+                    assert read() == "3"
+                    known = b"TOY{synthetic}"
+                    encrypted = pow(int.from_bytes(known, "big"), exponent, modulus)
+                    send(f"Bye bye, take this with you!\\n{encrypted}\\n")
+        except BaseException as exc:
+            problems.append(exc)
+
+    thread = threading.Thread(target=simulated_server, daemon=True)
+    thread.start()
+    # Connect with retry so test startup is independent of scheduling.
+    import time
+    time.sleep(0.05)
+    found = recover_flag(
+        [Document("synthetic_server.sage", _invented_source(5, 6), None)],
+        "127.0.0.1", port, timeout=5,
+    )
+    thread.join(timeout=3)
+    assert not problems
+    assert found == "TOY{synthetic}"

@@ -31,8 +31,7 @@ def main() -> int:
         if method not in {"full", "fold"}:
             raise ValueError("invalid NTRU solver strategy")
         common = {
-            "bkz": data["bkz"],
-            "backend": data["backend"],
+            "bkz": data["bkz"], "backend": data["backend"],
             "progress": lambda message: print(message, file=sys.stderr, flush=True),
         }
         if method == "fold":

@@ -72,9 +72,8 @@ def _matrix_rows(h: int, tags: list[int], choices: tuple[int, ...],
     return rows, columns, total_aad + total_ciphertext
 
 
-def _pad_candidates_from_rows(rows: list[int], columns: int,
-                              pad_offset: int, max_kernel_dimension: int = 10) -> set[int]:
-    mask = (1 << columns)-1
+def _reduce_to_pivots(rows: list[int], mask: int, columns: int) -> dict[int, int] | None:
+    """Gaussian-eliminate rows into pivot form, or None if inconsistent."""
     pivots: dict[int, int] = {}
     for entry in rows:
         row = entry
@@ -87,30 +86,41 @@ def _pad_candidates_from_rows(rows: list[int], columns: int,
                 break
         else:
             if row >> columns:
-                return set()
+                return None
+    return pivots
+
+
+def _backsub(pivots: dict[int, int], positions: list[int], columns: int,
+            initial: int, affine: bool) -> int:
+    vector = initial
+    for pivot in positions:
+        equation = pivots[pivot]
+        parity = ((equation & vector).bit_count() & 1)
+        if affine:
+            parity ^= (equation >> columns) & 1
+        if parity:
+            vector |= 1 << pivot
+    return vector
+
+
+def _pad_candidates_from_rows(rows: list[int], columns: int,
+                              pad_offset: int, max_kernel_dimension: int = 10) -> set[int]:
+    mask = (1 << columns)-1
+    pivots = _reduce_to_pivots(rows, mask, columns)
+    if pivots is None:
+        return set()
     free = [i for i in range(columns) if i not in pivots]
     if len(free) > max_kernel_dimension:
         return set()
     positions = sorted(pivots)
 
-    def backsub(initial: int, affine: bool) -> int:
-        vector = initial
-        for pivot in positions:
-            equation = pivots[pivot]
-            parity = ((equation & vector).bit_count() & 1)
-            if affine:
-                parity ^= (equation >> columns) & 1
-            if parity:
-                vector |= 1 << pivot
-        return vector
-
     fieldmask = (1 << 128)-1
-    base = (backsub(0, True) >> pad_offset) & fieldmask
-    deltas = [(backsub(1 << index, False) >> pad_offset) & fieldmask
+    base = (_backsub(pivots, positions, columns, 0, True) >> pad_offset) & fieldmask
+    deltas = [(_backsub(pivots, positions, columns, 1 << index, False) >> pad_offset) & fieldmask
               for index in free]
     candidates = {base}
     for delta in deltas:
-        candidates |= {value ^ delta for value in candidates.copy()}
+        candidates |= {value ^ delta for value in candidates}
     # Packed variables number the MSB of each GHASH block first.
     return {int(f"{x:0128b}"[::-1], 2) for x in candidates}
 

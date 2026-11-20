@@ -108,6 +108,40 @@ def test_windows_powershell_delegates_worker_to_wsl(monkeypatch):
     assert len(commands) == 2
 
 
+
+def test_windows_conda_sage_activates_environment_before_worker(monkeypatch):
+    """Sage in Conda requires activation, not merely an absolute sage path."""
+    from types import SimpleNamespace
+    import cryptoscan.unramified_ring_oracle as module
+
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.delenv("CRYPTOSCAN_SAGE", raising=False)
+    monkeypatch.setattr(
+        module.shutil, "which",
+        lambda name: "C:/Windows/System32/wsl.exe" if name == "wsl.exe" else None,
+    )
+
+    def fake_run(command, **_):
+        if command[1:3] == ["--exec", "wslpath"]:
+            return SimpleNamespace(returncode=0, stdout="/mnt/c/worker.py\\n", stderr="")
+        if command[1:4] == ["--exec", "/bin/sh", "-c"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="/home/example/miniforge3/envs/sage/bin/sage\\n",
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command: {command!r}")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    command = module._sage_worker_command()
+    assert command[:4] == ["C:/Windows/System32/wsl.exe", "--exec", "/bin/bash", "-c"]
+    assert "conda activate" in command[4]
+    assert command[6] == "/home/example/miniforge3/etc/profile.d/conda.sh"
+    assert command[7] == "/home/example/miniforge3/envs/sage"
+    assert command[8] == "/home/example/miniforge3/envs/sage/bin/sage"
+    assert command[9] == "/mnt/c/worker.py"
+
+
 def test_windows_missing_sage_reports_actionable_error(monkeypatch):
     import pytest
     import cryptoscan.unramified_ring_oracle as module

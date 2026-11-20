@@ -129,6 +129,53 @@ def digest_workflow(read: Callable[[str], str] = input, write: Callable[[str], A
         write("Digest matches: " + ("YES" if hmac.compare_digest(digest, supplied) else "NO"))
 
 
+def _ask_field_edits(parts, read) -> None:
+    edits = _ask("Fields to change (comma-separated indices): ", read)
+    for entry in [item.strip() for item in edits.split(",") if item.strip()]:
+        index = int(entry) - 1
+        if not 0 <= index < len(parts):
+            raise ValueError("field index out of range")
+        parts[index] = _ask(f"Replacement for field {index + 1}: ", read)
+
+
+def _ask_signed_indices(parts, digest_index, read) -> list[int]:
+    message_indices_raw = _ask("Signed field indices (comma-separated, in order): ", read)
+    indices = [int(part.strip()) - 1 for part in message_indices_raw.split(",")]
+    if not indices or any(not 0 <= index < len(parts) or index == digest_index for index in indices):
+        raise ValueError("invalid signed field indices")
+    return indices
+
+
+def _ask_record_secret(mode, read, write) -> bytes | None:
+    """Return the secret, or None when the MAC key is unavailable."""
+    if mode == "plain":
+        return b""
+    value = _ask("Known secret/key (blank if unavailable): ", read)
+    if not value:
+        write("Cannot calculate: MAC key is unknown. Obtain source details or an oracle.")
+        return None
+    encoding = (_ask("Secret encoding [utf8/hex] (utf8): ", read) or "utf8").lower()
+    if encoding not in {"utf8", "hex"}:
+        raise ValueError("invalid secret encoding")
+    return _bytes(value, encoding)
+
+
+def _rewrite_record_digest(parts, separator, digest_index, read, write) -> None:
+    indices = _ask_signed_indices(parts, digest_index, read)
+    algorithm = _ask("Hash algorithm [sha256]: ", read) or "sha256"
+    mode = (_ask("Mode [plain/prefix/suffix/hmac] (plain): ", read) or "plain").lower()
+    if mode not in {"plain", "prefix", "suffix", "hmac"}:
+        raise ValueError("invalid digest mode")
+    secret = _ask_record_secret(mode, read, write)
+    if secret is None:
+        return
+    separator_signed = _ask("Separator between signed fields [same]: ", read) or separator
+    signed = separator_signed.join(parts[index] for index in indices).encode()
+    parts[digest_index] = _digest(signed, algorithm, mode, secret)
+    write("Computed record: " + separator.join(parts))
+    write("Only valid if the declared digest formula, key and field encoding match the target.")
+
+
 def rewrite_record_workflow(read: Callable[[str], str] = input, write: Callable[[str], Any] = print) -> None:
     """Rewrite delimited fields with an explicitly declared checksum/MAC formula."""
     original = _ask("Original delimited record: ", read)
@@ -138,12 +185,7 @@ def rewrite_record_workflow(read: Callable[[str], str] = input, write: Callable[
     for index, value in enumerate(parts, 1):
         write(f"  {index}: {value}")
     try:
-        edits = _ask("Fields to change (comma-separated indices): ", read)
-        for entry in [item.strip() for item in edits.split(",") if item.strip()]:
-            index = int(entry) - 1
-            if not 0 <= index < len(parts):
-                raise ValueError("field index out of range")
-            parts[index] = _ask(f"Replacement for field {index + 1}: ", read)
+        _ask_field_edits(parts, read)
         digest_index_raw = _ask("Digest/MAC field index (leave blank if none): ", read)
         if not digest_index_raw:
             write("Candidate record (without recomputed integrity): " + separator.join(parts))
@@ -151,29 +193,7 @@ def rewrite_record_workflow(read: Callable[[str], str] = input, write: Callable[
         digest_index = int(digest_index_raw) - 1
         if not 0 <= digest_index < len(parts):
             raise ValueError("digest field index out of range")
-        message_indices_raw = _ask("Signed field indices (comma-separated, in order): ", read)
-        indices = [int(part.strip()) - 1 for part in message_indices_raw.split(",")]
-        if not indices or any(not 0 <= index < len(parts) or index == digest_index for index in indices):
-            raise ValueError("invalid signed field indices")
-        algorithm = _ask("Hash algorithm [sha256]: ", read) or "sha256"
-        mode = (_ask("Mode [plain/prefix/suffix/hmac] (plain): ", read) or "plain").lower()
-        if mode not in {"plain", "prefix", "suffix", "hmac"}:
-            raise ValueError("invalid digest mode")
-        secret = b""
-        if mode != "plain":
-            value = _ask("Known secret/key (blank if unavailable): ", read)
-            if not value:
-                write("Cannot calculate: MAC key is unknown. Obtain source details or an oracle.")
-                return
-            encoding = (_ask("Secret encoding [utf8/hex] (utf8): ", read) or "utf8").lower()
-            if encoding not in {"utf8", "hex"}:
-                raise ValueError("invalid secret encoding")
-            secret = _bytes(value, encoding)
-        separator_signed = _ask("Separator between signed fields [same]: ", read) or separator
-        signed = separator_signed.join(parts[index] for index in indices).encode()
-        parts[digest_index] = _digest(signed, algorithm, mode, secret)
-        write("Computed record: " + separator.join(parts))
-        write("Only valid if the declared digest formula, key and field encoding match the target.")
+        _rewrite_record_digest(parts, separator, digest_index, read, write)
     except (ValueError, IndexError) as exc:
         write("Cannot calculate: " + str(exc))
 
@@ -268,67 +288,83 @@ def _render_assistant_menu(findings, write, color) -> None:
     write("  [f] RSA   [b] CBC    [q] Quit  [?] Help")
 
 
+def _handle_ntru_finding(finding, documents, read, write) -> None:
+    write("Polynomial NTRU data detected. Public key and ciphertext are NOT byte-XOR inputs.")
+    if finding.rule == "NTRU-X1-HAMMING-LEAK":
+        write("Computed Hamming-weight residue mod q: " +
+              str(finding.evidence["message_weight_mod_q"]))
+        write("Possible bit weights: " +
+              str(finding.evidence["possible_message_weights"]))
+        if not finding.evidence["public_relation_verified"]:
+            write("Warning: public evaluation disagrees with sparse-key source assumptions.")
+    write("The x=1 projection alone is insufficient to decrypt the flag.")
+    if finding.rule == "NTRU-X1-HAMMING-LEAK":
+        ntru_lattice_workflow(finding, documents, read, write)
+    else:
+        write("Provide matching polynomial evidence for full NTRU key recovery.")
+
+
+def _handle_linear_hash_finding(finding, write) -> None:
+    if finding.recovery_status == "flag-recovered":
+        write("Source-derived modular inversion produced a unique verified flag:")
+        write(str(finding.evidence["recovered_flag"]))
+        write("Reconstruction and matrix-output roundtrip both verified.")
+    else:
+        write("Modular hash inversion is incomplete or ambiguous.")
+        write("Check the finding evidence for missing matrix/output or search bounds.")
+
+
+def _confirmed(prompt, read) -> bool:
+    return _ask(prompt, read).casefold() in {"y", "yes"}
+
+
+def _handle_recipe_or_selected(finding, recipes, read, write) -> bool:
+    recipe = linked_recipe(finding, recipes)
+    if recipe:
+        write("Source-verified token construction and unchecked authentication path found.")
+        if _confirmed("Use this source-derived token workflow? [y/N]: ", read):
+            source_verified_token_workflow(recipe, read, write)
+        return True
+    if finding.rule.startswith("RSA-") or finding.rule == "CBC-FIRST-BLOCK-BITFLIP":
+        selected_finding_workflow(finding, read, write)
+        return True
+    return False
+
+
+def _handle_specific_finding(finding, recipes, documents, read, write) -> bool:
+    """Run a rule-specific workflow; return False when the generic path applies."""
+    if finding.rule == "RSA-PKCS1-V15-POSITIVE-PADDING-LEAK":
+        positive_padding_workflow(finding, documents, read, write)
+    elif finding.rule == "LINEAR-HASH-SMALL-ALPHABET":
+        _handle_linear_hash_finding(finding, write)
+    elif finding.rule.startswith("NTRU-"):
+        _handle_ntru_finding(finding, documents, read, write)
+    elif finding.rule == "MLWE-REDUCIBLE-RING-QUOTIENT":
+        interactive_mlwe_workflow(finding, documents, read, write)
+    elif finding.rule == "GCM-COUNTER-OVERLAP":
+        if _confirmed("Run source-derived GCM workflow? [y/N]: ", read):
+            guided_overlap_workflow(finding, documents, read, write)
+    else:
+        return _handle_recipe_or_selected(finding, recipes, read, write)
+    return True
+
+
 def _handle_finding_selection(finding, recipes, documents, read, write) -> None:
     _show_finding(finding, write)
     for context in relevant_source(finding, documents):
         write(f"Analyzed source: {context.path}:{context.line} in {context.function}")
         write(f"  {context.excerpt}")
-    if finding.rule == "RSA-PKCS1-V15-POSITIVE-PADDING-LEAK":
-        positive_padding_workflow(finding, documents, read, write)
-        return
-    if finding.rule == "LINEAR-HASH-SMALL-ALPHABET":
-        if finding.recovery_status == "flag-recovered":
-            write("Source-derived modular inversion produced a unique verified flag:")
-            write(str(finding.evidence["recovered_flag"]))
-            write("Reconstruction and matrix-output roundtrip both verified.")
-        else:
-            write("Modular hash inversion is incomplete or ambiguous.")
-            write("Check the finding evidence for missing matrix/output or search bounds.")
-        return
-    if finding.rule.startswith("NTRU-"):
-        write("Polynomial NTRU data detected. Public key and ciphertext are NOT byte-XOR inputs.")
-        if finding.rule == "NTRU-X1-HAMMING-LEAK":
-            write("Computed Hamming-weight residue mod q: " +
-                  str(finding.evidence["message_weight_mod_q"]))
-            write("Possible bit weights: " +
-                  str(finding.evidence["possible_message_weights"]))
-            if not finding.evidence["public_relation_verified"]:
-                write("Warning: public evaluation disagrees with sparse-key source assumptions.")
-        write("The x=1 projection alone is insufficient to decrypt the flag.")
-        if finding.rule == "NTRU-X1-HAMMING-LEAK":
-            ntru_lattice_workflow(finding, documents, read, write)
-        else:
-            write("Provide matching polynomial evidence for full NTRU key recovery.")
-        return
-    if finding.rule == "MLWE-REDUCIBLE-RING-QUOTIENT":
-        interactive_mlwe_workflow(finding, documents, read, write)
-        return
-    if finding.rule == "GCM-COUNTER-OVERLAP":
-        answer = _ask("Run source-derived GCM workflow? [y/N]: ", read)
-        if answer.casefold() in {"y", "yes"}:
-            guided_overlap_workflow(finding, documents, read, write)
-        return
-    recipe = linked_recipe(finding, recipes)
-    if recipe:
-        write("Source-verified token construction and unchecked authentication path found.")
-        choice = _ask("Use this source-derived token workflow? [y/N]: ", read)
-        if choice.casefold() in {"y", "yes"}:
-            source_verified_token_workflow(recipe, read, write)
-        return
-    if finding.rule.startswith("RSA-") or finding.rule == "CBC-FIRST-BLOCK-BITFLIP":
-        selected_finding_workflow(finding, read, write)
+    if _handle_specific_finding(finding, recipes, documents, read, write):
         return
     if finding.recovery_status in {"payload-ready", "flag-recovered"}:
         existing_verified_result(finding, write)
     if finding.rule in {"CTR-NONCE-REUSE", "GCM-NONCE-REUSE", "NONCE-CONSTANT", "XOR-REPEATING-KEY"}:
         write("Source did not establish a compatible token format or verifier.")
-        choice = _ask("Run a generic XOR worksheet anyway (not source-verified)? [y/N]: ", read)
-        if choice.casefold() in {"y", "yes"}:
+        if _confirmed("Run a generic XOR worksheet anyway (not source-verified)? [y/N]: ", read):
             xor_workflow(read, write)
     elif finding.rule in {"MAC-PREFIX-HASH", "HASH-WEAK", "SHA1-LENGTH-EXTENSION"}:
         write("No source-verified digest serialization for this finding.")
-        choice = _ask("Run a generic digest worksheet anyway? [y/N]: ", read)
-        if choice.casefold() in {"y", "yes"}:
+        if _confirmed("Run a generic digest worksheet anyway? [y/N]: ", read):
             digest_workflow(read, write)
     else:
         write("No verified interactive calculator for this rule yet; inspect the solver and preconditions.")

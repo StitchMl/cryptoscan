@@ -109,6 +109,33 @@ def _solve_documents(args, documents) -> int:
     return 2
 
 
+def _validate_arguments(args) -> None:
+    if args.fermat_steps < 0:
+        _parser().error("--fermat-steps must be non-negative")
+    if args.assist and args.no_assist:
+        _parser().error("--assist and --no-assist cannot be combined")
+    if args.solve and (args.format == "json" or args.assist or args.no_assist):
+        _parser().error("--solve cannot be combined with --format json, --assist, or --no-assist")
+    if args.solve and bool(args.host) != bool(args.port):
+        _parser().error("--host and --port must be supplied together")
+    if args.assist and args.format == "json":
+        _parser().error("--assist cannot be combined with --format json")
+
+
+def _print_report(args, findings) -> None:
+    if args.format == "json":
+        print(json.dumps({"schema_version": 1, "findings": [item.to_dict() for item in findings]}, sort_keys=True, indent=2, ensure_ascii=False))
+    else:
+        color = not args.no_color and os.environ.get("NO_COLOR") is None and (args.color or sys.stdout.isatty())
+        print(_text(findings, color, verbose=args.verbose))
+
+
+def _should_assist(args, findings) -> bool:
+    if args.no_assist or args.format != "text":
+        return False
+    return bool(args.assist or (findings and sys.stdin.isatty() and sys.stdout.isatty()))
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments and arguments[0] == "doctor":
@@ -121,25 +148,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         arguments = arguments[1:] + ["--assist"]
     args = _parser().parse_args(arguments)
-    if args.fermat_steps < 0:
-        _parser().error("--fermat-steps must be non-negative")
-    if args.assist and args.no_assist:
-        _parser().error("--assist and --no-assist cannot be combined")
-    if args.solve and (args.format == "json" or args.assist or args.no_assist):
-        _parser().error("--solve cannot be combined with --format json, --assist, or --no-assist")
-    if args.solve and bool(args.host) != bool(args.port):
-        _parser().error("--host and --port must be supplied together")
-    if args.assist and args.format == "json":
-        _parser().error("--assist cannot be combined with --format json")
+    _validate_arguments(args)
     documents = collect_documents(args.targets)
     findings = scan(documents, args.fermat_steps)
-    if args.format == "json":
-        print(json.dumps({"schema_version": 1, "findings": [item.to_dict() for item in findings]}, sort_keys=True, indent=2, ensure_ascii=False))
-    else:
-        color = not args.no_color and os.environ.get("NO_COLOR") is None and (args.color or sys.stdout.isatty())
-        print(_text(findings, color, verbose=args.verbose))
+    _print_report(args, findings)
     if args.solve:
         return _solve_documents(args, documents)
-    if not args.no_assist and args.format == "text" and (args.assist or (findings and sys.stdin.isatty() and sys.stdout.isatty())):
+    if _should_assist(args, findings):
         assistant_session(findings, documents=documents)
     return 1 if args.fail_on_findings and findings else 0

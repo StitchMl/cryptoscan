@@ -30,29 +30,43 @@ def _literals(text):
                 pass
     return found
 
+def _source_messages(source) -> list | None:
+    try:
+        msgs = _literals(source.text).get("msgs")
+    except SyntaxError:
+        return None
+    if not isinstance(msgs, list) or not 8 <= len(msgs) <= 64 or not all(isinstance(m, bytes) for m in msgs):
+        return None
+    return msgs
+
+
+def _matching_output(output, msgs: list) -> Instance | None:
+    try:
+        data = _literals(output.text)
+    except SyntaxError:
+        return None
+    sigs, ct, nonce = data.get("sigs"), data.get("ct"), data.get("nonce")
+    valid = (isinstance(sigs, list) and len(sigs) == len(msgs)
+             and all(isinstance(sig, tuple) and len(sig) == 2
+                     and all(type(x) is int and 0 < x < Q for x in sig) for sig in sigs))
+    if valid and isinstance(ct, bytes) and ct and isinstance(nonce, bytes) and 1 <= len(nonce) <= 15:
+        return Instance(tuple(msgs), tuple(sigs), ct, nonce)
+    return None
+
+
 def extract_instance(documents: Sequence) -> Instance | None:
     for source in documents:
         if not detect_ec_lcg([source]):
             continue
-        try:
-            msgs = _literals(source.text).get("msgs")
-        except SyntaxError:
-            continue
-        if not isinstance(msgs, list) or not 8 <= len(msgs) <= 64 or not all(isinstance(m, bytes) for m in msgs):
+        msgs = _source_messages(source)
+        if msgs is None:
             continue
         for output in documents:
             if output.path == source.path or output.scope != source.scope:
                 continue
-            try:
-                data = _literals(output.text)
-            except SyntaxError:
-                continue
-            sigs, ct, nonce = data.get("sigs"), data.get("ct"), data.get("nonce")
-            valid = (isinstance(sigs, list) and len(sigs) == len(msgs)
-                     and all(isinstance(sig, tuple) and len(sig) == 2
-                             and all(type(x) is int and 0 < x < Q for x in sig) for sig in sigs))
-            if valid and isinstance(ct, bytes) and ct and isinstance(nonce, bytes) and 1 <= len(nonce) <= 15:
-                return Instance(tuple(msgs), tuple(sigs), ct, nonce)
+            instance = _matching_output(output, msgs)
+            if instance is not None:
+                return instance
     return None
 
 def _orthogonal(vectors, modulus):
@@ -68,8 +82,33 @@ def _orthogonal(vectors, modulus):
     return [[int(reduced[i, k+j]) for j in range(n)] for i in range(n+k)
             if all(int(reduced[i, j]) == 0 for j in range(k))]
 
-def _keys(instance):
+def _kernel_diff(part, n):
     from sympy import Matrix
+    matrix = Matrix([row + [0] for row in part] + [[0] + row for row in part])
+    if matrix.rank() != n-2:
+        return None
+    kernel = matrix.nullspace()
+    if len(kernel) != 1:
+        return None
+    scale = math.lcm(*(int(x.q) for x in kernel[0]))
+    diff = [int(x * scale) for x in kernel[0]]
+    gcd = math.gcd(*diff)
+    if not gcd:
+        return None
+    return [x // gcd for x in diff]
+
+
+def _candidate_keys(diff, v1, v2, n):
+    for sign in (-1, 1):
+        try:
+            d = ((sign*diff[0]-v1[0])*pow(v2[0], -1, Q)) % Q
+        except ValueError:
+            continue
+        if d and all((v1[i]+v2[i]*d-sign*diff[i]) % Q == 0 for i in range(n-1)):
+            yield d
+
+
+def _keys(instance):
     n = len(instance.signatures)
     hashes = [int.from_bytes(hashlib.sha256(m).digest(), "big") % Q for m in instance.messages]
     inv = [pow(s, -1, Q) for _, s in instance.signatures]
@@ -80,26 +119,10 @@ def _keys(instance):
     if len(orth) < 5:
         raise RuntimeError("LLL produced too few short orthogonal relations")
     for keep in range(max(3, len(orth)-3), len(orth)):
-        part = orth[:keep]
-        matrix = Matrix([row + [0] for row in part] + [[0] + row for row in part])
-        if matrix.rank() != n-2:
+        diff = _kernel_diff(orth[:keep], n)
+        if diff is None:
             continue
-        kernel = matrix.nullspace()
-        if len(kernel) != 1:
-            continue
-        scale = math.lcm(*(int(x.q) for x in kernel[0]))
-        diff = [int(x * scale) for x in kernel[0]]
-        gcd = math.gcd(*diff)
-        if not gcd:
-            continue
-        diff = [x // gcd for x in diff]
-        for sign in (-1, 1):
-            try:
-                d = ((sign*diff[0]-v1[0])*pow(v2[0], -1, Q)) % Q
-            except ValueError:
-                continue
-            if d and all((v1[i]+v2[i]*d-sign*diff[i]) % Q == 0 for i in range(n-1)):
-                yield d
+        yield from _candidate_keys(diff, v1, v2, n)
 
 def _add(a, b):
     if a is None: return b

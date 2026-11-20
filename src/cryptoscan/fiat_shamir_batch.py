@@ -61,38 +61,21 @@ def _unframed_decimal_hash(documents: Sequence[Document],
     return False
 
 
-def _batched_chain_before_challenges(tree: ast.Module,
-                                     hash_functions: set[str]) -> bool:
-    """Prove every commitment is collected before the terminal hash chain."""
-    append_lists: dict[str, int] = {}
-    first_hash_position: int | None = None
-    hash_matrix_lists: set[str] = set()
-    for index, statement in enumerate(tree.body):
-        if not isinstance(statement, (ast.For, ast.While)):
-            continue
-        for call in ast.walk(statement):
-            if not isinstance(call, ast.Call):
-                continue
-            if (isinstance(call.func, ast.Attribute)
-                    and call.func.attr == "append"
-                    and isinstance(call.func.value, ast.Name)):
-                append_lists.setdefault(call.func.value.id, index)
-            if (isinstance(call.func, ast.Name)
-                    and call.func.id in hash_functions and call.args
-                    and isinstance(call.args[0], ast.Subscript)
-                    and isinstance(call.args[0].value, ast.Name)):
-                first_hash_position = (index if first_hash_position is None
-                                       else min(first_hash_position, index))
-                hash_matrix_lists.add(call.args[0].value.id)
-    if first_hash_position is None:
-        return False
-    if not any(index < first_hash_position for name, index in append_lists.items()
-               if name in hash_matrix_lists):
-        return False
-    # Challenge bits must be determined after hashing the complete sequence,
-    # not independently from each intermediate state.
-    post_hash = tree.body[first_hash_position + 1:]
-    has_terminal_bits = any(
+def _is_append_call(call: ast.Call) -> bool:
+    return (isinstance(call.func, ast.Attribute)
+            and call.func.attr == "append"
+            and isinstance(call.func.value, ast.Name))
+
+
+def _is_matrix_hash_call(call: ast.Call, hash_functions: set[str]) -> bool:
+    return (isinstance(call.func, ast.Name)
+            and call.func.id in hash_functions and bool(call.args)
+            and isinstance(call.args[0], ast.Subscript)
+            and isinstance(call.args[0].value, ast.Name))
+
+
+def _has_terminal_bits(post_hash: list[ast.stmt]) -> bool:
+    return any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name) and node.func.id == "bin"
         and any(isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute)
@@ -100,7 +83,71 @@ def _batched_chain_before_challenges(tree: ast.Module,
                 for inner in ast.walk(node))
         for statement in post_hash for node in ast.walk(statement)
     )
-    return has_terminal_bits
+
+
+def _scan_loop_statement(
+    statement: ast.stmt, hash_functions: set[str],
+    append_lists: dict[str, int], hash_matrix_lists: set[str], index: int,
+) -> int | None:
+    """Return the earliest matrix-hash position found in this statement, if any."""
+    first_hash_position = None
+    for call in ast.walk(statement):
+        if not isinstance(call, ast.Call):
+            continue
+        if _is_append_call(call):
+            append_lists.setdefault(call.func.value.id, index)
+        if _is_matrix_hash_call(call, hash_functions):
+            first_hash_position = (index if first_hash_position is None
+                                   else min(first_hash_position, index))
+            hash_matrix_lists.add(call.args[0].value.id)
+    return first_hash_position
+
+
+def _locate_hash_chain(
+    tree: ast.Module, hash_functions: set[str],
+) -> tuple[int | None, dict[str, int], set[str]]:
+    append_lists: dict[str, int] = {}
+    first_hash_position: int | None = None
+    hash_matrix_lists: set[str] = set()
+    for index, statement in enumerate(tree.body):
+        if not isinstance(statement, (ast.For, ast.While)):
+            continue
+        found = _scan_loop_statement(
+            statement, hash_functions, append_lists, hash_matrix_lists, index,
+        )
+        if found is not None:
+            first_hash_position = (found if first_hash_position is None
+                                   else min(first_hash_position, found))
+    return first_hash_position, append_lists, hash_matrix_lists
+
+
+def _batched_chain_before_challenges(tree: ast.Module,
+                                     hash_functions: set[str]) -> bool:
+    """Prove every commitment is collected before the terminal hash chain."""
+    first_hash_position, append_lists, hash_matrix_lists = _locate_hash_chain(
+        tree, hash_functions,
+    )
+    if first_hash_position is None:
+        return False
+    if not any(index < first_hash_position for name, index in append_lists.items()
+               if name in hash_matrix_lists):
+        return False
+    # Challenge bits must be determined after hashing the complete sequence,
+    # not independently from each intermediate state.
+    return _has_terminal_bits(tree.body[first_hash_position + 1:])
+
+
+def _is_shape_only_check(function: ast.FunctionDef) -> bool:
+    body = ast.unparse(function)
+    return ("len(G)" in body and "len(r)" in body and
+            not any(fragment in body for fragment in
+                    ("isinstance(", "int(", "0 <=", "0<=", "value <", "x <")))
+
+
+def _is_modular_pedersen_open(function: ast.FunctionDef) -> bool:
+    body = ast.unparse(function)
+    return ("commitment" in body and "pow(" in body and
+            "% P" in body and "== 1" in body)
 
 
 def _verifier_accepts_noncanonical_commitments(documents: Sequence[Document]) -> bool:
@@ -116,86 +163,97 @@ def _verifier_accepts_noncanonical_commitments(documents: Sequence[Document]) ->
             if not isinstance(function, ast.FunctionDef):
                 continue
             if function.name == "check_graph":
-                body = ast.unparse(function)
-                has_shape_only_check |= (
-                    "len(G)" in body and "len(r)" in body and
-                    not any(fragment in body for fragment in
-                            ("isinstance(", "int(", "0 <=", "0<=", "value <", "x <"))
-                )
+                has_shape_only_check |= _is_shape_only_check(function)
             if function.name == "pedersen_open":
-                body = ast.unparse(function)
-                has_modular_pedersen_open |= (
-                    "commitment" in body and "pow(" in body and
-                    "% P" in body and "== 1" in body
-                )
+                has_modular_pedersen_open |= _is_modular_pedersen_open(function)
     return has_shape_only_check and has_modular_pedersen_open
+
+
+def _calls_function(statements: list[ast.stmt], name: str) -> bool:
+    return any(isinstance(call, ast.Call)
+               and isinstance(call.func, ast.Name)
+               and call.func.id == name
+               for statement in statements for call in ast.walk(statement))
+
+
+def _has_proof_structure(tree: ast.Module) -> bool:
+    # The same graph proof must offer both full-graph and cycle openings.
+    called_functions = {
+        node.func.id for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    if not {"check_graph", "testcycle", "open_graph", "permute_graph"} <= called_functions:
+        return False
+    # Detect the two verification branches by their semantics rather
+    # than names such as 'challenge' or 'challenge_bits'.
+    return any(
+        isinstance(node, ast.If)
+        and _calls_function(node.body, "testcycle")
+        and _calls_function(node.orelse, "open_graph")
+        for node in ast.walk(tree)
+    )
+
+
+def _valid_graph(graph: object) -> bool:
+    if not isinstance(graph, list) or not 2 <= len(graph) <= 12:
+        return False
+    if any(not isinstance(row, list) or len(row) != len(graph) for row in graph):
+        return False
+    return all(type(v) is int and v in (0, 1) for row in graph for v in row)
+
+
+def _proof_prompt(tree: ast.Module) -> bytes | None:
+    prompts = [
+        arg.value for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "input"
+        for arg in node.args
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, (bytes, str))
+    ]
+    return next((
+        item if isinstance(item, bytes) else item.encode()
+        for item in prompts
+        if "proof" in str(item).lower()
+    ), None)
+
+
+def _instance_from_document(
+    doc: Document, documents: Sequence[Document],
+) -> BatchFiatShamirInstance | None:
+    scoped = [item for item in documents if item.scope == doc.scope]
+    params = _pedersen_parameters(scoped)
+    hash_functions = _hash_function_names(scoped)
+    if (params is None or not hash_functions or
+            not _unframed_decimal_hash(scoped, hash_functions) or
+            not _verifier_accepts_noncanonical_commitments(scoped)):
+        return None
+    try:
+        tree = ast.parse(doc.text)
+    except SyntaxError:
+        return None
+    if not _batched_chain_before_challenges(tree, hash_functions):
+        return None
+    if not _has_proof_structure(tree):
+        return None
+    rounds = _literal_module_values(tree).get("numrounds")
+    graph = _graph_from_source(tree)
+    if type(rounds) is not int or not (1 <= rounds <= 256):
+        return None
+    if not _valid_graph(graph):
+        return None
+    prompt = _proof_prompt(tree)
+    if not prompt:
+        return None
+    return BatchFiatShamirInstance(doc.path, graph, params, rounds, prompt)
 
 
 def extract_instance(documents: Sequence[Document]) -> BatchFiatShamirInstance | None:
     for doc in documents:
         if not doc.path.casefold().endswith(".py"):
             continue
-        scoped = [item for item in documents if item.scope == doc.scope]
-        params = _pedersen_parameters(scoped)
-        hash_functions = _hash_function_names(scoped)
-        if (params is None or not hash_functions or
-                not _unframed_decimal_hash(scoped, hash_functions) or
-                not _verifier_accepts_noncanonical_commitments(scoped)):
-            continue
-        try:
-            tree = ast.parse(doc.text)
-        except SyntaxError:
-            continue
-        if not _batched_chain_before_challenges(tree, hash_functions):
-            continue
-        # The same graph proof must offer both full-graph and cycle openings.
-        called_functions = {
-            node.func.id for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        }
-        if not {"check_graph", "testcycle", "open_graph", "permute_graph"} <= called_functions:
-            continue
-        # Detect the two verification branches by their semantics rather
-        # than names such as 'challenge' or 'challenge_bits'.
-        if not any(
-            isinstance(node, ast.If)
-            and any(isinstance(call, ast.Call)
-                    and isinstance(call.func, ast.Name)
-                    and call.func.id == "testcycle"
-                    for statement in node.body for call in ast.walk(statement))
-            and any(isinstance(call, ast.Call)
-                    and isinstance(call.func, ast.Name)
-                    and call.func.id == "open_graph"
-                    for statement in node.orelse for call in ast.walk(statement))
-            for node in ast.walk(tree)
-        ):
-            continue
-        values = _literal_module_values(tree)
-        rounds = values.get("numrounds")
-        graph = _graph_from_source(tree)
-        if type(rounds) is not int or not (1 <= rounds <= 256):
-            continue
-        if (not isinstance(graph, list) or not 2 <= len(graph) <= 12
-                or any(not isinstance(row, list) or len(row) != len(graph)
-                       for row in graph)
-                or any(type(v) is not int or v not in (0, 1)
-                       for row in graph for v in row)):
-            continue
-        prompts = [
-            arg.value for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == "input"
-            for arg in node.args
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, (bytes, str))
-        ]
-        prompt = next((
-            item if isinstance(item, bytes) else item.encode()
-            for item in prompts
-            if "proof" in str(item).lower()
-        ), None)
-        if not prompt:
-            continue
-        return BatchFiatShamirInstance(doc.path, graph, params, rounds, prompt)
+        instance = _instance_from_document(doc, documents)
+        if instance is not None:
+            return instance
     return None
 
 

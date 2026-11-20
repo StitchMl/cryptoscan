@@ -275,7 +275,7 @@ def _challenge_bits(source: str) -> int:
     if not all(fragment in source for fragment in required):
         raise ValueError("unsupported interactive protocol")
     widths = [int(number) for number in
-              re.findall(r"2\\s*\\*\\*\\s*(\\d+)\\s*-\\s*1", source)]
+              re.findall(r"2\s*\*\*\s*(\d+)\s*-\s*1", source)]
     if not widths or len(set(widths)) != 1 or not 1 <= widths[0] <= 4096:
         raise ValueError("unsupported challenge domain")
     return widths[0]
@@ -294,7 +294,7 @@ def _correctness_phase(wire: _Dialogue, instance: OrSchnorr, bits: int) -> None:
     wire.read_to(b"a1:")
     wire.send(first.commitments[1])
     message = wire.read_to(b"e0:")
-    match = re.search(r"verifier sends s\\s*=\\s*(\\d+)", message)
+    match = re.search(r"verifier sends s\s*=\s*(\d+)", message)
     if match is None:
         raise ValueError("missing initial challenge")
     proof = respond(instance, first, randomizer, int(match.group(1)))
@@ -311,8 +311,8 @@ def _rewind_fields(segment: str):
         raise ValueError("missing rewound transcripts")
     pre, rest = segment.split(FIRST_TRANSCRIPT, 1)
     left, right = rest.split(SECOND_TRANSCRIPT, 1)
-    c1 = re.search(r"(?m)^\\s*s\\s*=\\s*(\\d+)\\s*$", left)
-    c2 = re.search(r"(?m)^\\s*s\\*\\s*=\\s*(\\d+)\\s*$", right)
+    c1 = re.search(r"(?m)^\s*s\s*=\s*(\d+)\s*$", left)
+    c2 = re.search(r"(?m)^\s*s\*\s*=\s*(\d+)\s*$", right)
     if c1 is None or c2 is None:
         raise ValueError("missing rewind challenges")
     return (_publics(pre), int(c1.group(1)), _transcript(left, False),
@@ -329,7 +329,7 @@ def _soundness_phase(wire: _Dialogue, instance: OrSchnorr) -> None:
 
 def _simulator_phase(wire: _Dialogue, instance: OrSchnorr, bits: int) -> None:
     segment = wire.read_to(b"a0:")
-    match = re.search(r"give me satisfying transcript for s\\s*=\\s*(\\d+)", segment)
+    match = re.search(r"give me satisfying transcript for s\s*=\s*(\d+)", segment)
     if match is None:
         raise ValueError("missing simulator challenge")
     publics = _publics(segment)
@@ -368,7 +368,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
     instance = extract_instance(documents)
     if instance is None:
         raise ValueError("unsupported source model")
-    source = "\\n".join(d.text for d in documents if d.path.lower().endswith(".py"))
+    source = "\n".join(d.text for d in documents if d.path.lower().endswith(".py"))
     bits = _challenge_bits(source)
     with socket.create_connection((host, port), timeout=timeout) as sock:
         sock.settimeout(timeout)
@@ -379,7 +379,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         response = _final_server_response(wire, sock)
     if "well done!" not in response:
         raise RuntimeError("verifier did not complete: " + response[-300:])
-    flag = re.search(r"(?:b['\\\"])?(\\w{2,32}\\{[^\\r\\n}]{1,180}\\})", response)
+    flag = re.search(r"(?:b['\\"])?(\w{2,32}\{[^\r\n}]{1,180}\})", response)
     if flag is None:
         raise RuntimeError("protocol completed without flag-shaped response")
     return flag.group(1)

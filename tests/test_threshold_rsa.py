@@ -140,15 +140,18 @@ def test_synthetic_tcp_reshare_protocol():
                     for count in range(1, 7):
                         if count > 1:
                             send("Select:\\n1) Decrypt\\n2) Reshare\\n3) Enough\\n> ")
-                            assert read() == "2"
+                            if read() != "2":
+                                raise RuntimeError("synthetic server expected reshare action")
                         send("With how many friends? ")
-                        assert int(read()) == count
+                        if int(read()) != count:
+                            raise RuntimeError("synthetic server received wrong threshold")
                         value = sum(coefficient * count**index for index, coefficient
                                     in enumerate(polynomial[:count+1]))
                         share = ((-1)**(count-1) * (count+1) * value) % phi
                         send(f"Here is your part: {share}\\n")
                     send("Select:\\n1) Decrypt\\n2) Reshare\\n3) Enough\\n> ")
-                    assert read() == "3"
+                    if read() != "3":
+                        raise RuntimeError("synthetic server expected termination action")
                     known = b"TOY{synthetic}"
                     encrypted = pow(int.from_bytes(known, "big"), exponent, modulus)
                     send(f"Bye bye, take this with you!\\n{encrypted}\\n")

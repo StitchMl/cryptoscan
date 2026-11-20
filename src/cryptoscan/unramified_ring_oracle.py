@@ -202,8 +202,10 @@ def _local_sage_command(executable: str, worker: Path) -> list[str]:
     return [executable, "-python", str(worker)]
 
 
-def _sage_worker_command() -> list[str]:
-    worker = Path(__file__).with_name("sage_ring_iso_worker.py").resolve()
+def _sage_worker_command(worker_name: str = "sage_ring_iso_worker.py") -> list[str]:
+    if worker_name not in ("sage_ring_iso_worker.py", "sage_pairing_confirmation_worker.py"):
+        raise ValueError("unsupported Sage worker")
+    worker = Path(__file__).with_name(worker_name).resolve()
     configured = os.getenv("CRYPTOSCAN_SAGE")
     local = configured or shutil.which("sage")
     if local and sys.platform != "win32":
@@ -230,8 +232,8 @@ def _sage_worker_command() -> list[str]:
     )
 
 class _SageWorker:
-    def __init__(self):
-        command = _sage_worker_command()
+    def __init__(self, worker_name: str = "sage_ring_iso_worker.py"):
+        command = _sage_worker_command(worker_name)
         try:
             self.process = subprocess.Popen(
                 command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,

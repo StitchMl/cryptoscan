@@ -36,28 +36,38 @@ def _call_attribute(node: ast.AST, method: str) -> bool:
                and call.func.attr == method for call in ast.walk(node))
 
 
+def _simple_assignment_name(statement: ast.stmt) -> str | None:
+    if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+        return None
+    target = statement.targets[0]
+    return target.id if isinstance(target, ast.Name) else None
+
+
+def _byte_permutation(value: ast.expr) -> bool:
+    if not isinstance(value, (ast.List, ast.Tuple)):
+        return False
+    elements = value.elts
+    return (len(elements) == 256 and all(isinstance(e, ast.Constant)
+            and type(e.value) is int for e in elements)
+            and {e.value for e in elements} == set(range(256)))
+
+
 def _constant_values(tree: ast.Module) -> tuple[dict[str, int], set[str]]:
     integers = {}
     tables = set()
     for statement in tree.body:
-        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+        name = _simple_assignment_name(statement)
+        if name is None:
             continue
-        target = statement.targets[0]
-        if not isinstance(target, ast.Name):
-            continue
-        if isinstance(statement.value, ast.Constant) and type(statement.value.value) is int:
-            integers[target.id] = statement.value.value
-        if isinstance(statement.value, (ast.List, ast.Tuple)):
-            elements = statement.value.elts
-            if (len(elements) == 256 and all(isinstance(e, ast.Constant)
-                    and type(e.value) is int for e in elements)
-                    and {e.value for e in elements} == set(range(256))):
-                tables.add(target.id)
+        value = statement.value
+        if isinstance(value, ast.Constant) and type(value.value) is int:
+            integers[name] = value.value
+        if _byte_permutation(value):
+            tables.add(name)
     return integers, tables
 
 
-def _algebraic_functions(tree: ast.Module, tables: set[str]) -> bool:
-    funcs = {fn.name: fn for fn in tree.body if isinstance(fn, ast.FunctionDef)}
+def _classify_transformations(funcs, tables: set[str]):
     xor = {name for name, fn in funcs.items()
            if any(isinstance(n, ast.BitXor) for n in ast.walk(fn))}
     rotates = {name for name, fn in funcs.items()
@@ -75,17 +85,24 @@ def _algebraic_functions(tree: ast.Module, tables: set[str]) -> bool:
                 and any(isinstance(n, ast.Constant) and n.value == 256
                         for n in ast.walk(fn))):
             substitutions.add(name)
-    if not mixes or not substitutions:
+    return mixes, substitutions
+
+
+def _has_spn_sandwich(fn, mixes, substitutions) -> bool:
+    if not any(name == 'pad' for _, name in _call_names(fn)):
         return False
-    for fn in funcs.values():
-        if not any(name == 'pad' for _, name in _call_names(fn)):
-            continue
-        calls = [name for _, name in _call_names(fn)
-                 if name in mixes or name in substitutions]
-        if (len(calls) == 3 and calls[0] == calls[2] in mixes
-                and calls[1] in substitutions and _independent_blocks(fn)):
-            return True
-    return False
+    calls = [name for _, name in _call_names(fn)
+             if name in mixes or name in substitutions]
+    return (len(calls) == 3 and calls[0] == calls[2] in mixes
+            and calls[1] in substitutions and _independent_blocks(fn))
+
+
+def _algebraic_functions(tree: ast.Module, tables: set[str]) -> bool:
+    funcs = {fn.name: fn for fn in tree.body if isinstance(fn, ast.FunctionDef)}
+    mixes, substitutions = _classify_transformations(funcs, tables)
+    return bool(mixes and substitutions and any(
+        _has_spn_sandwich(fn, mixes, substitutions) for fn in funcs.values()
+    ))
 
 
 def _independent_blocks(fn: ast.FunctionDef) -> bool:
@@ -145,36 +162,39 @@ def _interactive_challenge(tree: ast.Module, constants: dict[str, int]):
     return None
 
 
+def _padded_block_size(tree: ast.Module, constants: dict[str, int]) -> int | None:
+    lengths = {constants[arg.id] for node in ast.walk(tree)
+               if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+               and node.func.id == 'pad' and len(node.args) >= 2
+               for arg in (node.args[1],)
+               if isinstance(arg, ast.Name) and arg.id in constants}
+    return next(iter(lengths)) if len(lengths) == 1 else None
+
+
+def _source_candidate(doc: Document) -> LinearSPN | None:
+    if not doc.path.lower().endswith('.py'):
+        return None
+    try:
+        tree = ast.parse(doc.text)
+    except SyntaxError:
+        return None
+    constants, tables = _constant_values(tree)
+    if not tables or not _algebraic_functions(tree, tables):
+        return None
+    protocol = _interactive_challenge(tree, constants)
+    if protocol is None:
+        return None
+    rounds, message_bytes, first_prompt, guess_prompt = protocol
+    block_bytes = _padded_block_size(tree, constants)
+    if (block_bytes != 16 or not isinstance(message_bytes, int)
+            or not 1 <= rounds <= 4096 or not 1 <= message_bytes < block_bytes
+            or not first_prompt or not guess_prompt):
+        return None
+    return LinearSPN(block_bytes, rounds, message_bytes, first_prompt, guess_prompt)
+
+
 def extract_instance(documents: Sequence[Document]) -> LinearSPN | None:
-    found = []
-    for doc in documents:
-        if not doc.path.lower().endswith('.py'):
-            continue
-        try:
-            tree = ast.parse(doc.text)
-        except SyntaxError:
-            continue
-        constants, tables = _constant_values(tree)
-        if not tables or not _algebraic_functions(tree, tables):
-            continue
-        protocol = _interactive_challenge(tree, constants)
-        if protocol is None:
-            continue
-        rounds, message_bytes, first_prompt, guess_prompt = protocol
-        # This initial implementation supports 128-bit byte-substitution layers.
-        block_sizes = {constants[arg.id] for node in ast.walk(tree)
-                       if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                       and node.func.id == 'pad' and len(node.args) >= 2
-                       for arg in (node.args[1],)
-                       if isinstance(arg, ast.Name) and arg.id in constants}
-        block_bytes = next(iter(block_sizes)) if len(block_sizes) == 1 else None
-        if (block_bytes != 16 or not isinstance(message_bytes, int)
-                or not 1 <= rounds <= 4096
-                or not 1 <= message_bytes < block_bytes
-                or not first_prompt or not guess_prompt):
-            continue
-        found.append(LinearSPN(block_bytes, rounds, message_bytes,
-                               first_prompt, guess_prompt))
+    found = [model for doc in documents if (model := _source_candidate(doc)) is not None]
     return found[0] if len(found) == 1 else None
 
 
@@ -219,43 +239,56 @@ def _project(masks: Sequence[int], vector: int) -> int:
                for i, mask in enumerate(masks))
 
 
-def _recover_components(oracle: Sequence[int], *, slots: int = 16,
-                        bits_per_slot: int = 8, dimension: int = 16):
+def _derivative_groups(oracle: Sequence[int], slots: int, bits_per_slot: int):
     rng = random.Random(0x41C713)
-    n = len(oracle)
+    count = len(oracle)
     expected = slots * bits_per_slot - bits_per_slot
-    sample = rng.sample(range(n), min(n, slots * bits_per_slot + 64))
-    count = min(n - 1, max(1500, slots * 900))
-    candidates = rng.sample(range(1, n), count)
+    samples = rng.sample(range(count), min(count, slots * bits_per_slot + 64))
+    candidates = rng.sample(range(1, count), min(count - 1, max(1500, slots * 900)))
     groups: dict[tuple[int, ...], list[int]] = {}
     for direction in candidates:
-        span = _basis(oracle[x] ^ oracle[x ^ direction] for x in sample)
+        span = _basis(oracle[x] ^ oracle[x ^ direction] for x in samples)
         if len(span) != expected:
             continue
         dual = _orthogonal(span, slots * bits_per_slot)
         if len(dual) == bits_per_slot:
             groups.setdefault(_canonical(dual), []).append(direction)
+    return groups
+
+
+def _component_table(oracle, output_forms, input_forms, bits_per_slot: int):
+    inverse = [None] * (1 << bits_per_slot)
+    for index, ciphertext in enumerate(oracle):
+        image = _project(output_forms, ciphertext ^ oracle[0])
+        preimage = _project(input_forms, index)
+        if inverse[image] is None:
+            inverse[image] = preimage
+        elif inverse[image] != preimage:
+            raise ValueError('nonseparable nonlinear substitution')
+    if set(inverse) != set(range(1 << bits_per_slot)):
+        raise ValueError('nonbijective local substitution')
+    return tuple(inverse)
+
+
+def _component(oracle, output_forms, directions, dimension, bits_per_slot):
+    kernel = _basis(directions)
+    if len(kernel) != dimension - bits_per_slot:
+        raise ValueError('insufficient input-kernel rank')
+    input_forms = _orthogonal(kernel, dimension)
+    if len(input_forms) != bits_per_slot:
+        raise ValueError('invalid input quotient dimension')
+    return output_forms, _component_table(oracle, output_forms, input_forms, bits_per_slot)
+
+
+def _recover_components(oracle: Sequence[int], *, slots: int = 16,
+                        bits_per_slot: int = 8, dimension: int = 16):
+    groups = _derivative_groups(oracle, slots, bits_per_slot)
     if len(groups) != slots:
         raise ValueError(f'derivative decomposition found {len(groups)} of {slots} byte spaces')
-    components = []
-    for output_forms, directions in groups.items():
-        kernel = _basis(directions)
-        if len(kernel) != dimension - bits_per_slot:
-            raise ValueError('insufficient input-kernel rank')
-        input_forms = _orthogonal(kernel, dimension)
-        if len(input_forms) != bits_per_slot:
-            raise ValueError('invalid input quotient dimension')
-        lookup = [None] * (1 << bits_per_slot)
-        for index, ciphertext in enumerate(oracle):
-            image = _project(output_forms, ciphertext ^ oracle[0])
-            preimage = _project(input_forms, index)
-            if lookup[image] is None:
-                lookup[image] = preimage
-            elif lookup[image] != preimage:
-                raise ValueError('nonseparable nonlinear substitution')
-        if set(lookup) != set(range(1 << bits_per_slot)):
-            raise ValueError('nonbijective local substitution')
-        components.append((output_forms, tuple(lookup)))
+    components = [
+        _component(oracle, forms, directions, dimension, bits_per_slot)
+        for forms, directions in groups.items()
+    ]
     if len(_basis(mask for forms, _ in components for mask in forms)) != slots * bits_per_slot:
         raise ValueError('dependent recovered output projections')
     return components
@@ -268,6 +301,36 @@ def _local_coordinates(ciphertext: int, origin: int, components) -> int:
     return result
 
 
+def _invert_linear_columns(columns: Sequence[int]):
+    if len(_basis(columns)) != len(columns):
+        raise ValueError('recovered linear input transform is singular')
+    pivots = {}
+    origins = {}
+    for index, column in enumerate(columns):
+        vector = column
+        original = 1 << index
+        while vector:
+            pivot = vector.bit_length() - 1
+            if pivot not in pivots:
+                pivots[pivot] = vector
+                origins[pivot] = original
+                break
+            vector ^= pivots[pivot]
+            original ^= origins[pivot]
+
+    def invert(coordinate: int) -> int:
+        plaintext = 0
+        while coordinate:
+            pivot = coordinate.bit_length() - 1
+            if pivot not in pivots:
+                raise ValueError('ciphertext outside reconstructed permutation')
+            coordinate ^= pivots[pivot]
+            plaintext ^= origins[pivot]
+        return plaintext
+
+    return invert
+
+
 def recover_permutation(oracle: Sequence[int], basis_outputs: Sequence[int],
                         verification: Sequence[tuple[int, int]]):
     """Build a validated cipher-to-plaintext decoder from a 2^16 affine oracle."""
@@ -276,32 +339,11 @@ def recover_permutation(oracle: Sequence[int], basis_outputs: Sequence[int],
     components = _recover_components(oracle)
     columns = [_local_coordinates(cipher, oracle[0], components)
                for cipher in basis_outputs]
-    if len(_basis(columns)) != 128:
-        raise ValueError('recovered linear input transform is singular')
-    linear = {}
-    origins = {}
-    for index, column in enumerate(columns):
-        vector = column
-        original = 1 << index
-        while vector:
-            pivot = vector.bit_length() - 1
-            if pivot not in linear:
-                linear[pivot] = vector
-                origins[pivot] = original
-                break
-            vector ^= linear[pivot]
-            original ^= origins[pivot]
+    invert = _invert_linear_columns(columns)
 
     def decrypt(ciphertext: int) -> int:
-        coordinate = _local_coordinates(ciphertext, oracle[0], components)
-        plaintext = 0
-        while coordinate:
-            pivot = coordinate.bit_length() - 1
-            if pivot not in linear:
-                raise ValueError('ciphertext outside reconstructed permutation')
-            coordinate ^= linear[pivot]
-            plaintext ^= origins[pivot]
-        return plaintext
+        coordinates = _local_coordinates(ciphertext, oracle[0], components)
+        return invert(coordinates)
 
     if not verification or any(decrypt(cipher) != plain for plain, cipher in verification):
         raise ValueError('independent known-plaintext verification failed')

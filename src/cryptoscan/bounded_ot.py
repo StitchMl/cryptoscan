@@ -9,7 +9,6 @@ from __future__ import annotations
 import ast
 import json
 import re
-import secrets
 import socket
 from dataclasses import dataclass
 from typing import Sequence
@@ -48,29 +47,44 @@ def _names(node: ast.AST) -> set[str]:
     return {part.id for part in ast.walk(node) if isinstance(part, ast.Name)}
 
 
+def _choice_from_difference(node: ast.AST) -> str | None:
+    if (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub)
+            and isinstance(node.left, ast.Constant) and node.left.value == 1
+            and isinstance(node.right, ast.Name)):
+        return node.right.id
+    return None
+
+
+def _multiplication_factors(node: ast.AST) -> tuple[ast.expr, ast.expr] | None:
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+        return node.left, node.right
+    return None
+
+
+def _match_selection(left: ast.expr, right: ast.expr) -> tuple[str, str, str] | None:
+    first = _multiplication_factors(left)
+    second = _multiplication_factors(right)
+    if first is None or second is None:
+        return None
+    for x, difference in (first, first[::-1]):
+        if not isinstance(x, ast.Name):
+            continue
+        choice = _choice_from_difference(difference)
+        if choice is None:
+            continue
+        for y, candidate in (second, second[::-1]):
+            if (isinstance(y, ast.Name) and isinstance(candidate, ast.Name)
+                    and candidate.id == choice and x.id != y.id):
+                return x.id, y.id, choice
+    return None
+
+
 def _selection(node: ast.AST) -> tuple[str, str, str] | None:
     """Recognize x*(1-choice)+y*choice regardless of variable names."""
     if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Add):
         return None
-    for left, right in ((node.left, node.right), (node.right, node.left)):
-        if not (isinstance(left, ast.BinOp) and isinstance(left.op, ast.Mult)
-                and isinstance(right, ast.BinOp) and isinstance(right.op, ast.Mult)):
-            continue
-        for x, one_minus in ((left.left, left.right), (left.right, left.left)):
-            if not isinstance(x, ast.Name):
-                continue
-            if not (isinstance(one_minus, ast.BinOp)
-                    and isinstance(one_minus.op, ast.Sub)
-                    and isinstance(one_minus.left, ast.Constant)
-                    and one_minus.left.value == 1
-                    and isinstance(one_minus.right, ast.Name)):
-                continue
-            choice = one_minus.right.id
-            for y, c in ((right.left, right.right), (right.right, right.left)):
-                if (isinstance(y, ast.Name) and isinstance(c, ast.Name)
-                        and c.id == choice and x.id != y.id):
-                    return x.id, y.id, choice
-    return None
+    return (_match_selection(node.left, node.right)
+            or _match_selection(node.right, node.left))
 
 
 def _bounded_assignments(fn: ast.FunctionDef) -> dict[str, tuple[int, int]]:
@@ -92,21 +106,28 @@ def _bounded_assignments(fn: ast.FunctionDef) -> dict[str, tuple[int, int]]:
     return result
 
 
+def _literal_range(node: ast.AST) -> int | None:
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "range" and len(node.args) == 1
+            and isinstance(node.args[0], ast.Constant)
+            and type(node.args[0].value) is int):
+        return None
+    return node.args[0].value
+
+
+def _calls_function(statements: list[ast.stmt], name: str) -> bool:
+    return any(isinstance(part, ast.Call) and isinstance(part.func, ast.Name)
+               and part.func.id == name
+               for stmt in statements for part in ast.walk(stmt))
+
+
 def _round_count(tree: ast.Module, fn_name: str) -> int | None:
-    for func in tree.body:
-        if not isinstance(func, ast.FunctionDef):
-            continue
-        for node in ast.walk(func):
-            if not isinstance(node, ast.For):
-                continue
-            if not (isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name)
-                    and node.iter.func.id == "range" and len(node.iter.args) == 1
-                    and isinstance(node.iter.args[0], ast.Constant)
-                    and type(node.iter.args[0].value) is int):
-                continue
-            if any(isinstance(part, ast.Call) and isinstance(part.func, ast.Name)
-                   and part.func.id == fn_name for stmt in node.body for part in ast.walk(stmt)):
-                return node.iter.args[0].value
+    loops = (node for fn in tree.body if isinstance(fn, ast.FunctionDef)
+             for node in ast.walk(fn) if isinstance(node, ast.For))
+    for loop in loops:
+        count = _literal_range(loop.iter)
+        if count is not None and _calls_function(loop.body, fn_name):
+            return count
     return None
 
 
@@ -133,59 +154,73 @@ def _prompts(tree: ast.Module) -> tuple[str, str, str] | None:
     return result if all(value and len(value) <= 128 for value in result) else None
 
 
+def _source_model(doc: Document) -> tuple[ast.Module, dict[str, int]] | None:
+    if not doc.path.lower().endswith(".py"):
+        return None
+    try:
+        tree = ast.parse(doc.text)
+    except SyntaxError:
+        return None
+    symbols = _constants(tree)
+    if not {"p", "q", "Gx", "Gy"} <= symbols.keys():
+        return None
+    classes = (node for node in tree.body if isinstance(node, ast.ClassDef))
+    required = {"from_pt", "__add__", "__rmul__", "__sub__"}
+    if not any(required <= {method.name for method in cls.body
+                            if isinstance(method, ast.FunctionDef)}
+               for cls in classes):
+        return None
+    if not {"EccPoint", "json", "random"} <= _names(tree):
+        return None
+    return tree, symbols
+
+
+def _unvalidated_selections(fn: ast.FunctionDef):
+    bounds = _bounded_assignments(fn)
+    for statement in ast.walk(fn):
+        if not isinstance(statement, ast.Assign):
+            continue
+        selection = _selection(statement.value)
+        if selection is None:
+            continue
+        first, second, choice = selection
+        if first not in bounds or second not in bounds:
+            continue
+        # A membership check may constrain the choice to a bit.
+        if any(isinstance(node, (ast.If, ast.Assert, ast.Raise))
+               and choice in _names(node) for node in ast.walk(fn)):
+            continue
+        yield bounds[first], bounds[second]
+
+
+def _build_instance(doc: Document, tree: ast.Module,
+                    symbols: dict[str, int], fn: ast.FunctionDef,
+                    bounds: tuple[tuple[int, int], tuple[int, int]]) -> BoundedOT | None:
+    rounds, prompts = _round_count(tree, fn.name), _prompts(tree)
+    if rounds is None or prompts is None or not 1 <= rounds <= 4096:
+        return None
+    (lo0, hi0), (lo1, hi1) = bounds
+    if (hi0 - lo0 + 1) * (hi1 - lo1 + 1) > 4096:
+        return None
+    p, q, gx, gy = (symbols[name] for name in ("p", "q", "Gx", "Gy"))
+    if not (p > 3 and q > 3 and 0 <= gx < p and 0 <= gy < p
+            and p.bit_length() <= 1024 and q.bit_length() <= 1024):
+        return None
+    return BoundedOT(doc.text, gx, gy, p, q, lo0, hi0, lo1, hi1, rounds, prompts)
+
+
 def extract_instance(documents: Sequence[Document]) -> BoundedOT | None:
     matches = []
     for doc in documents:
-        if not doc.path.lower().endswith(".py"):
+        model = _source_model(doc)
+        if model is None:
             continue
-        try:
-            tree = ast.parse(doc.text)
-        except SyntaxError:
-            continue
-        symbols = _constants(tree)
-        if not all(name in symbols for name in ("p", "q", "Gx", "Gy")):
-            continue
-        # Require EC-ElGamal source, not just an unrelated arithmetic expression.
-        classes = [n for n in tree.body if isinstance(n, ast.ClassDef)]
-        if not any({"from_pt", "__add__", "__rmul__", "__sub__"} <=
-                   {m.name for m in cls.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
-                   for cls in classes):
-            continue
-        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-        if not {"EccPoint", "json", "random"} <= names:
-            continue
-        for fn in (x for x in tree.body if isinstance(x, ast.FunctionDef)):
-            choices = [(stmt.value, _selection(stmt.value))
-                       for stmt in ast.walk(fn) if isinstance(stmt, ast.Assign)]
-            bounded = _bounded_assignments(fn)
-            for _, selection in choices:
-                if selection is None:
-                    continue
-                a, b, choice = selection
-                if a not in bounded or b not in bounded:
-                    continue
-                if any(n not in names for n in (a, b, choice)):
-                    continue
-                # A membership check can make a malicious non-bit selection
-                # invalid. Decline source models where the input is checked.
-                if any(isinstance(node, (ast.If, ast.Assert, ast.Raise))
-                       and choice in _names(node)
-                       for node in ast.walk(fn)):
-                    continue
-                rounds = _round_count(tree, fn.name)
-                prompts = _prompts(tree)
-                if rounds is None or prompts is None or not 1 <= rounds <= 4096:
-                    continue
-                lo0, hi0 = bounded[a]
-                lo1, hi1 = bounded[b]
-                if (hi0 - lo0 + 1) * (hi1 - lo1 + 1) > 4096:
-                    continue
-                p, q, gx, gy = (symbols[n] for n in ("p", "q", "Gx", "Gy"))
-                if not (p > 3 and q > 3 and 0 <= gx < p and 0 <= gy < p
-                        and p.bit_length() <= 1024 and q.bit_length() <= 1024):
-                    continue
-                matches.append(BoundedOT(doc.text, gx, gy, p, q,
-                                         lo0, hi0, lo1, hi1, rounds, prompts))
+        tree, symbols = model
+        for fn in (node for node in tree.body if isinstance(node, ast.FunctionDef)):
+            for bounds in _unvalidated_selections(fn):
+                instance = _build_instance(doc, tree, symbols, fn, bounds)
+                if instance is not None:
+                    matches.append(instance)
     return matches[0] if len(matches) == 1 else None
 
 
@@ -292,7 +327,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
             if len(remaining) > 65536:
                 raise RuntimeError("oversized final service response")
         response = remaining.decode("utf-8", "replace")
-        match = re.search(r"([A-Za-z0-9_]{2,32}\{[^\r\n}]{1,180}\})", response)
+        match = re.search(r"(\\w{2,32}\{[^\r\n}]{1,180}\})", response)
         if not match:
             raise RuntimeError("no flag returned after all OT rounds: " + response[-300:])
         return match.group(1)

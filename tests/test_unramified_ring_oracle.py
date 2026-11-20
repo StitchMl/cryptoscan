@@ -77,3 +77,52 @@ def test_sage_worker_parses_as_python_without_loading_sage():
     tree = ast.parse(worker.read_text(encoding="utf-8"))
     assert any(isinstance(node, ast.FunctionDef) and node.name == "safe_expression"
                for node in tree.body)
+
+
+def test_windows_powershell_delegates_worker_to_wsl(monkeypatch):
+    """Windows frontend remains native; only Sage child runs in WSL."""
+    from types import SimpleNamespace
+    import cryptoscan.unramified_ring_oracle as module
+
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.delenv("CRYPTOSCAN_SAGE", raising=False)
+    monkeypatch.setattr(module.shutil, "which", lambda name:
+                        "C:\\Windows\\System32\\wsl.exe" if name == "wsl.exe" else None)
+
+    commands = []
+
+    def fake_run(command, **_):
+        commands.append(command)
+        if command[-2:] and command[-3:-1] == ["--exec", "wslpath"]:
+            return SimpleNamespace(returncode=0, stdout="/mnt/c/repo/sage_ring_iso_worker.py\\n",
+                                   stderr="")
+        if command[1:4] == ["--exec", "/bin/sh", "-c"]:
+            return SimpleNamespace(returncode=0, stdout="/usr/bin/sage\\n", stderr="")
+        raise AssertionError(f"unexpected subprocess {command!r}")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    command = module._sage_worker_command()
+    assert command[:4] == ["C:\\Windows\\System32\\wsl.exe", "--exec",
+                           "/usr/bin/sage", "-python"]
+    assert command[-1] == "/mnt/c/repo/sage_ring_iso_worker.py"
+    assert len(commands) == 2
+
+
+def test_windows_missing_sage_reports_actionable_error(monkeypatch):
+    import pytest
+    import cryptoscan.unramified_ring_oracle as module
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.delenv("CRYPTOSCAN_SAGE", raising=False)
+    monkeypatch.setattr(module.shutil, "which", lambda _: None)
+    with pytest.raises(RuntimeError, match="keep running cryptoscan in PowerShell"):
+        module._sage_worker_command()
+
+
+def test_unix_keeps_native_sage_worker(monkeypatch):
+    import cryptoscan.unramified_ring_oracle as module
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    monkeypatch.delenv("CRYPTOSCAN_SAGE", raising=False)
+    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/sage" if name == "sage" else None)
+    command = module._sage_worker_command()
+    assert command[0:2] == ["/usr/bin/sage", "-python"]
+    assert command[-1].endswith("sage_ring_iso_worker.py")

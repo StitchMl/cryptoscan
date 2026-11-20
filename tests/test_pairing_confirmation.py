@@ -137,3 +137,73 @@ def test_worker_dispatch_rejects_unknown_worker_filename():
     import pytest
     with pytest.raises(ValueError, match="unsupported Sage worker"):
         _sage_worker_command("arbitrary.py")
+
+
+def test_synthetic_pairing_dialogue_without_sage(monkeypatch):
+    """Exercise the TCP handshake using invented points and a fake worker."""
+    import json
+    import socket
+    import threading
+    import cryptoscan.pairing_confirmation as module
+
+    events = []
+    failure = []
+    left, right = socket.socketpair()
+
+    class FakeWorker:
+        def __init__(self, name):
+            assert name == "sage_pairing_confirmation_worker.py"
+
+        def ask(self, message):
+            events.append(message)
+            if message["mode"] == "begin":
+                return {"signature": [[1, 2], ["a", "b"]]}
+            return {"response": ["z", "w"]}
+
+        def close(self):
+            events.append({"mode": "closed"})
+
+    def service():
+        try:
+            with right, right.makefile("rwb", buffering=0) as channel:
+                channel.write(
+                    b"Public parameters\\n"
+                    + json.dumps({"P_G1": [1, 2], "Q": [3, 4],
+                                  "P_G2": ["a+1", "a+2"]}).encode()
+                    + b"\\nhandle: "
+                )
+                username = channel.readline().decode().strip()
+                if username != "cryptoscan_participant":
+                    raise RuntimeError("incorrect synthetic username")
+                channel.write(b"Private key preview\\nsignature: ")
+                signature = json.loads(channel.readline())
+                if signature != [[1, 2], ["a", "b"]]:
+                    raise RuntimeError("incorrect synthetic signature")
+                channel.write(b"message: ")
+                message = channel.readline().decode().strip()
+                if message != "Authentication for cryptoscan_participant is required.":
+                    raise RuntimeError("incorrect synthetic target message")
+                channel.write(b"signer: ")
+                if channel.readline().strip() != b"root":
+                    raise RuntimeError("incorrect synthetic target identity")
+                channel.write(b"C = [5,6]\\nproof values: ")
+                if json.loads(channel.readline()) != ["z", "w"]:
+                    raise RuntimeError("incorrect synthetic pairing responses")
+                channel.write(b"TST{synthetic_test_only}\\n")
+        except BaseException as exc:
+            failure.append(exc)
+
+    monkeypatch.setattr(module, "_SageWorker", FakeWorker)
+    monkeypatch.setattr(module.socket, "create_connection", lambda *a, **kw: left)
+    thread = threading.Thread(target=service, daemon=True)
+    thread.start()
+    result = module.recover_flag(
+        [Document("sample.sage", _invented_source(), None)],
+        "127.0.0.1", 7, timeout=5.0,
+    )
+    thread.join(timeout=3.0)
+    assert not failure
+    assert result == "TST{synthetic_test_only}"
+    assert events[0]["identity"] == "root"
+    assert events[1] == {"mode": "challenge", "point": [5, 6]}
+    assert events[-1] == {"mode": "closed"}

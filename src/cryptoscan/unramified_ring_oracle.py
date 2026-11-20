@@ -187,6 +187,8 @@ def _sage_worker_command() -> list[str]:
     configured = os.getenv("CRYPTOSCAN_SAGE")
     local = configured or shutil.which("sage")
     if local and sys.platform != "win32":
+        if "/envs/" in local.replace("\\", "/"):
+            return [str(Path(local).with_name("python")), str(worker)]
         return [local, "-python", str(worker)]
     # Native Windows Sage is uncommon. Keep the Windows CLI, and delegate only
     # the algebraic worker to the user's existing WSL distribution.
@@ -201,10 +203,12 @@ def _sage_worker_command() -> list[str]:
                 environment = posixpath.dirname(posixpath.dirname(sage))
                 root = posixpath.dirname(posixpath.dirname(environment))
                 hook = posixpath.join(root, "etc", "profile.d", "conda.sh")
+                python_executable = posixpath.join(environment, "bin", "python")
                 return [
                     wsl, "--exec", "/bin/bash", "-c",
-                    'source "$1" && conda activate "$2" && exec "$3" -python "$4"',
-                    "cryptoscan-sage", hook, environment, sage, worker_path,
+                    'source "$1" && conda activate "$2" && exec "$3" "$4"',
+                    "cryptoscan-sage", hook, environment,
+                    python_executable, worker_path,
                 ]
             return [wsl, "--exec", sage, "-python", worker_path]
     if local:

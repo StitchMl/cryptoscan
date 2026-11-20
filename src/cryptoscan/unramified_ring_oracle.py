@@ -141,18 +141,76 @@ class _Socket:
         self.connection.sendall(line.encode("ascii") + b"\n")
 
 
+def _wsl_sage_executable(wsl_exe: str) -> str | None:
+    """Discover a Sage executable in WSL, including a Miniforge Sage env."""
+    discovery = (
+        'if command -v sage >/dev/null 2>&1; then command -v sage; exit; fi; '
+        'for candidate in "$HOME/miniforge3/envs/sage/bin/sage" '
+        '"$HOME/mambaforge/envs/sage/bin/sage" '
+        '"$HOME/anaconda3/envs/sage/bin/sage" '
+        '"/usr/bin/sage"; do '
+        'if test -x "$candidate"; then printf "%s\\n" "$candidate"; exit; fi; '
+        'done; exit 1'
+    )
+    try:
+        result = subprocess.run(
+            [wsl_exe, "--exec", "/bin/sh", "-c", discovery],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    executable = result.stdout.strip()
+    if result.returncode != 0 or not executable.startswith("/"):
+        return None
+    return executable
+
+
+def _wsl_worker_path(wsl_exe: str, worker: Path) -> str:
+    try:
+        result = subprocess.run(
+            [wsl_exe, "--exec", "wslpath", "-a", str(worker)],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("WSL path conversion failed") from exc
+    path = result.stdout.strip()
+    if result.returncode != 0 or not path.startswith("/"):
+        raise RuntimeError("Sage worker must be accessible inside WSL: "
+                           + (result.stderr.strip() or str(worker)))
+    return path
+
+
+def _sage_worker_command() -> list[str]:
+    worker = Path(__file__).with_name("sage_ring_iso_worker.py").resolve()
+    configured = os.getenv("CRYPTOSCAN_SAGE")
+    local = configured or shutil.which("sage")
+    if local and os.name != "nt":
+        return [local, "-python", str(worker)]
+    # Native Windows Sage is uncommon. Keep the Windows CLI, and delegate only
+    # the algebraic worker to the user's existing WSL distribution.
+    wsl = shutil.which("wsl.exe") if os.name == "nt" else None
+    if wsl:
+        sage = configured if configured and configured.startswith("/") else (
+            _wsl_sage_executable(wsl)
+        )
+        if sage:
+            return [wsl, "--exec", sage, "-python",
+                    _wsl_worker_path(wsl, worker)]
+    if local:
+        return [local, "-python", str(worker)]
+    raise RuntimeError(
+        "SageMath is required for unramified ring arithmetic. "
+        "On Windows, keep running cryptoscan in PowerShell and install Sage "
+        "once inside WSL (for example using Miniforge's sage environment); "
+        "CryptoScan will launch the WSL worker automatically. "
+        "Optionally set CRYPTOSCAN_SAGE to the Linux absolute path of sage."
+    )
+
+
 class _SageWorker:
     def __init__(self):
-        executable = os.getenv("CRYPTOSCAN_SAGE") or shutil.which("sage")
-        if not executable:
-            raise RuntimeError(
-                "This unramified-extension workflow requires SageMath. "
-                "Run CryptoScan in a Sage-enabled Linux/WSL environment, "
-                "or set CRYPTOSCAN_SAGE to its executable."
-            )
-        worker = Path(__file__).with_name("sage_ring_iso_worker.py")
         self.process = subprocess.Popen(
-            [executable, "-python", str(worker)],
+            _sage_worker_command(),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", bufsize=1,
         )

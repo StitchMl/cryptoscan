@@ -346,7 +346,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         wire.send(key)
         _serve_rounds(wire, instance, EccPoint, secret, table, chosen)
         response = _drain(wire, sock)
-    match = re.search(r"(\\w{2,32}\\{[^\\r\\n}]{1,180}\\})", response)
+    match = re.search(r"(\w{2,32}\{[^\r\n}]{1,180}\})", response)
     if match is None:
         raise RuntimeError("no flag returned after all OT rounds: " + response[-300:])
     return match.group(1)

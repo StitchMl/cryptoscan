@@ -118,10 +118,7 @@ def _verifier(source: str) -> bool:
     return has_xor and checks >= 2
 
 
-def extract_instance(documents: Sequence[Document]) -> OrSchnorr | None:
-    sources = [doc.text for doc in documents if doc.path.lower().endswith(".py")]
-    if sum(_verifier(source) for source in sources) != 1:
-        return None
+def _merged_source_constants(sources: list[str]) -> dict[str, int] | None:
     merged: dict[str, int] = {}
     try:
         for source in sources:
@@ -129,15 +126,33 @@ def extract_instance(documents: Sequence[Document]) -> OrSchnorr | None:
                 if key in merged and merged[key] != value:
                     return None
                 merged[key] = value
-        p, q, g = (merged[key] for key in ("p", "q", "g"))
-        publics = (merged["y0"], merged["y1"])
-    except (KeyError, SyntaxError):
+    except SyntaxError:
         return None
+    return merged
+
+
+def _valid_or_group(p: int, q: int, g: int,
+                    publics: tuple[int, int]) -> bool:
     if not (7 < q < p and 1 < g < p and p.bit_length() <= 8192):
-        return None
+        return False
     if (p - 1) % q or pow(g, q, p) != 1:
+        return False
+    return all(1 <= y < p and pow(y, q, p) == 1 for y in publics)
+
+
+def extract_instance(documents: Sequence[Document]) -> OrSchnorr | None:
+    sources = [doc.text for doc in documents if doc.path.lower().endswith(".py")]
+    if sum(_verifier(source) for source in sources) != 1:
         return None
-    if any(not 1 <= y < p or pow(y, q, p) != 1 for y in publics):
+    merged = _merged_source_constants(sources)
+    if merged is None:
+        return None
+    try:
+        p, q, g = (merged[name] for name in ("p", "q", "g"))
+        publics = (merged["y0"], merged["y1"])
+    except KeyError:
+        return None
+    if not _valid_or_group(p, q, g, publics):
         return None
     for branch in (0, 1):
         witness = merged.get(f"w{branch}")

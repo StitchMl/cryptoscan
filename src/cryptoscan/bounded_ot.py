@@ -268,16 +268,32 @@ class _Socket:
 
 def _recover_reply(wire: _Socket, ecc_point, secret: int,
                    table: dict[tuple[int, int], tuple[int, int]]) -> tuple[int, int]:
+    raw = wire.line()
     try:
-        value = json.loads(wire.line())
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "OT response is not JSON; remote may have rejected the public key "
+            f"or ciphertext (response prefix: {raw[:160]!r})"
+        ) from exc
+    try:
         left = ecc_point(int(value["Rx"]), int(value["Ry"]))
         right = ecc_point(int(value["Sx"]), int(value["Sy"]))
-        point = right - secret * left
-        address = ((int(point.x), int(point.y))
-                   if not point.is_point_at_infinity() else (-1, -1))
-        return table[address]
     except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError("invalid/unrecognized encrypted OT response") from exc
+        raise RuntimeError(
+            "OT response is missing valid elliptic-curve coordinates: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    point = right - secret * left
+    address = ((int(point.x), int(point.y))
+               if not point.is_point_at_infinity() else (-1, -1))
+    messages = table.get(address)
+    if messages is None:
+        raise RuntimeError(
+            "OT decrypted point is outside the expected bounded-message "
+            "encoding; source model or chosen-key relation may differ"
+        )
+    return messages
 
 
 def _drain(wire: _Socket, sock: socket.socket) -> str:

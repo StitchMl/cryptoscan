@@ -28,6 +28,7 @@ from .bounded_ot import extract_instance as extract_bounded_ot, recover_flag as 
 from .spn_linear_oracle import extract_instance as extract_linear_spn, recover_flag as recover_linear_spn_flag
 from .unramified_ring_oracle import extract_instance as extract_unramified, recover_flag as recover_unramified_flag
 from .threshold_rsa import extract_instance as extract_truncated_rsa, recover_flag as recover_truncated_rsa_flag
+from .pairing_confirmation import extract_instance as extract_pairing_confirmation, recover_flag as recover_pairing_confirmation_flag
 from .terminal_report import render_findings
 
 COLORS = {"critical": "\033[91m", "high": "\033[31m", "medium": "\033[33m", "low": "\033[36m"}
@@ -79,6 +80,11 @@ def _execute_recovery(label, solver, *parameters, **options) -> int:
 
 
 def _solve_remote(args, documents) -> int | None:
+    if extract_pairing_confirmation(documents) is not None:
+        return _execute_recovery(
+            "Pairing confirmation forgery", recover_pairing_confirmation_flag,
+            documents, args.host, args.port, timeout=args.timeout,
+        )
     if extract_truncated_rsa(documents) is not None:
         return _execute_recovery(
             "Truncated-share RSA", recover_truncated_rsa_flag,
@@ -188,6 +194,10 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    if extract_pairing_confirmation(documents) is not None:
+        print("Detected: pairing-based confirmation protocol exposes a product "
+              "of verifier secrets; source-gated signature-confirmation forgery "
+              "available (SageMath worker).")
     rsa_shares = extract_truncated_rsa(documents)
     if rsa_shares is not None:
         print("Detected: reshare-dependent truncated RSA private-exponent "

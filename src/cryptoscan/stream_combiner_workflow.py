@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import operator
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -22,6 +23,14 @@ from .parser import Document
 FLAG = re.compile(rb"\w{2,32}\{[\x20-\x7e]{1,180}\}")
 
 
+_BINARY_OPERATIONS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.BitXor: operator.xor,
+}
+
+
 def _integer_expression(node: ast.expr, variables: dict[str, int]) -> int:
     """Evaluate only the arithmetic AST nodes in the SHA input."""
     if isinstance(node, ast.Constant) and type(node.value) is int:
@@ -33,14 +42,9 @@ def _integer_expression(node: ast.expr, variables: dict[str, int]) -> int:
     if isinstance(node, ast.BinOp):
         left = _integer_expression(node.left, variables)
         right = _integer_expression(node.right, variables)
-        if isinstance(node.op, ast.Add):
-            return left + right
-        if isinstance(node.op, ast.Sub):
-            return left - right
-        if isinstance(node.op, ast.Mult):
-            return left * right
-        if isinstance(node.op, ast.BitXor):
-            return left ^ right
+        operation = _BINARY_OPERATIONS.get(type(node.op))
+        if operation is not None:
+            return operation(left, right)
     raise ValueError("Unsupported SHA combiner arithmetic")
 
 
@@ -243,6 +247,22 @@ def _known_zero_input(source: str) -> bool:
                and node.value == b"\0" for node in ast.walk(tree))
 
 
+def _paired_instances(
+    model: StreamCombiner, doc: Document, documents: Sequence[Document],
+) -> list[StreamCipherInstance]:
+    instances = []
+    for output in documents:
+        if output.scope != doc.scope or output.path == doc.path:
+            continue
+        pair = _hex_pair(output)
+        if pair is None:
+            continue
+        known, encrypted = pair
+        if len(known) * 8 >= 16 * model.degree:
+            instances.append(StreamCipherInstance(model, known, encrypted))
+    return instances
+
+
 def recognize_stream_cipher(documents: Sequence[Document]) -> list[StreamCipherInstance]:
     """Pair a recognizable public stream cipher with same-scope hex output."""
     found = []
@@ -252,15 +272,7 @@ def recognize_stream_cipher(documents: Sequence[Document]) -> list[StreamCipherI
         model = parse_stream_combiner(doc.text, doc.path)
         if model is None or len(model.masks) != 4:
             continue
-        for output in documents:
-            if output.scope != doc.scope or output.path == doc.path:
-                continue
-            pair = _hex_pair(output)
-            if pair is None:
-                continue
-            known, encrypted = pair
-            if len(known) * 8 >= 16 * model.degree:
-                found.append(StreamCipherInstance(model, known, encrypted))
+        found.extend(_paired_instances(model, doc, documents))
     return found
 
 

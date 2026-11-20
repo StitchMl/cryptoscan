@@ -50,7 +50,7 @@ def _is_serialized_ciphertext(node: ast.Call) -> bool:
     )
 
 
-def _builder_fields(function: ast.FunctionDef) -> tuple[str, ...] | None:
+def _json_payload_fields(function: ast.FunctionDef) -> tuple[str, ...] | None:
     fields = None
     for node in ast.walk(function):
         if isinstance(node, ast.Assign):
@@ -59,6 +59,11 @@ def _builder_fields(function: ast.FunctionDef) -> tuple[str, ...] | None:
                 if fields is not None and parsed != fields:
                     return None
                 fields = parsed
+    return fields
+
+
+def _builder_fields(function: ast.FunctionDef) -> tuple[str, ...] | None:
+    fields = _json_payload_fields(function)
     if fields is None or _gcm_iv_signature(function) is None:
         return None
     calls = [

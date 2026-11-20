@@ -108,6 +108,27 @@ def test_changed_graph_labeling_and_pedersen_base_still_supported():
     )
 
 
+def _check_full_opening(instance, proof):
+    perm, openings = proof["z"]
+    assert sorted(perm) == list(range(len(instance.graph)))
+    p, _, h1, h2 = instance.pedersen_params
+    for i, row in enumerate(proof["A"]):
+        for j, commitment in enumerate(row):
+            value, randomness = openings[i][j]
+            assert value == instance.graph[perm[i]][perm[j]]
+            assert commitment % p == pow(h1, value, p) * pow(h2, randomness, p) % p
+
+
+def _check_cycle_opening(instance, proof):
+    edges, randomnesses = proof["z"]
+    assert len(edges) == len(instance.graph)
+    assert sorted(u for u, _ in edges) == list(range(len(instance.graph)))
+    p, _, h1, h2 = instance.pedersen_params
+    for index, ((u, v), randomizer) in enumerate(zip(edges, randomnesses)):
+        assert edges[(index + 1) % len(edges)][0] == v
+        assert proof["A"][u][v] % p == h1 * pow(h2, randomizer, p) % p
+
+
 def test_batch_protocol_waits_until_all_proofs_before_verifying(monkeypatch):
     import cryptoscan.fiat_shamir_batch as batch
 
@@ -139,22 +160,9 @@ def test_batch_protocol_waits_until_all_proofs_before_verifying(monkeypatch):
             for proof, bit in zip(self.payloads, bits):
                 assert bit in ("0", "1")
                 if bit == "0":
-                    perm, openings = proof["z"]
-                    assert sorted(perm) == list(range(len(instance.graph)))
-                    for i, row in enumerate(proof["A"]):
-                        for j, commitment in enumerate(row):
-                            value, randomness = openings[i][j]
-                            assert value == instance.graph[perm[i]][perm[j]]
-                            p, q, h1, h2 = instance.pedersen_params
-                            assert commitment % p == pow(h1, value, p) * pow(h2, randomness, p) % p
+                    _check_full_opening(instance, proof)
                 else:
-                    edges, randomnesses = proof["z"]
-                    assert len(edges) == len(instance.graph)
-                    assert sorted(u for u, v in edges) == list(range(len(instance.graph)))
-                    for index, ((u, v), randomizer) in enumerate(zip(edges, randomnesses)):
-                        assert edges[(index + 1) % len(edges)][0] == v
-                        p, q, h1, h2 = instance.pedersen_params
-                        assert proof["A"][u][v] % p == h1 * pow(h2, randomizer, p) % p
+                    _check_cycle_opening(instance, proof)
             return b"checking round 127\naccepted\nb'crypto{mock_verified_by_remote}'\n"
 
         def close(self):

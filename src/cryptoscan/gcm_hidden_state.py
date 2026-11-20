@@ -84,17 +84,25 @@ def _module_bound_names(tree: ast.Module) -> set[str]:
     return bound
 
 
+def _lambda_declarations(node: ast.Assign):
+    for target in node.targets:
+        if isinstance(target, ast.Name):
+            yield target.id, node.value.body, None
+
+
+def _function_declarations(node: ast.FunctionDef):
+    for child in ast.walk(node):
+        if isinstance(child, ast.Return):
+            yield node.name, child.value, node
+
+
 def _gcm_factory_declarations(tree: ast.Module):
     """Return source-visible functions and lambdas that build cipher objects."""
     for node in tree.body:
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Lambda):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    yield target.id, node.value.body, None
+            yield from _lambda_declarations(node)
         elif isinstance(node, ast.FunctionDef):
-            for child in ast.walk(node):
-                if isinstance(child, ast.Return):
-                    yield node.name, child.value, node
+            yield from _function_declarations(node)
 
 
 def _gcm_factory_nonce(expression: ast.AST) -> str | None:
@@ -314,6 +322,21 @@ def _one_dimensional_gf2_kernel(rows: list[int]) -> int | None:
     return solution
 
 
+def _compatible_ghash_key(u: int, v: int, deltas: list[int]) -> int | None:
+    h = gf128_mul(u, gf128_pow(v, (1 << 128) - 2))
+    if not h:
+        return None
+    if gf128_pow(h, (1 << 128) - 3) != u or gf128_pow(h, (1 << 128) - 4) != v:
+        return None
+    if all(
+        (gf128_mul(delta, u) & ((1 << 32) - 1)) == 0
+        or (gf128_mul(delta, v) & ((1 << 32) - 1)) == 0
+        for delta in deltas
+    ):
+        return h
+    return None
+
+
 def _find_compatible_ghash_key(
     possible_inverses: set[int], deltas: list[int],
 ) -> int | None:
@@ -323,18 +346,8 @@ def _find_compatible_ghash_key(
         for j, v in enumerate(pairs):
             if i == j:
                 continue
-            h = gf128_mul(u, gf128_pow(v, (1 << 128) - 2))
-            if not h:
-                continue
-            if gf128_pow(h, (1 << 128) - 3) != u:
-                continue
-            if gf128_pow(h, (1 << 128) - 4) != v:
-                continue
-            if all(
-                (gf128_mul(delta, u) & ((1 << 32) - 1)) == 0
-                or (gf128_mul(delta, v) & ((1 << 32) - 1)) == 0
-                for delta in deltas
-            ):
+            h = _compatible_ghash_key(u, v, deltas)
+            if h is not None:
                 return h
     return None
 

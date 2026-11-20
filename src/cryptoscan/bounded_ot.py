@@ -266,6 +266,68 @@ class _Socket:
         self.sock.sendall(json.dumps(value, separators=(",", ":")).encode() + b"\n")
 
 
+def _recover_reply(wire: _Socket, ecc_point, secret: int,
+                   table: dict[tuple[int, int], tuple[int, int]]) -> tuple[int, int]:
+    try:
+        value = json.loads(wire.line())
+        left = ecc_point(int(value["Rx"]), int(value["Ry"]))
+        right = ecc_point(int(value["Sx"]), int(value["Sy"]))
+        point = right - secret * left
+        address = ((int(point.x), int(point.y))
+                   if not point.is_point_at_infinity() else (-1, -1))
+        return table[address]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("invalid/unrecognized encrypted OT response") from exc
+
+
+def _drain(wire: _Socket, sock: socket.socket) -> str:
+    result = bytearray(wire.buffer)
+    while True:
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        result.extend(chunk)
+        if len(result) > 65536:
+            raise RuntimeError("oversized final service response")
+    return result.decode("utf-8", "replace")
+
+
+def _chosen_key_and_ciphertext(generator, secret: int, base: int):
+    public = secret * generator
+    encrypted = (secret + base) * generator
+    key = {"Hx": int(public.x), "Hy": int(public.y)}
+    chosen = {"Rx": int(generator.x), "Ry": int(generator.y),
+              "Sx": int(encrypted.x), "Sy": int(encrypted.y)}
+    return key, chosen
+
+
+def _parameters(instance: BoundedOT, generator):
+    if (int(generator.x), int(generator.y)) != (instance.gx, instance.gy):
+        raise ValueError("unsupported EC generator")
+    if not (instance.order * generator).is_point_at_infinity():
+        raise ValueError("generator order does not match source")
+    secret = 2
+    base = instance.high0 - instance.low0 + 1
+    if base * (instance.high1 - instance.low1 + instance.high0 - instance.low0 + 2) >= instance.order:
+        raise ValueError("message domain too large for injective encoding")
+    table = _encoding_table(generator, base, instance)
+    key, chosen = _chosen_key_and_ciphertext(generator, secret, base)
+    return secret, table, key, chosen
+
+
+def _serve_rounds(wire: _Socket, instance: BoundedOT, ecc_point, secret: int,
+                  table, chosen: dict[str, int]) -> None:
+    for _ in range(instance.rounds):
+        wire.until(instance.prompts[1])
+        wire.send(chosen)
+        first, second = _recover_reply(wire, ecc_point, secret, table)
+        wire.until(instance.prompts[2])
+        wire.send({"m0": first, "m1": second})
+
+
 def recover_flag(documents: Sequence[Document], host: str, port: int, *,
                  timeout: float = 30.0) -> str:
     instance = extract_instance(documents)
@@ -275,59 +337,16 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         from Crypto.PublicKey.ECC import EccPoint
     except ImportError as exc:
         raise RuntimeError("requires pycryptodome: py -m pip install --user pycryptodome") from exc
-
     generator = EccPoint(instance.gx, instance.gy)
-    if int(generator.x) != instance.gx or int(generator.y) != instance.gy:
-        raise ValueError("unsupported EC generator")
-    if not (instance.order * generator).is_point_at_infinity():
-        raise ValueError("generator order does not match source")
-    # Chosen public key H = secret*G, with a locally known nontrivial secret.
-    secret = 2
-    public = secret * generator
-    # Choose an integer outside the bit domain, but safely within the group.
-    base = instance.high0 - instance.low0 + 1
-    if base * (instance.high1 - instance.low1 + instance.high0 - instance.low0 + 2) >= instance.order:
-        raise ValueError("message domain too large for injective encoding")
-    table = _encoding_table(generator, base, instance)
-    encrypted_choice_r = generator
-    encrypted_choice_s = (secret + base) * generator
-    key = {"Hx": int(public.x), "Hy": int(public.y)}
-    chosen = {"Rx": int(encrypted_choice_r.x), "Ry": int(encrypted_choice_r.y),
-              "Sx": int(encrypted_choice_s.x), "Sy": int(encrypted_choice_s.y)}
+    secret, table, key, chosen = _parameters(instance, generator)
     with socket.create_connection((host, port), timeout=timeout) as sock:
         sock.settimeout(timeout)
         wire = _Socket(sock)
         wire.until(instance.prompts[0])
         wire.send(key)
-        for _ in range(instance.rounds):
-            wire.until(instance.prompts[1])
-            wire.send(chosen)
-            line = wire.line()
-            try:
-                value = json.loads(line)
-                R = EccPoint(int(value["Rx"]), int(value["Ry"]))
-                S = EccPoint(int(value["Sx"]), int(value["Sy"]))
-                decrypted = S - secret * R
-                point = ((int(decrypted.x), int(decrypted.y))
-                         if not decrypted.is_point_at_infinity() else (-1, -1))
-                messages = table[point]
-            except (KeyError, TypeError, ValueError) as exc:
-                raise RuntimeError("invalid/unrecognized encrypted OT response") from exc
-            wire.until(instance.prompts[2])
-            wire.send({"m0": messages[0], "m1": messages[1]})
-        remaining = bytearray(wire.buffer)
-        while True:
-            try:
-                chunk = sock.recv(4096)
-            except socket.timeout:
-                break
-            if not chunk:
-                break
-            remaining.extend(chunk)
-            if len(remaining) > 65536:
-                raise RuntimeError("oversized final service response")
-        response = remaining.decode("utf-8", "replace")
-        match = re.search(r"(\\w{2,32}\{[^\r\n}]{1,180}\})", response)
-        if not match:
-            raise RuntimeError("no flag returned after all OT rounds: " + response[-300:])
-        return match.group(1)
+        _serve_rounds(wire, instance, EccPoint, secret, table, chosen)
+        response = _drain(wire, sock)
+    match = re.search(r"(\\w{2,32}\\{[^\\r\\n}]{1,180}\\})", response)
+    if match is None:
+        raise RuntimeError("no flag returned after all OT rounds: " + response[-300:])
+    return match.group(1)

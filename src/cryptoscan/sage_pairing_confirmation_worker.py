@@ -13,31 +13,36 @@ import sys
 from sage.all import EllipticCurve, GF, PolynomialRing
 
 
+def _field_arithmetic(node, symbols):
+    left, right = _field_value(node.left, symbols), _field_value(node.right, symbols)
+    if isinstance(node.op, ast.Add):
+        return left + right
+    if isinstance(node.op, ast.Sub):
+        return left - right
+    if isinstance(node.op, ast.Mult):
+        return left * right
+    if isinstance(node.op, ast.Pow) and isinstance(node.right, ast.Constant):
+        power = node.right.value
+        if type(power) is int and 0 <= power <= 32:
+            return left ** power
+    raise ValueError("unsupported finite-field arithmetic")
+
+
+def _field_value(node, symbols):
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return node.value
+    if isinstance(node, ast.Name) and node.id in symbols:
+        return symbols[node.id]
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        return -_field_value(node.operand, symbols)
+    if isinstance(node, ast.BinOp):
+        return _field_arithmetic(node, symbols)
+    raise ValueError("unsupported finite-field expression")
+
+
 def _safe_field_expression(source, symbols):
     expression = ast.parse(source.replace("^", "**"), mode="eval").body
-
-    def evaluate(node):
-        if isinstance(node, ast.Constant) and type(node.value) is int:
-            return node.value
-        if isinstance(node, ast.Name) and node.id in symbols:
-            return symbols[node.id]
-        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-            return -evaluate(node.operand)
-        if isinstance(node, ast.BinOp):
-            left, right = evaluate(node.left), evaluate(node.right)
-            if isinstance(node.op, ast.Add):
-                return left + right
-            if isinstance(node.op, ast.Sub):
-                return left - right
-            if isinstance(node.op, ast.Mult):
-                return left * right
-            if isinstance(node.op, ast.Pow) and isinstance(node.right, ast.Constant):
-                power = node.right.value
-                if type(power) is int and 0 <= power <= 32:
-                    return left ** power
-        raise ValueError("unsupported finite-field expression")
-
-    return evaluate(expression)
+    return _field_value(expression, symbols)
 
 
 class PairingProof:
@@ -62,9 +67,9 @@ class PairingProof:
         self.z = self.f12.gen()
         self.e12 = EllipticCurve(self.f12, [0, b])
         params = payload["public"]
-        self.P = self.g1([int(v) for v in params["P_G1"]])
+        self.public_point = self.g1([int(v) for v in params["P_G1"]])
         self.Q = self.g1([int(v) for v in params["Q"]])
-        self.P2 = self.g2([self.element(v) for v in params["P_G2"]])
+        self.public_twist = self.g2([self.element(v) for v in params["P_G2"]])
         self.message = payload["message"]
         self.target = self.hash_to_g2(payload["identity"])
 
@@ -102,7 +107,7 @@ class PairingProof:
         message_hash = int.from_bytes(digest[:width], "big") % self.modulus
         if message_hash == 0:
             raise ValueError("invalid zero message hash")
-        self.signature_point = self.target + message_hash * self.P2
+        self.signature_point = self.target + message_hash * self.public_twist
         if self.signature_point == self.g2(0):
             raise ValueError("invalid signature point")
         return [list(map(int, self.Q.xy())),
@@ -110,8 +115,8 @@ class PairingProof:
 
     def challenge(self, point):
         challenge = self.g1([int(v) for v in point])
-        r = self.pairing(challenge, self.P2)
-        t = self.pairing(self.Q, self.P2) / self.pairing(self.P, self.target)
+        r = self.pairing(challenge, self.public_twist)
+        t = self.pairing(self.Q, self.public_twist) / self.pairing(self.public_point, self.target)
         if r == 1 or t == 1 or r ** self.modulus != 1 or t ** self.modulus != 1:
             raise ValueError("forgery left the expected pairing subgroup")
         return [str(t), str(r)]

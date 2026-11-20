@@ -25,85 +25,93 @@ class UnramifiedRingOracle:
     rounds: tuple[tuple[int, tuple[int, ...]], ...]
 
 
+def _round_call(node: ast.stmt, function_name: str):
+    if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == function_name
+            and len(node.value.args) == 2):
+        return None
+    try:
+        precision, degrees = (ast.literal_eval(arg) for arg in node.value.args)
+    except (ValueError, TypeError, SyntaxError):
+        return None
+    if (type(precision) is not int or not 1 <= precision <= 128
+            or not isinstance(degrees, list)
+            or not 1 <= len(degrees) <= 6
+            or not all(type(d) is int and 2 <= d <= 16 for d in degrees)):
+        return None
+    total = 1
+    for degree in degrees:
+        total *= degree
+    return (precision, tuple(degrees)) if total <= 128 else None
+
+
 def _literal_rounds(tree: ast.Module, function_name: str):
-    rounds = []
-    for statement in tree.body:
-        if not isinstance(statement, ast.If):
-            continue
-        for item in statement.body:
-            if not (isinstance(item, ast.Expr) and isinstance(item.value, ast.Call)
-                    and isinstance(item.value.func, ast.Name)
-                    and item.value.func.id == function_name
-                    and len(item.value.args) == 2):
-                continue
-            try:
-                k, degrees = (ast.literal_eval(arg) for arg in item.value.args)
-            except (ValueError, TypeError, SyntaxError):
-                continue
-            if (type(k) is not int or not 1 <= k <= 128
-                    or not isinstance(degrees, list)
-                    or not 1 <= len(degrees) <= 6
-                    or not all(type(d) is int and 2 <= d <= 16 for d in degrees)):
-                return None
-            total = 1
-            for degree in degrees:
-                total *= degree
-            if total > 128:
-                return None
-            rounds.append((k, tuple(degrees)))
-    return tuple(rounds) if rounds else None
+    rounds = [_round_call(node, function_name)
+              for branch in tree.body if isinstance(branch, ast.If)
+              for node in branch.body]
+    return tuple(value for value in rounds if value is not None) or None
+
+
+def _function_roles(functions):
+    builders, evaluations = set(), set()
+    for name, fn in functions.items():
+        calls = [node for node in ast.walk(fn) if isinstance(node, ast.Call)]
+        names = {node.func.id for node in calls if isinstance(node.func, ast.Name)}
+        attrs = {node.func.attr for node in calls if isinstance(node.func, ast.Attribute)}
+        if {"Zmod", "GF"} <= names and {"quo", "is_irreducible"} <= attrs:
+            builders.add(name)
+        identifiers = {node.id for node in ast.walk(fn) if isinstance(node, ast.Name)}
+        if ("poly" in identifiers and any(
+                isinstance(node, ast.Attribute) and node.attr == "parent"
+                for node in ast.walk(fn))):
+            evaluations.add(name)
+    return builders, evaluations
+
+
+def _connects_rings_to_oracle(fn, builders, evaluations) -> bool:
+    calls = [node for node in ast.walk(fn) if isinstance(node, ast.Call)]
+    names = {node.func.id for node in calls if isinstance(node.func, ast.Name)}
+    identifiers = {node.id for node in ast.walk(fn) if isinstance(node, ast.Name)}
+    has_random = any(isinstance(node, ast.Attribute) and node.attr == "randbelow"
+                     for node in ast.walk(fn))
+    return (bool(names & builders) and bool(names & evaluations)
+            and "input" in names and "secrets" in identifiers and has_random)
 
 
 def _has_algebraic_oracle(tree: ast.Module) -> bool:
-    functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
-    builders = set()
-    evaluations = set()
-    for name, fn in functions.items():
-        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
-        names = {n.func.id for n in calls if isinstance(n.func, ast.Name)}
-        attrs = {n.func.attr for n in calls if isinstance(n.func, ast.Attribute)}
-        if {"Zmod", "GF"} <= names and {"quo", "is_irreducible"} <= attrs:
-            builders.add(name)
-        if ("poly" in {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
-                and any(isinstance(n, ast.Attribute) and n.attr == "parent"
-                        for n in ast.walk(fn))):
-            evaluations.add(name)
-    if not builders or not evaluations:
-        return False
-    for fn in functions.values():
-        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
-        names = {n.func.id for n in calls if isinstance(n.func, ast.Name)}
-        identifiers = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
-        if (not names.intersection(builders) or "input" not in names
-                or "secrets" not in identifiers
-                or not any(isinstance(n, ast.Attribute) and n.attr == "randbelow"
-                           for n in ast.walk(fn))):
-            continue
-        if names.intersection(evaluations):
-            return True
-    return False
+    functions = {node.name: node for node in tree.body
+                 if isinstance(node, ast.FunctionDef)}
+    builders, evaluations = _function_roles(functions)
+    return bool(builders and evaluations and any(
+        _connects_rings_to_oracle(fn, builders, evaluations)
+        for fn in functions.values()
+    ))
+
+
+def _source_rounds(document: Document):
+    if not document.path.lower().endswith((".sage", ".py")):
+        return None
+    try:
+        tree = ast.parse(document.text)
+    except SyntaxError:
+        return None
+    if not _has_algebraic_oracle(tree):
+        return None
+    for fn in (node for node in tree.body if isinstance(node, ast.FunctionDef)):
+        calls = {node.func.id for node in ast.walk(fn)
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+        if {"input", "print"} <= calls:
+            rounds = _literal_rounds(tree, fn.name)
+            if rounds:
+                return rounds
+    return None
 
 
 def extract_instance(documents: Sequence[Document]) -> UnramifiedRingOracle | None:
-    matches = []
-    for document in documents:
-        if not document.path.lower().endswith((".sage", ".py")):
-            continue
-        try:
-            tree = ast.parse(document.text)
-        except SyntaxError:
-            continue
-        if not _has_algebraic_oracle(tree):
-            continue
-        for fn in (n for n in tree.body if isinstance(n, ast.FunctionDef)):
-            calls = {n.func.id for n in ast.walk(fn)
-                     if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
-            if not {"input", "print"} <= calls:
-                continue
-            rounds = _literal_rounds(tree, fn.name)
-            if rounds:
-                matches.append(UnramifiedRingOracle(rounds))
-    return matches[0] if len(matches) == 1 else None
+    matches = [rounds for document in documents
+               if (rounds := _source_rounds(document)) is not None]
+    return UnramifiedRingOracle(matches[0]) if len(matches) == 1 else None
 
 
 class _Socket:

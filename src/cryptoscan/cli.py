@@ -24,6 +24,7 @@ from .scanner import scan
 from .ntru_auto import instances as ntru_instances, recover_flag as recover_ntru_flag
 from .stream_combiner_workflow import recognize_stream_cipher, recover_stream_cipher
 from .or_sigma import extract_instance as extract_or_schnorr, recover_flag as recover_or_schnorr_flag
+from .bounded_ot import extract_instance as extract_bounded_ot, recover_flag as recover_bounded_ot_flag
 from .terminal_report import render_findings
 
 COLORS = {"critical": "\033[91m", "high": "\033[31m", "medium": "\033[33m", "low": "\033[36m"}
@@ -77,6 +78,11 @@ def _execute_recovery(label, solver, *parameters, **options) -> int:
 def _solve_documents(args, documents) -> int:
     """Separate solver selection from parsing, scanning and presentation."""
     if args.host and args.port:
+        if extract_bounded_ot(documents) is not None:
+            return _execute_recovery(
+                "Bounded EC-ElGamal OT", recover_bounded_ot_flag, documents,
+                args.host, args.port, timeout=args.timeout,
+            )
         if extract_or_schnorr(documents) is not None:
             return _execute_recovery(
                 "OR-Schnorr protocol", recover_or_schnorr_flag, documents,
@@ -158,6 +164,9 @@ def main(argv: list[str] | None = None) -> int:
     documents = collect_documents(args.targets)
     findings = scan(documents, args.fermat_steps)
     _print_report(args, findings)
+    if args.format == "text" and extract_bounded_ot(documents) is not None:
+        print("Detected: homomorphic encrypted-choice OT without bit-membership proof; "
+              "bounded-message recovery supported.")
     if args.format == "text" and extract_or_schnorr(documents) is not None:
         print("Supported interactive protocol: Schnorr OR proof "
               "(witness, special-soundness extraction, HVZK simulation).")

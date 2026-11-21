@@ -25,6 +25,9 @@ on:
       - "tests/test_source_units.py"
       - "src/cryptoscan/masked_ec_signature.py"
       - "tests/test_masked_ec_signature.py"
+      - "src/cryptoscan/reducible_ring_signature.py"
+      - "src/cryptoscan/sage_reducible_ring_worker.py"
+      - "tests/test_reducible_ring_signature.py"
   workflow_dispatch:
 
 permissions:

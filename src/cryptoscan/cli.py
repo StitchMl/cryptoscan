@@ -32,6 +32,7 @@ from .unramified_ring_oracle import extract_instance as extract_unramified, reco
 from .threshold_rsa import extract_instance as extract_truncated_rsa, recover_flag as recover_truncated_rsa_flag
 from .groth16_ticket import extract_instance as extract_groth16_tickets, recover_flag as recover_groth16_tickets_flag
 from .pairing_confirmation import extract_instance as extract_pairing_confirmation, recover_flag as recover_pairing_confirmation_flag
+from .reducible_ring_signature import extract_instance as extract_reducible_glp, recover_flag as recover_reducible_glp_flag
 from .terminal_report import render_findings
 
 COLORS = {"critical": "\033[91m", "high": "\033[31m", "medium": "\033[33m", "low": "\033[36m"}
@@ -83,6 +84,11 @@ def _execute_recovery(label, solver, *parameters, **options) -> int:
 
 
 def _solve_remote(args, documents) -> int | None:
+    if extract_reducible_glp(documents) is not None:
+        return _execute_recovery(
+            "Reducible cyclic-ring signature", recover_reducible_glp_flag,
+            documents, args.host, args.port, timeout=args.timeout,
+        )
     if extract_groth16_tickets(documents) is not None:
         return _execute_recovery(
             "Groth16 proof-identity replay", recover_groth16_tickets_flag,
@@ -210,6 +216,11 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    model = extract_reducible_glp(documents)
+    if model is not None:
+        print("Detected: short-secret signature over a reducible cyclic "
+              "polynomial ring; component lattice key recovery and CRT "
+              f"available (dimension {model.dimension}, SageMath worker).")
     signature = extract_masked_ec(documents)
     if signature is not None:
         print("Detected: source-verified reversible masked EC signature corpus; "

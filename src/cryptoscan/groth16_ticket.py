@@ -143,9 +143,9 @@ def _economy_profile(source: str) -> tuple | None:
             r"\b" + re.escape(balance) + r"\s*>=\s*([A-Z][A-Z0-9_]*)",
             body,
         )
-        if debit and ("issue(" in body or ".prove(" in body):
+        if debit and re.search(r"\bResponse::\w+\s*\(", body):
             ticket_candidates.append((command, debit.group(1), body))
-        if credit and (".redeem(" in body or ".verify(" in body):
+        if credit and re.search(r"\bResponse::\w+", body):
             redeem_candidates.append((command, credit.group(1), body))
         if price:
             flag_candidates.append((command, price.group(1), body))
@@ -162,7 +162,7 @@ def _economy_profile(source: str) -> tuple | None:
         return None
     ticket_resp = _response_variant(ticket_arm, r"\s*\(")
     flag_resp = _response_variant(flag_arm, r"\s*\(")
-    success = re.search(r"\bResponse::([A-Za-z_]\w*)\s*[;,\n]", redeem_arm)
+    success = re.search(r"\bResponse::([A-Za-z_]\w*)\b", redeem_arm)
     if not ticket_resp or not flag_resp or not success:
         return None
     return (

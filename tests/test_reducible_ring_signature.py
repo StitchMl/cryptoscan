@@ -228,3 +228,29 @@ def test_worker_has_no_source_execution_and_is_python_parseable():
     assert "eval(" not in source
     with pytest.raises(ValueError, match="unsupported Sage worker"):
         _sage_worker_command("unexpected_sage_worker.py")
+
+
+def test_cli_dispatches_general_source_to_ring_solver(tmp_path, monkeypatch, capsys):
+    import cryptoscan.cli as cli
+
+    source = tmp_path / "unnamed_signature.data"
+    source.write_text(invented_source(), encoding="utf-8")
+    assert cli.main([str(source), "--no-assist"]) == 0
+    report = capsys.readouterr().out
+    assert "short-secret signature over a reducible cyclic" in report
+
+    invocations = []
+
+    def fake_solver(documents, host, port, *, timeout):
+        invocations.append((host, port, timeout))
+        assert extract_instance(documents) is not None
+        return "DEMO{synthetic_dispatch}"
+
+    monkeypatch.setattr(cli, "recover_reducible_glp_flag", fake_solver)
+    status = cli.main([
+        str(source), "--solve", "--host", "127.0.0.1",
+        "--port", "1010", "--timeout", "120",
+    ])
+    assert status == 0
+    assert invocations == [("127.0.0.1", 1010, 120.0)]
+    assert "FLAG: DEMO{synthetic_dispatch}" in capsys.readouterr().out

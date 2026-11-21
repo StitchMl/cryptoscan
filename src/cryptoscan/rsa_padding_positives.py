@@ -8,6 +8,8 @@ No network access, guessing, or hardcoded CTF samples.
 """
 from __future__ import annotations
 
+from .source_units import parse_python
+
 import ast
 import math
 import re
@@ -174,7 +176,7 @@ def discover_positive_padding_oracles(
     for scope, docs in by_scope.items():
         sources = [
             (doc, names) for doc in docs
-            if doc.path.endswith(".py")
+            if parse_python(doc) is not None
             if (names := _source_names(doc.text)) is not None
         ]
         if len(sources) != 1:

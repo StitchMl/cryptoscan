@@ -470,55 +470,69 @@ def _expand_sha256(data, length, domain, separator, width, order):
     return bytes(result[:length])
 
 
+def _public_and_ciphertext(lines):
+    public, ciphertext = None, None
+    for line in lines[:6]:
+        record = line.partition("=")[2].strip()
+        if record.startswith("(") and record.endswith(")"):
+            try:
+                point = ast.literal_eval(record)
+            except (SyntaxError, ValueError):
+                continue
+            if (type(point) is tuple and len(point) == 2
+                    and all(type(value) is int for value in point)):
+                public = point
+        elif re.fullmatch(r"[a-fA-F0-9]{2,4096}", record):
+            ciphertext = bytes.fromhex(record)
+    return public, ciphertext
+
+
+def _parse_signature_rows(source: str):
+    try:
+        values = ast.literal_eval(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    if not isinstance(values, list) or not 2 <= len(values) <= MAX_PAIRS:
+        return None
+    signatures = []
+    for element in values:
+        if not (isinstance(element, tuple) and len(element) == 2
+                and isinstance(element[0], str)
+                and type(element[1]) is int and element[1] >= 0
+                and 2 <= len(element[0]) <= 4096):
+            return None
+        try:
+            signatures.append((bytes.fromhex(element[0]), element[1]))
+        except ValueError:
+            return None
+    return tuple(signatures)
+
+
 def _read_output(document: Document, key_bytes: int):
     if len(document.text) > 15000000:
         return None
     lines = document.text.splitlines()
-    pub = None
-    encrypted = None
-    signatures = None
-    for line in lines[:6]:
-        record = line.partition("=")[2].strip()
-        if not record:
-            continue
-        if record.startswith("(") and record.endswith(")"):
-            try:
-                value = ast.literal_eval(record)
-            except (ValueError, SyntaxError):
-                continue
-            if (type(value) is tuple and len(value) == 2
-                    and all(type(x) is int for x in value)):
-                pub = value
-        elif re.fullmatch(r"[a-fA-F0-9]{2,4096}", record):
-            encrypted = bytes.fromhex(record)
+    public, ciphertext = _public_and_ciphertext(lines)
+    if public is None or ciphertext is None:
+        return None
     for line in lines:
         candidate = line.strip()
-        if not candidate.startswith("[("):
-            continue
-        try:
-            values = ast.literal_eval(candidate)
-        except (ValueError, SyntaxError, RecursionError):
-            continue
-        if (not isinstance(values, list) or not 2 <= len(values) <= MAX_PAIRS):
-            continue
-        pairs = []
-        for element in values:
-            if not (isinstance(element, tuple) and len(element) == 2
-                    and isinstance(element[0], str)
-                    and type(element[1]) is int and element[1] >= 0
-                    and len(element[0]) <= 4096):
-                break
-            try:
-                pairs.append((bytes.fromhex(element[0]), element[1]))
-            except ValueError:
-                break
-        if len(pairs) == len(values):
-            signatures = tuple(pairs)
-            break
-    if (pub is not None and encrypted is not None and signatures
-            and any(len(r) > key_bytes for r, _ in signatures)):
-        return pub, encrypted, signatures
+        if candidate.startswith("[("):
+            signatures = _parse_signature_rows(candidate)
+            if signatures and any(len(r) > key_bytes for r, _ in signatures):
+                return public, ciphertext, signatures
     return None
+
+
+def _valid_recovery_data(scheme, point, signatures):
+    p, a, d = scheme.field, scheme.a, scheme.d
+    x, y = point
+    return (
+        0 <= x < p and 0 <= y < p
+        and (a*x*x + y*y - 1 - d*x*x*y*y) % p == 0
+        and all(0 <= z < scheme.subgroup_order for _, z in signatures)
+        and len({len(r) for r, _ in signatures}) == 1
+    )
 
 
 def extract_instance(documents: Sequence[Document]) -> RecoveryInstance | None:
@@ -533,17 +547,11 @@ def extract_instance(documents: Sequence[Document]) -> RecoveryInstance | None:
             parsed = _read_output(record, scheme.key_bytes)
             if parsed is None:
                 continue
-            pub, ciphertext, signatures = parsed
-            p, a, d = scheme.field, scheme.a, scheme.d
-            x, y = pub
-            if not (0 <= x < p and 0 <= y < p
-                    and (a*x*x + y*y - 1 - d*x*x*y*y) % p == 0):
-                continue
-            if any(z >= scheme.subgroup_order for _, z in signatures):
-                continue
-            if len({len(r) for r, _ in signatures}) != 1:
-                continue
-            matches.append(RecoveryInstance(scheme, pub, ciphertext, signatures))
+            public, ciphertext, signatures = parsed
+            if _valid_recovery_data(scheme, public, signatures):
+                matches.append(RecoveryInstance(
+                    scheme, public, ciphertext, signatures,
+                ))
     return matches[0] if len(matches) == 1 else None
 
 

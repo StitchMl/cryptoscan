@@ -379,12 +379,19 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
     instance = extract_instance(documents)
     if instance is None:
         raise ValueError("no supported source-verified short-secret ring signature")
-    with socket.create_connection((host, port), timeout=timeout) as connection:
-        connection.settimeout(timeout)
-        wire = _Wire(connection)
-        public_a, public_t = _public_keys(wire, instance)
-        worker = _SageWorker("sage_reducible_ring_worker.py")
-        try:
+    worker = _SageWorker("sage_reducible_ring_worker.py")
+    try:
+        # Validate availability of a sufficiently fast lattice reducer
+        # before opening a remote session with a strict server timeout.
+        worker.ask({
+            "mode": "preflight",
+            "dimension": instance.dimension,
+            "modulus": instance.modulus,
+        })
+        with socket.create_connection((host, port), timeout=timeout) as connection:
+            connection.settimeout(timeout)
+            wire = _Wire(connection)
+            public_a, public_t = _public_keys(wire, instance)
             private = worker.ask({
                 "mode": "recover_short_secret",
                 "dimension": instance.dimension,
@@ -397,21 +404,21 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
                 instance, public_a, public_t,
                 private["secret"], private["error"],
             )
-        finally:
-            worker.close()
-        for prompt, value in zip(instance.prompt_labels, proof, strict=True):
-            wire.until(prompt.encode("utf-8"))
-            wire.send(value)
-        tail = bytearray(wire.buffer)
-        while len(tail) < 20_000:
-            try:
-                part = connection.recv(4096)
-            except socket.timeout:
-                break
-            if not part:
-                break
-            tail.extend(part)
-        output = tail.decode("utf-8", "replace")
+            for prompt, value in zip(instance.prompt_labels, proof, strict=True):
+                wire.until(prompt.encode("utf-8"))
+                wire.send(value)
+            tail = bytearray(wire.buffer)
+            while len(tail) < 20_000:
+                try:
+                    part = connection.recv(4096)
+                except socket.timeout:
+                    break
+                if not part:
+                    break
+                tail.extend(part)
+            output = tail.decode("utf-8", "replace")
+    finally:
+        worker.close()
     match = re.search(r"\w{2,32}\{[^\r\n{}]{1,256}\}", output)
     if match is None:
         raise RuntimeError("remote verification refused signature: " + output[-250:])

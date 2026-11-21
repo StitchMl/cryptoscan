@@ -207,3 +207,9 @@ def test_synthetic_pairing_dialogue_without_sage(monkeypatch):
     assert events[0]["identity"] == "root"
     assert events[1] == {"mode": "challenge", "point": [5, 6]}
     assert events[-1] == {"mode": "closed"}
+
+
+def test_pairing_recognition_is_not_bound_to_a_sage_filename():
+    model = extract_instance([Document("binary_protocol.snapshot", _invented_source(), None)])
+    assert model is not None
+    assert model.identity == "root"

@@ -7,6 +7,8 @@ received, unlike round-by-round Fiat-Shamir grinding.
 """
 from __future__ import annotations
 
+from .source_units import python_sources
+
 import ast
 import json
 import re
@@ -248,9 +250,7 @@ def _instance_from_document(
 
 
 def extract_instance(documents: Sequence[Document]) -> BatchFiatShamirInstance | None:
-    for doc in documents:
-        if not doc.path.casefold().endswith(".py"):
-            continue
+    for doc, _ in python_sources(documents):
         instance = _instance_from_document(doc, documents)
         if instance is not None:
             return instance

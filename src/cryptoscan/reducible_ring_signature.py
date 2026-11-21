@@ -294,7 +294,7 @@ def forge_signature(instance, public_a, public_t, secret, error):
         range(q - instance.secret_bound, q)
     )
     if any(value % q not in permitted for value in secret + error):
-        raise ValueError("recovered secret is not ternary")
+        raise ValueError("recovered secret violates source-derived coefficient bounds")
     product = _cyclic_product(public_a, secret, q)
     if any((a + e - t) % q for a, e, t in zip(
             product, error, public_t, strict=True)):

@@ -112,3 +112,26 @@ def test_tcp_workflow_handles_64_rounds_with_verified_decisions(monkeypatch):
             Document("params.py", f"p={P}\nq={Q}\ng=2\n", None)]
     flag = recover_flag(docs, "example.test", 3583, progress=lambda _: None)
     assert flag == "crypto{mock_verified_flag}"
+
+
+def test_fischlin_first_hit_math_supports_other_challenge_spaces_and_oracles():
+    # Construct a transcript where branch zero's witness would create an
+    # earlier acceptable hash, excluding branch zero as the real one.
+    q, witness, nonce = 23, 3, 7
+    transcript = {
+        "a0": 2, "a1": 3, "e": 5,
+        "e0": 2, "e1": 7,
+        "z0": (nonce + 2*witness) % q,
+        "z1": 9,
+    }
+    def synthetic_oracle(a0, a1, e, e0, e1, z0, z1):
+        return 0 if e == 1 else 2**32
+    result = identify_simulated_branch(
+        transcript, witness, 0, q, challenge_count=16,
+        acceptance_bound=2**8, random_oracle=synthetic_oracle,
+    )
+    assert result == 1
+    assert identify_simulated_branch(
+        transcript, witness, 0, q, challenge_count=16,
+        acceptance_bound=2**8, random_oracle=lambda *args: 2**32,
+    ) is None

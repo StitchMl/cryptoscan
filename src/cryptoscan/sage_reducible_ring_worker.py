@@ -63,7 +63,7 @@ def _fast_reducer():
 
 def _reduce_lattice(basis, deadline=None):
     """Prefer an installed fast lattice reducer; fall back to Sage LLL."""
-    command, backend = _fast_reducer()
+    command, _ = _fast_reducer()
     if command is not None:
         serialized = "[[" + "]\n[".join(
             " ".join(map(str, row)) for row in basis

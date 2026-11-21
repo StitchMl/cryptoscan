@@ -20,6 +20,9 @@ on:
       - "tests/test_pairing_confirmation.py"
       - "src/cryptoscan/groth16_ticket.py"
       - "tests/test_groth16_ticket.py"
+      - "src/cryptoscan/source_units.py"
+      - "src/cryptoscan/crypto_hypotheses.py"
+      - "tests/test_source_units.py"
   workflow_dispatch:
 
 permissions:

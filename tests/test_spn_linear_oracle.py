@@ -158,3 +158,10 @@ def test_source_rejects_missing_same_key_independence():
 
 def test_unrelated_python_is_not_a_supported_oracle():
     assert extract_instance([Document("other.py", "import random\nprint(random.randint(0, 2))", None)]) is None
+
+
+def test_spn_resolver_accepts_extensionless_source():
+    doc = Document("opaque_cipher_input", _independent_source("lookup", "length"), None)
+    model = extract_instance([doc])
+    assert model is not None
+    assert model.rounds == 7

@@ -1,6 +1,8 @@
 """Generic truncated-polynomial RSA share recovery; pure Python kernel."""
 from __future__ import annotations
 
+from .source_units import python_sources
+
 import ast
 import math
 import re
@@ -103,13 +105,7 @@ def _structurally_supported(tree: ast.Module) -> bool:
 
 def extract_instance(documents: Sequence[Document]) -> TruncatedShareRSA | None:
     matches = []
-    for document in documents:
-        if not document.path.lower().endswith((".sage", ".py")):
-            continue
-        try:
-            tree = ast.parse(document.text)
-        except SyntaxError:
-            continue
+    for document, tree in python_sources(documents):
         if not _structurally_supported(tree):
             continue
         count = _coefficient_count(tree)

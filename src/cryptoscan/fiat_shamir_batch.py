@@ -250,11 +250,11 @@ def _instance_from_document(
 
 
 def extract_instance(documents: Sequence[Document]) -> BatchFiatShamirInstance | None:
-    for doc, _ in python_sources(documents):
-        instance = _instance_from_document(doc, documents)
-        if instance is not None:
-            return instance
-    return None
+    matches = [
+        instance for doc, _ in python_sources(documents)
+        if (instance := _instance_from_document(doc, documents)) is not None
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _select_commitments(

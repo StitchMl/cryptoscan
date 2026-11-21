@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .source_units import parse_python
+
 import base64
 import math
 import random
@@ -1192,7 +1194,7 @@ def _scan_phase_13(documents, findings):
     """Collect a coherent cryptographic attack family without side effects."""
     findings.extend(_source_findings(documents))
     for document in documents:
-        if not document.path.casefold().endswith(".py"):
+        if parse_python(document) is None:
             continue
         for line in unused_validation_flags(document.text):
             excerpt = document.text.splitlines()[line - 1].strip()[:200]
@@ -1217,7 +1219,7 @@ def _scan_phase_13(documents, findings):
             ))
 
     for document in documents:
-        if document.path.lower().endswith(".py"):
+        if parse_python(document) is not None:
             for line in counter_overlap_lines(document.text):
                 findings.append(Finding(
                     "GCM-COUNTER-OVERLAP",
@@ -1233,7 +1235,7 @@ def _scan_phase_13(documents, findings):
 
     overlap_files = {
         document.path for document in documents
-        if document.path.lower().endswith(".py")
+        if parse_python(document) is not None
         and counter_overlap_lines(document.text)
     }
     if overlap_files:

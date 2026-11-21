@@ -425,21 +425,21 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         connection.settimeout(timeout)
         wire = _LineSocket(connection)
         wire.line()  # greeting
-        ticket = wire.request("BuyTicket")
+        ticket = wire.request(instance.buy_command)
         try:
-            proof = ticket["Ticket"]["proof"]
+            proof = ticket[instance.ticket_response][instance.proof_field]
         except (KeyError, TypeError) as exc:
             raise RuntimeError(f"ticket purchase failed: {ticket!r}") from exc
-        if wire.request({"Redeem": {"proof": proof}}) != "GoodTicket":
+        if wire.request({instance.redeem_command: {instance.proof_field: proof}}) != instance.accepted_response:
             raise RuntimeError("original proof redemption was refused")
         for scalar in range(2, instance.redemptions_needed + 1):
             altered = rerandomize_proof(proof, scalar)
-            response = wire.request({"Redeem": {"proof": altered}})
-            if response != "GoodTicket":
+            response = wire.request({instance.redeem_command: {instance.proof_field: altered}})
+            if response != instance.accepted_response:
                 raise RuntimeError(
                     f"new Groth16 proof refused at scalar {scalar}: {response!r}"
                 )
-        outcome = wire.request("BuyFlag")
-        if not isinstance(outcome, dict) or not isinstance(outcome.get("Flag"), str):
+        outcome = wire.request(instance.flag_command)
+        if not isinstance(outcome, dict) or not isinstance(outcome.get(instance.flag_response), str):
             raise RuntimeError(f"ticket economy refused: {outcome!r}")
-    return outcome["Flag"]
+    return outcome[instance.flag_response]

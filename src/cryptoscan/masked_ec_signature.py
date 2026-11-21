@@ -555,65 +555,88 @@ def extract_instance(documents: Sequence[Document]) -> RecoveryInstance | None:
     return matches[0] if len(matches) == 1 else None
 
 
+def _masked_message(scheme, r, z, byte_width, tables, expand):
+    """Recover a single candidate by reversing the source-defined mask."""
+    p, a, d = scheme.field, scheme.a, scheme.d
+    challenge = int.from_bytes(
+        expand(r, byte_width, scheme.signature_hash), "big",
+    )
+    point = _linear_combination(z, challenge, tables, p, a, d)
+    if point[2] % p == 0:
+        return None
+    inverse = pow(point[2], -1, p)
+    affine = (point[0]*inverse % p, point[1]*inverse % p)
+    values = {
+        scheme.field_parameter_names[0]: a,
+        scheme.field_parameter_names[1]: d,
+        scheme.coordinate_names[0]: affine[0],
+        scheme.coordinate_names[1]: affine[1],
+    }
+    try:
+        coordinate = _field_eval(scheme.transform, values, p)
+        masked = bytes(left ^ right for left, right in zip(
+            coordinate.to_bytes(byte_width, "big"), r, strict=True,
+        ))
+    except (OverflowError, ValueError, ZeroDivisionError):
+        return None
+    first_length = byte_width - scheme.key_bytes
+    prefix, tail = masked[:first_length], masked[first_length:]
+    derived = expand(prefix, scheme.key_bytes, scheme.f2)
+    key = bytes(x ^ y for x, y in zip(tail, derived, strict=True))
+    if expand(key, first_length, scheme.f1) == prefix:
+        return key
+    return None
+
+
+def _decrypt_key(scheme: MaskedSignature, key_material: bytes,
+                 ciphertext: bytes) -> str:
+    try:
+        import bcrypt
+        from Crypto.Cipher import AES
+    except ImportError as exc:
+        raise RuntimeError(
+            "Install cipher dependencies: python -m pip install bcrypt pycryptodome"
+        ) from exc
+    key = bcrypt.kdf(
+        password=key_material, salt=scheme.kdf_salt,
+        desired_key_bytes=scheme.kdf_length, rounds=scheme.kdf_rounds,
+    )
+    plaintext = AES.new(key, AES.MODE_CTR, nonce=scheme.nonce).decrypt(
+        ciphertext,
+    )
+    try:
+        result = plaintext.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("recovered AES plaintext is not UTF-8") from exc
+    if not re.search(r"\w{2,32}\{[^\r\n{}]{1,256}\}", result):
+        raise ValueError("verified candidate does not decrypt to a CTF flag")
+    return result
+
+
 def recover_flag(documents: Sequence[Document], progress=print) -> str:
     instance = extract_instance(documents)
     if instance is None:
         raise ValueError("no source-verified reversible masked EC signature corpus")
     scheme = instance.scheme
-    p, a, d = scheme.field, scheme.a, scheme.d
     byte_width = len(instance.signatures[0][0])
     if byte_width <= scheme.key_bytes or byte_width > 256:
         raise ValueError("unsupported message recovery encoding")
-    f1len = byte_width - scheme.key_bytes
-    expand = lambda data, length, domain: _expand_sha256(
-        data, length, domain, scheme.separator,
-        scheme.counter_width, scheme.counter_byteorder,
+    def expand(data, length, domain):
+        return _expand_sha256(
+            data, length, domain, scheme.separator,
+            scheme.counter_width, scheme.counter_byteorder,
+        )
+    tables = _tables(
+        scheme.generator, instance.public_point, scheme.subgroup_order,
+        scheme.field, scheme.a, scheme.d,
     )
-    tables = _tables(scheme.generator, instance.public_point,
-                     scheme.subgroup_order, p, a, d)
-    constants = {scheme.field_parameter_names[0]: a,
-                 scheme.field_parameter_names[1]: d}
     for index, (r, z) in enumerate(instance.signatures):
-        challenge = int.from_bytes(expand(r, byte_width, scheme.signature_hash), "big")
-        point = _linear_combination(z, challenge, tables, p, a, d)
-        if point[2] % p == 0:
+        material = _masked_message(scheme, r, z, byte_width, tables, expand)
+        if material is None:
             continue
-        affine = (point[0]*pow(point[2], -1, p) % p,
-                  point[1]*pow(point[2], -1, p) % p)
-        values = {**constants, scheme.coordinate_names[0]: affine[0],
-                  scheme.coordinate_names[1]: affine[1]}
-        try:
-            coord = _field_eval(scheme.transform, values, p)
-            masked = bytes(left ^ right for left, right in zip(
-                coord.to_bytes(byte_width, "big"), r, strict=True,
-            ))
-        except (OverflowError, ValueError, ZeroDivisionError):
-            continue
-        prefix, tail = masked[:f1len], masked[f1len:]
-        derived = expand(prefix, scheme.key_bytes, scheme.f2)
-        key_material = bytes(x ^ y for x, y in zip(tail, derived, strict=True))
-        if expand(key_material, f1len, scheme.f1) != prefix:
-            continue
-        progress(f"[MASKED-EC-SIGNATURE] Verified candidate {index+1}/{len(instance.signatures)}")
-        try:
-            import bcrypt
-            from Crypto.Cipher import AES
-        except ImportError as exc:
-            raise RuntimeError(
-                "Install optional cipher dependencies: python -m pip install bcrypt pycryptodome"
-            ) from exc
-        key = bcrypt.kdf(
-            password=key_material, salt=scheme.kdf_salt,
-            desired_key_bytes=scheme.kdf_length, rounds=scheme.kdf_rounds,
+        progress(
+            f"[MASKED-EC-SIGNATURE] Verified candidate {index+1}/"
+            f"{len(instance.signatures)}"
         )
-        plaintext = AES.new(key, AES.MODE_CTR, nonce=scheme.nonce).decrypt(
-            instance.ciphertext,
-        )
-        try:
-            result = plaintext.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError("recovered AES plaintext is not UTF-8") from exc
-        if not re.search(r"\w{2,32}\{[^\r\n{}]{1,256}\}", result):
-            raise ValueError("verified candidate does not decrypt to a CTF flag")
-        return result
+        return _decrypt_key(scheme, material, instance.ciphertext)
     raise RuntimeError("no signature candidate passed the independent message hash check")

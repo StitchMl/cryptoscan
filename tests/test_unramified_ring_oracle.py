@@ -171,3 +171,9 @@ def test_unix_keeps_native_sage_worker(monkeypatch):
     command = module._sage_worker_command()
     assert command[0:2] == ["/usr/bin/sage", "-python"]
     assert command[-1].endswith("sage_ring_iso_worker.py")
+
+
+def test_unramified_ring_resolver_accepts_extensionless_code():
+    model = extract_instance([Document("algebra_source", invented_source(), None)])
+    assert model is not None
+    assert model.rounds == ((4, (2, 4)),)

@@ -192,10 +192,11 @@ def _curve_spec(tree):
             if group_size % factor:
                 continue
             candidate = group_size // factor
-            if candidate.bit_length() >= 120 and _multiply(
-                    _point(coords, p), candidate, p, a, d) == IDENTITY:
-                subgroup = candidate
-                break
+            if candidate.bit_length() >= 120:
+                check = _multiply(_point(coords, p), candidate, p, a, d)
+                if check[0] % p == 0 and (check[1] - check[2]) % p == 0:
+                    subgroup = candidate
+                    break
         if subgroup is None:
             continue
         return (p, a, d, coords, subgroup, result.value.elts[0], params,

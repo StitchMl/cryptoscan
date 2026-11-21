@@ -204,3 +204,31 @@ def test_source_grammar_probes_independently():
     assert _source_model(source) is not None
     _, ciphertext = _transcript()
     assert _read_output(Document("records.dat", ciphertext, None), 16) is not None
+
+
+def test_real_bcrypt_aes_ctr_decrypts_synthetic_inlier():
+    import bcrypt
+    from Crypto.Cipher import AES
+
+    secret, encoded = _transcript()
+    flag = b"TST{verified_generic_corpus}"
+    salt = b"SYNTHETIC_SALT"
+    rounds = 2
+    key = bcrypt.kdf(
+        password=secret, salt=salt,
+        desired_key_bytes=16, rounds=rounds,
+    )
+    ciphertext = AES.new(key, AES.MODE_CTR, nonce=b"12345678").encrypt(flag)
+    source = _synthetic_source().replace(
+        'b"SYNTHETIC_SALT", 16, 17',
+        'b"SYNTHETIC_SALT", 16, 2',
+    )
+    output = encoded.replace(
+        "Encrypted = 11223344",
+        "Encrypted = " + ciphertext.hex(),
+    )
+    transcript = [
+        Document("generic_sage_source.opaque", source, None),
+        Document("sample_output.record", output, None),
+    ]
+    assert recover_flag(transcript, progress=lambda _: None) == flag.decode()

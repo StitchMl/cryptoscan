@@ -96,3 +96,14 @@ def test_explicit_nonstandard_extension_is_scanned(tmp_path):
     docs = collect_documents([str(source)])
     assert len(docs) == 1
     assert inspect_hypotheses(docs)
+
+
+def test_flat_ctf_directory_does_not_merge_unrelated_hypothesis_features():
+    docs = [
+        Document("elliptic.sage", "point = EllipticCurve(GF(97), [1, 2])", None),
+        Document("randomizer.py", "import random\nrandom.shuffle([1, 2, 3])", None),
+        Document("signatures.txt", "def sign(value): return value", None),
+        Document("noise.py", "import secrets\nsecrets.randbelow(97)", None),
+    ]
+    labels = {model.family for model in inspect_hypotheses(docs)}
+    assert "Hidden authentic signature among decoys" not in labels

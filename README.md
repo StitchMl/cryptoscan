@@ -774,7 +774,27 @@ The parser also accepts Python byte literals and common `key: value` challenge d
 It scans text members inside ZIP, TAR, TAR.GZ, TAR.BZ2, and TAR.XZ archives without extracting them to disk. Per-member and entry-count limits bound archive processing.
 RSA public keys in PKCS#1 or SubjectPublicKeyInfo PEM and DER form are parsed with a bounded built-in DER reader.
 
-By default, corpus collection skips documentation, notebooks, tests, writeups, solvers, and exploit scripts. Exact duplicate artifacts across release, server, and archive copies are scanned once. Cross-artifact attacks stay inside one inferred challenge boundary, so unrelated challenge directories do not produce shared-prime, common-modulus, nonce-reuse, or broadcast findings.
+By default, recursive corpus collection skips documentation, notebooks, tests, writeups, solvers, and exploit scripts. Files supplied explicitly are always examined, regardless of their filename or extension. Exact duplicate artifacts across release, server, and archive copies are scanned once. Cross-artifact attacks stay inside one inferred challenge boundary, so unrelated challenge directories do not produce shared-prime, common-modulus, nonce-reuse, or broadcast findings.
+
+## Source-independent detection and exploratory hypotheses
+
+CryptoScan distinguishes three levels of evidence:
+
+1. **Cryptographic mechanisms**: content-derived hypotheses suggest checks such as nonce reuse, transcript consistency, signature-inlier search, or proof malleability. These are not confirmed vulnerabilities and never authorize network solvers.
+2. **Source-verified weaknesses**: a detector validates the relevant algebraic relationships, regardless of arbitrary source filenames, extensions, or variable names it can infer. The finding must include evidence from actual data or code.
+3. **Verified solver profiles**: a network attack is dispatched only when a compatible protocol and input constraints have been established. Some historical adapters still require specific wire semantics or message encodings; detecting a cryptographic family alone does not mean every implementation is automatically solvable.
+
+Source recognition now uses parsed Python or Sage-compatible code and Rust grammar where possible. Source/output correlation is restricted to the same challenge scope; ambiguous multiple candidates are not silently resolved by picking the first file.
+
+On Windows PowerShell:
+
+```powershell
+cryptoscan . --no-assist
+cryptoscan . --verbose
+cryptoscan . --solve --host <authorized-host> --port <port>
+```
+
+The default text report can show **unverified attack hypotheses even when no confirmed weakness has been established**. Hypotheses do not change the status or confidence of the security findings, and do not appear in machine-readable JSON reports.
 
 ## Stable reports
 

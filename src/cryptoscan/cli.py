@@ -6,6 +6,7 @@ import os
 import sys
 
 from . import __version__
+from .crypto_hypotheses import inspect_hypotheses
 from .cookie import main as cookie_main
 from .assistant import assistant_session
 from .diagnostics import diagnose_runtime
@@ -241,6 +242,12 @@ def main(argv: list[str] | None = None) -> int:
     findings = scan(documents, args.fermat_steps)
     _print_report(args, findings)
     _report_supported_protocols(args, documents)
+    if args.format == "text" and not findings:
+        hypotheses = inspect_hypotheses(documents)
+        if hypotheses:
+            print("Cryptographic attack hypotheses (unverified; not confirmed weaknesses):")
+            for hypothesis in hypotheses:
+                print(f"  - {hypothesis.family}: {hypothesis.next_checks[0]}.")
     if args.solve:
         return _solve_documents(args, documents)
     if _should_assist(args, findings):

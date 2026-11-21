@@ -120,8 +120,9 @@ def test_variants_are_distinct_and_canonically_round_trip():
 def test_invalid_proof_or_scalar_rejected():
     with pytest.raises(ValueError):
         rerandomize_proof("bad", 2)
+    sample = _synthetic_proof()
     with pytest.raises(ValueError):
-        rerandomize_proof(_synthetic_proof(), SCALAR_FIELD)
+        rerandomize_proof(sample, SCALAR_FIELD)
     with pytest.raises(ValueError):
         rerandomize_proof("00"*128, 2)
 

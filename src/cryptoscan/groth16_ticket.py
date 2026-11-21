@@ -5,6 +5,8 @@ This backend reads/writes canonical compressed arkworks 0.3 BN254 points.
 """
 from __future__ import annotations
 
+from .source_units import rust_sources
+
 import json
 import re
 import socket
@@ -57,8 +59,7 @@ def _constants(source: str) -> dict[str, int]:
 
 
 def extract_instance(documents: Sequence[Document]) -> ReusableProofIdentity | None:
-    rust = [item.text for item in documents
-            if item.path.lower().endswith(".rs")]
+    rust = [item.text for item in rust_sources(documents)]
     proof_sources = [code for code in rust if all(token in code for token in (
         "Groth16::<", "Proof::<", "CanonicalSerialize",
         "CanonicalDeserialize", "spent: HashSet<",

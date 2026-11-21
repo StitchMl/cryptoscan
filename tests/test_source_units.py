@@ -21,7 +21,7 @@ def sign(secret, point):
     return nonce * point + secret
 def encrypt(message):
     key = bcrypt.kdf(message, b"seed", 16, 5)
-    return AES.new(key, AES.MODE_CTR, nonce=b"").encrypt(message)
+    return AES.new(key, AES.MODE_CTR, nonce=secrets.token_bytes(8)).encrypt(message)
 samples = [sign(2, 3) for _ in range(7)]
 random.shuffle(samples)
 """

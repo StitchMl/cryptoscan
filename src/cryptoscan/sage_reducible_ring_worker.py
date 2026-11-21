@@ -6,6 +6,7 @@ and discovers polynomial factors from the algebraic structure at runtime.
 from __future__ import annotations
 
 import json
+import os
 import math
 import re
 import shutil
@@ -39,13 +40,14 @@ def _factor_groups(factors, maximum_degree):
 
 def _reduce_lattice(basis):
     """Prefer an installed fast lattice reducer; fall back to Sage LLL."""
-    if shutil.which("flatter") is not None:
+    backend = os.environ.get("CRYPTOSCAN_FLATTER") or shutil.which("flatter")
+    if backend is not None:
         serialized = "[[" + "]\n[".join(
             " ".join(map(str, row)) for row in basis
         ) + "]]"
         try:
             completed = subprocess.run(
-                ["flatter"], input=serialized, text=True,
+                [backend], input=serialized, text=True,
                 capture_output=True, check=True, timeout=240,
             )
             entries = [
@@ -55,6 +57,14 @@ def _reduce_lattice(basis):
                 return matrix(ZZ, basis.nrows(), basis.ncols(), entries)
         except (OSError, subprocess.SubprocessError):
             pass
+    if basis.nrows() >= 85 and os.environ.get("CRYPTOSCAN_SLOW_LLL") != "1":
+        raise RuntimeError(
+            "Fast lattice reducer 'flatter' is not installed or failed. "
+            "Large cyclic-ring lattices require flatter for reliable runtime. "
+            "Install it in WSL, then verify 'wsl --exec which flatter'. "
+            "Set CRYPTOSCAN_SLOW_LLL=1 inside WSL to explicitly permit "
+            "the slower Sage LLL fallback."
+        )
     return basis.LLL(delta=0.99)
 
 
@@ -116,7 +126,9 @@ def _recover_component(a, t, factor, modulus, embedding, shortened):
 
 def _candidate_component(a, t, factor, modulus):
     for shortened in (True, False):
-        for embedding in (32, 64, 128):
+        # The modulus-sized embedding is the natural first choice: it
+        # keeps the secret/error solution in the distinguished tail row.
+        for embedding in (modulus, 128, 64, 32):
             try:
                 return _recover_component(
                     a, t, factor, modulus, embedding, shortened,
@@ -161,6 +173,27 @@ def _integral_factor_groups(dimension):
     return factors
 
 
+def _preflight(message):
+    dimension = int(message["dimension"])
+    if not 8 <= dimension <= 1024:
+        raise ValueError("unsupported ring dimension")
+    groups = _integral_factor_groups(dimension)
+    max_degree = max(factor.degree() for factor in groups)
+    backend = os.environ.get("CRYPTOSCAN_FLATTER") or shutil.which("flatter")
+    if max_degree >= 42 and not backend and os.environ.get("CRYPTOSCAN_SLOW_LLL") != "1":
+        raise RuntimeError(
+            "The cyclic ring has a high-degree lattice component "
+            f"(degree {max_degree}); fast reducer 'flatter' is required "
+            "for this time-limited attack. Install flatter inside Ubuntu "
+            "WSL (https://github.com/keeganryan/flatter), then run "
+            "'wsl --exec which flatter' from PowerShell. "
+            "Sage LLL fallback can be enabled with CRYPTOSCAN_SLOW_LLL=1 "
+            "inside the WSL environment, but may exceed the service timeout."
+        )
+    return {"backend": "flatter" if backend else "sage-lll",
+            "max_factor_degree": max_degree}
+
+
 def _recover(message):
     ring, q, n, bound, a, t = _public_ring(message)
     full = ring.gen() ** n - 1
@@ -198,9 +231,14 @@ def main():
     for line in sys.stdin:
         try:
             request = json.loads(line)
-            if request.get("mode") != "recover_short_secret":
+            mode = request.get("mode")
+            if mode == "preflight":
+                response = _preflight(request)
+            elif mode == "recover_short_secret":
+                _preflight(request)
+                response = _recover(request)
+            else:
                 raise ValueError("unsupported Sage operation")
-            response = _recover(request)
         except Exception as exc:
             response = {"error": f"{type(exc).__name__}: {exc}"}
         print(json.dumps(response), flush=True)

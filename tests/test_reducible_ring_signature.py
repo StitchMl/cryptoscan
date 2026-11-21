@@ -281,3 +281,10 @@ def test_variable_small_secret_bounds_are_derived_from_source():
     assert len(proof) == 3
     assert all(len(value) == n * instance.encoding_width * 2
                for value in proof)
+
+
+def test_unsupported_high_degree_component_is_not_auto_dispatched():
+    # A prime ring dimension can have a cyclotomic factor too large for
+    # the available embedded-CVP reduction; retain only the hypothesis.
+    source = invented_source(degree=419)
+    assert extract_instance([Document("large_unknown_file", source, None)]) is None

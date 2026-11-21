@@ -6,6 +6,8 @@ GF(2) system against hidden AAD and plaintext, and completing a PoW.
 """
 from __future__ import annotations
 
+from .source_units import python_sources
+
 import ast
 from dataclasses import dataclass
 from collections.abc import Sequence
@@ -263,9 +265,7 @@ def _qualifying_gcm_source(text: str) -> ast.Module | None:
 def recognize_gcm_tag_oracle(documents: Sequence[Document]) -> list[GCMTagOracle]:
     """Find source-level GCM tag oracles without matching command names."""
     matches = []
-    for doc in documents:
-        if not doc.path.casefold().endswith(".py"):
-            continue
+    for doc, _ in python_sources(documents):
         tree = _qualifying_gcm_source(doc.text)
         if tree is None:
             continue

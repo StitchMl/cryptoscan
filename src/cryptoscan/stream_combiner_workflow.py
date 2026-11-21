@@ -6,6 +6,8 @@ keystream and subsequent ciphertext from the same challenge scope.
 """
 from __future__ import annotations
 
+from .source_units import parse_python
+
 import ast
 import hashlib
 import operator
@@ -267,7 +269,7 @@ def recognize_stream_cipher(documents: Sequence[Document]) -> list[StreamCipherI
     """Pair a recognizable public stream cipher with same-scope hex output."""
     found = []
     for doc in documents:
-        if not doc.path.lower().endswith(".py") or not _known_zero_input(doc.text):
+        if parse_python(doc) is None or not _known_zero_input(doc.text):
             continue
         model = parse_stream_combiner(doc.text, doc.path)
         if model is None or len(model.masks) != 4:

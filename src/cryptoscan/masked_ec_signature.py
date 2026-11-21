@@ -161,8 +161,7 @@ def _curve_spec(tree):
         transform = next((
             inner for inner in transforms
             if any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                   and node.func.id == inner.name and node is not generators[0]
-                   for node in ast.walk(fn))
+                   and node.func.id == inner.name for node in ast.walk(fn))
             and any(isinstance(node, ast.Name) and node.id in scalars
                     for node in ast.walk(inner))
         ), None)

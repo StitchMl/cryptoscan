@@ -535,24 +535,25 @@ def _valid_recovery_data(scheme, point, signatures):
     )
 
 
+def _instances_for_source(source, scheme, documents):
+    for record in documents:
+        if source.path == record.path or source.scope != record.scope:
+            continue
+        parsed = _read_output(record, scheme.key_bytes)
+        if parsed is None:
+            continue
+        public, ciphertext, signatures = parsed
+        if _valid_recovery_data(scheme, public, signatures):
+            yield RecoveryInstance(scheme, public, ciphertext, signatures)
+
+
 def extract_instance(documents: Sequence[Document]) -> RecoveryInstance | None:
-    matches = []
+    candidates = []
     for source in documents:
         scheme = _source_model(source)
-        if scheme is None:
-            continue
-        for record in documents:
-            if source.path == record.path or source.scope != record.scope:
-                continue
-            parsed = _read_output(record, scheme.key_bytes)
-            if parsed is None:
-                continue
-            public, ciphertext, signatures = parsed
-            if _valid_recovery_data(scheme, public, signatures):
-                matches.append(RecoveryInstance(
-                    scheme, public, ciphertext, signatures,
-                ))
-    return matches[0] if len(matches) == 1 else None
+        if scheme is not None:
+            candidates.extend(_instances_for_source(source, scheme, documents))
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _masked_message(scheme, r, z, byte_width, tables, expand):

@@ -134,6 +134,10 @@ def _solve_remote(args, documents) -> int | None:
 
 def _solve_offline(args, documents) -> int | None:
     streams = recognize_stream_cipher(documents)
+    if len(streams) > 1:
+        print("Multiple stream-cipher instances detected; select a specific source/output pair.",
+              file=sys.stderr)
+        return 2
     if streams:
         return _execute_recovery("LFSR correlation", recover_stream_cipher, streams[0])
     if extract_eclcg_instance(documents) is not None:

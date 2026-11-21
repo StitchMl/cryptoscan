@@ -227,50 +227,71 @@ def _curve_spec(tree):
     return None
 
 
+def _masked_call_names(expression, lambdas):
+    if not (isinstance(expression, ast.BinOp)
+            and isinstance(expression.op, ast.Add)
+            and isinstance(expression.left, ast.Call)
+            and isinstance(expression.left.func, ast.Name)):
+        return None
+    first = expression.left.func.id
+    right = expression.right
+    if not (isinstance(right, ast.Call) and len(right.args) == 2
+            and isinstance(right.args[0], ast.Call)
+            and isinstance(right.args[0].func, ast.Name)):
+        return None
+    second = right.args[0].func.id
+    if first == second or first not in lambdas or second not in lambdas:
+        return None
+    return first, second
+
+
 def _hash_scheme(tree):
-    assignments = _assignments(tree)
     lambdas = {
-        name: value for name, value in assignments.items()
+        name: value for name, value in _assignments(tree).items()
         if isinstance(value, ast.Lambda) and isinstance(value.body, ast.Call)
         and len(value.body.args) == 4
         and isinstance(value.body.args[-1], ast.Constant)
         and isinstance(value.body.args[-1].value, bytes)
     }
-    if len(lambdas) < 3:
+    if len(lambdas) != 3:
         return None
     for fn in (item for item in tree.body if isinstance(item, ast.FunctionDef)):
         code = ast.unparse(fn)
-        if not ("secrets.randbelow" in code and "xor(" in code and ".hex()" in code):
+        if not all(marker in code for marker in (
+            "secrets.randbelow", "xor(", ".hex()",
+        )):
             continue
-        sign_assigns = _assignments(fn)
-        composite = [
-            expr for expr in sign_assigns.values()
-            if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add)
-            and isinstance(expr.left, ast.Call)
-            and isinstance(expr.left.func, ast.Name)
-        ]
-        for expr in composite:
-            first = expr.left.func.id
-            if first not in lambdas:
+        for expression in _assignments(fn).values():
+            names = _masked_call_names(expression, lambdas)
+            if names is None:
                 continue
-            right = expr.right
-            if not (isinstance(right, ast.Call) and len(right.args) == 2
-                    and isinstance(right.args[0], ast.Call)
-                    and isinstance(right.args[0].func, ast.Name)):
-                continue
-            second = right.args[0].func.id
-            if second not in lambdas:
-                continue
-            remaining = [
-                value.body.args[3].value for name, value in lambdas.items()
-                if name not in (first, second)
-            ]
-            if len(remaining) != 1:
-                continue
-            f1 = lambdas[first].body.args[3].value
-            f2 = lambdas[second].body.args[3].value
-            return f1, f2, remaining[0]
+            first, second = names
+            third = next(name for name in lambdas if name not in names)
+            return tuple(
+                lambdas[name].body.args[3].value
+                for name in (first, second, third)
+            )
     return None
+
+
+def _ctr_nonce(tree):
+    aes = [
+        item for item in ast.walk(tree)
+        if isinstance(item, ast.Call) and isinstance(item.func, ast.Attribute)
+        and item.func.attr == "new" and any(
+            isinstance(value, ast.Attribute) and value.attr == "MODE_CTR"
+            for value in ast.walk(item)
+        )
+    ]
+    if len(aes) != 1:
+        return None
+    return next(
+        (keyword.value.value for keyword in aes[0].keywords
+         if keyword.arg == "nonce"
+         and isinstance(keyword.value, ast.Constant)
+         and isinstance(keyword.value.value, bytes)),
+        None,
+    )
 
 
 def _kdf_scheme(tree):
@@ -287,19 +308,7 @@ def _kdf_scheme(tree):
             continue
         if not (1 <= length <= 64 and 1 <= rounds <= 1000000):
             continue
-        aes = [
-            item for item in ast.walk(tree)
-            if isinstance(item, ast.Call) and isinstance(item.func, ast.Attribute)
-            and item.func.attr == "new" and any(
-                isinstance(value, ast.Attribute) and value.attr == "MODE_CTR"
-                for value in ast.walk(item)
-            )
-        ]
-        if len(aes) != 1:
-            continue
-        nonce = next((value.value.value for value in aes[0].keywords
-                      if value.arg == "nonce" and isinstance(value.value, ast.Constant)
-                      and isinstance(value.value.value, bytes)), None)
+        nonce = _ctr_nonce(tree)
         if nonce is not None:
             return node.args[1].value, rounds, length, nonce
     return None
@@ -331,6 +340,31 @@ def _hash_parameters(tree):
     return None
 
 
+def _secret_byte_count(tree) -> int | None:
+    assignments = _assignments(tree)
+    calls = [
+        node.args[0] for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "token_bytes" and len(node.args) == 1
+    ]
+    lengths = []
+    for expr in calls:
+        if not (isinstance(expr, ast.BinOp)
+                and isinstance(expr.op, ast.FloorDiv)
+                and isinstance(expr.left, ast.Name)
+                and isinstance(expr.right, ast.Constant)
+                and expr.right.value == 8
+                and expr.left.id in assignments):
+            continue
+        try:
+            length_bits = _static_integer(assignments[expr.left.id])
+        except ValueError:
+            continue
+        if 64 <= length_bits <= 512 and length_bits % 8 == 0:
+            lengths.append(length_bits // 8)
+    return lengths[0] if len(lengths) == 1 else None
+
+
 def _source_model(doc: Document) -> MaskedSignature | None:
     tree = parse_python(doc)
     if tree is None:
@@ -351,27 +385,11 @@ def _source_model(doc: Document) -> MaskedSignature | None:
         return None
     if not 0 <= test_point < p:
         return None
-    top_level = _assignments(tree)
-    key_length_calls = [
-        node.args[0] for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "token_bytes" and len(node.args) == 1
-    ]
-    key_lengths = []
-    for expr in key_length_calls:
-        if (isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.FloorDiv)
-                and isinstance(expr.left, ast.Name)
-                and isinstance(expr.right, ast.Constant)
-                and expr.right.value == 8 and expr.left.id in top_level):
-            try:
-                key_lengths.append(_static_integer(top_level[expr.left.id]))
-            except ValueError:
-                continue
-    k2 = key_lengths[0] if len(key_lengths) == 1 else None
-    if k2 is None or k2 % 8:
+    key_bytes = _secret_byte_count(tree)
+    if key_bytes is None:
         return None
     return MaskedSignature(p, a, d, G, order, transform, params,
-                           field_names, *scheme, *hash_parameters, k2//8, *kdf)
+                           field_names, *scheme, *hash_parameters, key_bytes, *kdf)
 
 
 def _point(xy, p):

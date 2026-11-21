@@ -5,6 +5,8 @@ data; no challenge parameters are bundled.
 """
 from __future__ import annotations
 
+from .source_units import MAX_SOURCE_LENGTH
+
 import json
 import re
 import socket
@@ -92,9 +94,9 @@ def _proof_shape(source: str) -> bool:
 def extract_instance(documents: Sequence[Document]) -> PairingConfirmation | None:
     found = []
     for document in documents:
-        if not document.path.lower().endswith((".sage", ".py")):
-            continue
         source = document.text
+        if not source or len(source) > MAX_SOURCE_LENGTH:
+            continue
         if not _proof_shape(source):
             continue
         p, b, k = (_assignment(source, name) for name in ("p", "b", "k"))

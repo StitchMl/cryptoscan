@@ -7,6 +7,7 @@ import sys
 
 from . import __version__
 from .crypto_hypotheses import inspect_hypotheses
+from .masked_ec_signature import extract_instance as extract_masked_ec, recover_flag as recover_masked_ec_flag
 from .cookie import main as cookie_main
 from .assistant import assistant_session
 from .diagnostics import diagnose_runtime
@@ -133,6 +134,10 @@ def _solve_remote(args, documents) -> int | None:
 
 
 def _solve_offline(args, documents) -> int | None:
+    if extract_masked_ec(documents) is not None:
+        return _execute_recovery(
+            "Masked EC signature inlier", recover_masked_ec_flag, documents,
+        )
     streams = recognize_stream_cipher(documents)
     if len(streams) > 1:
         print("Multiple stream-cipher instances detected; select a specific source/output pair.",
@@ -205,6 +210,11 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    signature = extract_masked_ec(documents)
+    if signature is not None:
+        print("Detected: source-verified reversible masked EC signature corpus; "
+              "hash-filtered inlier recovery and symmetric-key derivation available "
+              f"({len(signature.signatures)} candidates, pure Python).")
     groth16_tickets = extract_groth16_tickets(documents)
     if groth16_tickets is not None:
         print("Detected: Groth16 proof-byte identifier replay; proof "

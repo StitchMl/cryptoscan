@@ -16,6 +16,14 @@ import sys
 from sage.all import GF, PolynomialRing, ZZ, crt, matrix
 
 
+class LatticeBackendError(RuntimeError):
+    """The external reduction backend could not complete the operation."""
+
+
+class ComponentNotRecovered(RuntimeError):
+    """The reduced lattice did not expose a verified short component."""
+
+
 def _center(value, modulus):
     number = int(value) % modulus
     return number if number <= modulus // 2 else number - modulus
@@ -71,18 +79,16 @@ def _reduce_lattice(basis):
                 return matrix(ZZ, basis.nrows(), basis.ncols(), entries)
         except (OSError, subprocess.SubprocessError) as exc:
             if basis.nrows() >= 85 and os.environ.get("CRYPTOSCAN_SLOW_LLL") != "1":
-                raise RuntimeError(
+                raise LatticeBackendError(
                     f"fast lattice reducer failed on {basis.nrows()}x{basis.ncols()} "
                     f"matrix: {type(exc).__name__}: {exc}. "
                     "Check flatter installation and its runtime libraries in WSL."
                 ) from exc
     if basis.nrows() >= 85 and os.environ.get("CRYPTOSCAN_SLOW_LLL") != "1":
-        raise RuntimeError(
-            "Fast lattice reducer 'flatter' is not installed or failed. "
-            "Large cyclic-ring lattices require flatter for reliable runtime. "
-            "Install it in WSL, then verify 'wsl --exec which flatter'. "
-            "Set CRYPTOSCAN_SLOW_LLL=1 inside WSL to explicitly permit "
-            "the slower Sage LLL fallback."
+        raise LatticeBackendError(
+            "No working accelerated lattice reducer (flatter or fplll). "
+            "In Ubuntu WSL run 'sudo apt install fplll-tools' or install flatter. "
+            "Use CRYPTOSCAN_SLOW_LLL=1 inside WSL only to opt into slow Sage LLL."
         )
     return basis.LLL(delta=0.99)
 
@@ -140,7 +146,9 @@ def _recover_component(a, t, factor, modulus, embedding, shortened):
             for index in range(removed, degree)
         ):
             return secret
-    raise RuntimeError(f"lattice did not recover short component (degree {degree})")
+    raise ComponentNotRecovered(
+        f"lattice did not recover short component (degree {degree})"
+    )
 
 
 def _candidate_component(a, t, factor, modulus):
@@ -152,9 +160,9 @@ def _candidate_component(a, t, factor, modulus):
                 return _recover_component(
                     a, t, factor, modulus, embedding, shortened,
                 )
-            except RuntimeError:
+            except ComponentNotRecovered:
                 continue
-    raise RuntimeError(
+    raise ComponentNotRecovered(
         f"lattice reduction did not recover short secret modulo degree-{factor.degree()} factor"
     )
 
@@ -200,17 +208,14 @@ def _preflight(message):
     max_degree = max(factor.degree() for factor in groups)
     command, backend = _fast_reducer()
     if max_degree >= 42 and command is None and os.environ.get("CRYPTOSCAN_SLOW_LLL") != "1":
-        raise RuntimeError(
-            "The cyclic ring has a high-degree lattice component "
-            f"(degree {max_degree}); install a fast reducer ('flatter' " +
-            "or 'fplll') "
-            "for this time-limited attack. Install fplll-tools with " +
-            "'sudo apt install fplll-tools' in Ubuntu WSL, or build flatter "
-            "(https://github.com/keeganryan/flatter), then run "
-            "'wsl --exec which fplll' or 'wsl --exec which flatter' " +
-            "from PowerShell. "
-            "Sage LLL fallback can be enabled with CRYPTOSCAN_SLOW_LLL=1 "
-            "inside the WSL environment, but may exceed the service timeout."
+        raise LatticeBackendError(
+            f"Cyclic-ring lattice factor degree {max_degree} needs an "
+            "accelerated reducer. In Ubuntu WSL install 'fplll-tools' "
+            "with 'sudo apt install fplll-tools', or build flatter "
+            "(https://github.com/keeganryan/flatter). Verify from "
+            "PowerShell with 'wsl --exec which fplll' or "
+            "'wsl --exec which flatter'. Set CRYPTOSCAN_SLOW_LLL=1 "
+            "inside WSL only to opt into a potentially very slow fallback."
         )
     return {"backend": backend,
             "max_factor_degree": max_degree}
@@ -220,10 +225,16 @@ def _recover(message):
     ring, q, n, bound, a, t = _public_ring(message)
     full = ring.gen() ** n - 1
     groups = _integral_factor_groups(n)
-    components = [
-        (ring(factor), _candidate_component(a, t, factor, q))
-        for factor in groups
-    ]
+    components = []
+    for position, factor in enumerate(groups, start=1):
+        print(
+            f"[CYCLIC-LATTICE] component {position}/{len(groups)}, "
+            f"factor degree {factor.degree()}",
+            file=sys.stderr, flush=True,
+        )
+        components.append(
+            (ring(factor), _candidate_component(a, t, factor, q))
+        )
     moduli = [modulus for modulus, _ in components]
     if any(
         moduli[i].gcd(moduli[j]).degree() > 0

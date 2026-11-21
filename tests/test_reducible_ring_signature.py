@@ -102,6 +102,7 @@ def test_renamed_source_fields_and_nonstandard_extension():
     assert instance is not None
     assert instance.dimension == 60
     assert instance.modulus == 257
+    assert instance.secret_bound == 1
     assert instance.message == b"synthetic task"
     assert instance.public_labels == ("first_enc", "second_enc")
     assert instance.prompt_labels == ("first = ", "second = ", "challenge = ")
@@ -254,3 +255,29 @@ def test_cli_dispatches_general_source_to_ring_solver(tmp_path, monkeypatch, cap
     assert status == 0
     assert invocations == [("127.0.0.1", 1010, 120.0)]
     assert "FLAG: DEMO{synthetic_dispatch}" in capsys.readouterr().out
+
+
+def test_variable_small_secret_bounds_are_derived_from_source():
+    source = invented_source().replace(
+        "first = draw(1)", "first = draw(2)",
+    ).replace(
+        "second = draw(1)", "second = draw(2)",
+    )
+    instance = extract_instance([Document("not_a_sage_file.dat", source, None)])
+    assert instance is not None
+    assert instance.secret_bound == 2
+
+    rng = random.Random(82)
+    n, q = instance.dimension, instance.modulus
+    public = [rng.randrange(q) for _ in range(n)]
+    secret = [rng.randrange(-2, 3) % q for _ in range(n)]
+    noise = [rng.randrange(-2, 3) % q for _ in range(n)]
+    published = [
+        (x + y) % q for x, y in zip(
+            _cyclic_product(public, secret, q), noise, strict=True,
+        )
+    ]
+    proof = forge_signature(instance, public, published, secret, noise)
+    assert len(proof) == 3
+    assert all(len(value) == n * instance.encoding_width * 2
+               for value in proof)

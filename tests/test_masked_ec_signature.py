@@ -232,3 +232,25 @@ def test_real_bcrypt_aes_ctr_decrypts_synthetic_inlier():
         Document("sample_output.record", output, None),
     ]
     assert recover_flag(transcript, progress=lambda _: None) == flag.decode()
+
+
+def test_powershell_style_offline_cli_detects_and_dispatches(tmp_path, monkeypatch, capsys):
+    import cryptoscan.cli as cli
+
+    _, output = _transcript()
+    (tmp_path / "renamed_source.data").write_text(
+        _synthetic_source(), encoding="utf-8",
+    )
+    (tmp_path / "unknown_records.bin").write_text(
+        output, encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli, "recover_masked_ec_flag",
+        lambda documents: "TST{synthetic_offline_dispatch}",
+    )
+    assert cli.main([str(tmp_path), "--no-assist"]) == 0
+    report = capsys.readouterr().out
+    assert "Detected: source-verified reversible masked EC signature corpus" in report
+    assert cli.main([str(tmp_path), "--solve"]) == 0
+    result = capsys.readouterr().out
+    assert "FLAG: TST{synthetic_offline_dispatch}" in result

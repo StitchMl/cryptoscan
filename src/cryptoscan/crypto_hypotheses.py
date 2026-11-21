@@ -80,65 +80,57 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
     return result
 
 
+# Requirements describe mechanisms rather than target service names.
+HYPOTHESIS_RULES = (
+    ({"elliptic_curve", "random_scalar", "shuffle", "authentication"},
+     "Hidden authentic signature among decoys",
+     "An elliptic-curve signature generator is combined with randomized or shuffled candidates.",
+     ("Identify and verify genuine transcripts with the public key",
+      "Check whether a signature encodes or recovers an encrypted secret")),
+    ({"stream_encryption", "key_derivation"},
+     "Derived symmetric key and stream encryption",
+     "A KDF feeds stream/CTR encryption; inspect how its input can be recovered.",
+     ("Identify material used to derive the key",
+      "Check nonce uniqueness and known plaintext")),
+    ({"zkp", "authentication"},
+     "Zero-knowledge proof and soundness",
+     "A proof system is used to authorize a state change or authenticate data.",
+     ("Check malleability, replay identifiers and public-input binding",
+      "Check whether verification enforces the intended statement")),
+    ({"pairing"},
+     "Bilinear-pairing relations",
+     "Pairing computations may permit algebraic transformations of verification equations.",
+     ("Express verifier equations with bilinearity",
+      "Check identity-point rejection and subgroup membership")),
+    ({"rsa", "modular_power"},
+     "RSA modular arithmetic",
+     "Public-key generation and modular exponentiation occur in the source.",
+     ("Inspect reused primes, exponents and shared factors",
+      "Inspect algebraic relations and padding oracles")),
+    ({"finite_algebra", "interaction"},
+     "Algebraic interactive oracle",
+     "Finite-ring or polynomial operations are exposed through an interactive protocol.",
+     ("Determine which polynomial identities or isomorphisms leak information",
+      "Check whether query outputs provide an overdetermined linear system")),
+)
+
+
 def inspect_hypotheses(documents: Sequence[Document]) -> list[AttackHypothesis]:
     """Generate scoped, unverified avenues of investigation from actual code."""
     by_scope: dict[str, list[Document]] = {}
     for document in documents:
-        if not document.text or len(document.text) > MAX_SOURCE_LENGTH:
-            continue
-        by_scope.setdefault(document.scope, []).append(document)
-    signals: list[AttackHypothesis] = []
+        if document.text and len(document.text) <= MAX_SOURCE_LENGTH:
+            by_scope.setdefault(document.scope, []).append(document)
+    unique: dict[str, AttackHypothesis] = {}
     for docs in by_scope.values():
         features = set()
         for document in docs:
             features |= _signatures(document.text)
             features |= _syntactic_signals(parse_python(document))
-        count = len(docs)
-        if {"elliptic_curve", "random_scalar", "shuffle", "authentication"} <= features:
-            signals.append(AttackHypothesis(
-                "Hidden authentic signature among decoys",
-                "An elliptic-curve signature generator is combined with randomized or shuffled candidates.",
-                ("Identify and verify genuine transcripts with the public key",
-                 "Check whether a signature encodes or recovers an encrypted secret"),
-                count,
-            ))
-        if {"stream_encryption", "key_derivation"} <= features:
-            signals.append(AttackHypothesis(
-                "Derived symmetric key and stream encryption",
-                "A KDF feeds stream/CTR encryption; inspect how its input can be recovered.",
-                ("Identify material used to derive the key",
-                 "Check nonce uniqueness and known plaintext"), count,
-            ))
-        if {"zkp", "authentication"} <= features:
-            signals.append(AttackHypothesis(
-                "Zero-knowledge proof and soundness",
-                "A proof system is used to authorize a state change or authenticate data.",
-                ("Check malleability, replay identifiers and public-input binding",
-                 "Check whether verification enforces the intended statement"), count,
-            ))
-        if "pairing" in features:
-            signals.append(AttackHypothesis(
-                "Bilinear-pairing relations",
-                "Pairing computations may permit algebraic transformations of verification equations.",
-                ("Express verifier equations with bilinearity",
-                 "Check identity-point rejection and subgroup membership"), count,
-            ))
-        if {"rsa", "modular_power"} <= features:
-            signals.append(AttackHypothesis(
-                "RSA modular arithmetic",
-                "Public-key generation and modular exponentiation occur in the source.",
-                ("Inspect reused primes, exponents and shared factors",
-                 "Inspect algebraic relations and padding oracles"), count,
-            ))
-        if {"finite_algebra", "interaction"} <= features:
-            signals.append(AttackHypothesis(
-                "Algebraic interactive oracle",
-                "Finite-ring or polynomial operations are exposed through an interactive protocol.",
-                ("Determine which polynomial identities or isomorphisms leak information",
-                 "Check whether query outputs provide an overdetermined linear system"), count,
-            ))
-    # Never claim any of the above is exploitably weak without verification.
-    unique: dict[str, AttackHypothesis] = {}
-    for candidate in signals:
-        unique.setdefault(candidate.family, candidate)
+        for required, family, scenario, checks in HYPOTHESIS_RULES:
+            if required <= features:
+                unique.setdefault(family, AttackHypothesis(
+                    family, scenario, checks, len(docs),
+                ))
+    # A hypothesis alone must never trigger an automatic solver.
     return list(unique.values())[:8]

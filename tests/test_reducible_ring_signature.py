@@ -288,3 +288,66 @@ def test_unsupported_high_degree_component_is_not_auto_dispatched():
     # the available embedded-CVP reduction; retain only the hypothesis.
     source = invented_source(degree=419)
     assert extract_instance([Document("large_unknown_file", source, None)]) is None
+
+
+def test_worker_preflight_requires_fast_backend_for_large_factor(monkeypatch):
+    """Exercise the Sage worker's startup gate without installing Sage in CI."""
+    import importlib.util
+    import sys
+    import types
+    from types import SimpleNamespace
+
+    sage = types.ModuleType("sage")
+    sage.__path__ = []
+    all_module = types.ModuleType("sage.all")
+    for name in ("GF", "PolynomialRing", "ZZ", "crt", "matrix"):
+        setattr(all_module, name, object())
+    monkeypatch.setitem(sys.modules, "sage", sage)
+    monkeypatch.setitem(sys.modules, "sage.all", all_module)
+    path = (Path(__file__).resolve().parents[1] / "src" / "cryptoscan"
+            / "sage_reducible_ring_worker.py")
+    spec = importlib.util.spec_from_file_location("isolated_glp_sage_worker", path)
+    assert spec is not None
+    assert spec.loader is not None
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+    monkeypatch.setattr(
+        worker, "_integral_factor_groups",
+        lambda n: [SimpleNamespace(degree=lambda: 64)],
+    )
+    monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+    monkeypatch.delenv("CRYPTOSCAN_FLATTER", raising=False)
+    monkeypatch.delenv("CRYPTOSCAN_SLOW_LLL", raising=False)
+    with pytest.raises(RuntimeError, match="flatter"):
+        worker._preflight({"dimension": 240})
+    monkeypatch.setenv("CRYPTOSCAN_SLOW_LLL", "1")
+    assert worker._preflight({"dimension": 240})["backend"] == "sage-lll"
+
+
+def test_sage_worker_awaits_actual_process_exit_on_closed_stdout(monkeypatch):
+    """A WSL wrapper can close stdout before reporting its exit code."""
+    import io
+    import cryptoscan.unramified_ring_oracle as launcher
+
+    class ExitedProcess:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("lattice job was terminated")
+            self.status = None
+
+        def poll(self):
+            return self.status
+
+        def wait(self, timeout):
+            self.status = -9
+            return self.status
+
+    monkeypatch.setattr(
+        launcher, "_sage_worker_command", lambda _: ["fake-sage"],
+    )
+    monkeypatch.setattr(launcher.subprocess, "Popen", lambda *a, **k: ExitedProcess())
+    worker = launcher._SageWorker("sage_reducible_ring_worker.py")
+    with pytest.raises(RuntimeError, match="process return code -9") as exc:
+        worker.ask({"mode": "recover_short_secret"})
+    assert "lattice job was terminated" in str(exc.value)

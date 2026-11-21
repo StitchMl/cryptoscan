@@ -27,6 +27,7 @@ class MaskedSignature:
     subgroup_order: int
     transform: ast.expr
     coordinate_names: tuple[str, str]
+    field_parameter_names: tuple[str, str]
     f1: bytes
     f2: bytes
     signature_hash: bytes
@@ -187,7 +188,7 @@ def _curve_spec(tree):
         name_a, name_d = edwards[0]
         a, d = scalars[name_a], scalars[name_d]
         subgroup = None
-        for factor in (1, 2, 4, 8, 16):
+        for factor in (16, 8, 4, 2, 1):
             if group_size % factor:
                 continue
             candidate = group_size // factor
@@ -198,7 +199,7 @@ def _curve_spec(tree):
         if subgroup is None:
             continue
         return (p, a, d, coords, subgroup, result.value.elts[0], params,
-                {name_a: a, name_d: d})
+                (name_a, name_d))
     return None
 
 
@@ -316,7 +317,8 @@ def _source_model(doc: Document) -> MaskedSignature | None:
     hash_parameters = _hash_parameters(tree)
     if not all((scheme, curve, kdf, hash_parameters)):
         return None
-    p, a, d, G, order, transform, params, constants = curve
+    p, a, d, G, order, transform, params, field_names = curve
+    constants = {field_names[0]: a, field_names[1]: d}
     try:
         test_point = _field_eval(
             transform, {**constants, params[0]: G[0], params[1]: G[1]}, p,
@@ -325,16 +327,27 @@ def _source_model(doc: Document) -> MaskedSignature | None:
         return None
     if not 0 <= test_point < p:
         return None
-    k2 = next((
-        _static_integer(node.value) for node in tree.body
-        if isinstance(node, ast.Assign) and len(node.targets) == 1
-        and isinstance(node.value, ast.Constant)
-        and type(node.value.value) is int and node.value.value in (64, 128, 192, 256)
-    ), None)
+    top_level = _assignments(tree)
+    key_length_calls = [
+        node.args[0] for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "token_bytes" and len(node.args) == 1
+    ]
+    key_lengths = []
+    for expr in key_length_calls:
+        if (isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.FloorDiv)
+                and isinstance(expr.left, ast.Name)
+                and isinstance(expr.right, ast.Constant)
+                and expr.right.value == 8 and expr.left.id in top_level):
+            try:
+                key_lengths.append(_static_integer(top_level[expr.left.id]))
+            except ValueError:
+                continue
+    k2 = key_lengths[0] if len(key_lengths) == 1 else None
     if k2 is None or k2 % 8:
         return None
     return MaskedSignature(p, a, d, G, order, transform, params,
-                           *scheme, *hash_parameters, k2//8, *kdf)
+                           field_names, *scheme, *hash_parameters, k2//8, *kdf)
 
 
 def _point(xy, p):
@@ -508,7 +521,8 @@ def recover_flag(documents: Sequence[Document], progress=print) -> str:
     )
     tables = _tables(scheme.generator, instance.public_point,
                      scheme.subgroup_order, p, a, d)
-    constants = {"a": a, "d": d}
+    constants = {scheme.field_parameter_names[0]: a,
+                 scheme.field_parameter_names[1]: d}
     for index, (r, z) in enumerate(instance.signatures):
         challenge = int.from_bytes(expand(r, byte_width, scheme.signature_hash), "big")
         point = _linear_combination(z, challenge, tables, p, a, d)

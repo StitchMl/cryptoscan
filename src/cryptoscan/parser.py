@@ -88,7 +88,9 @@ def collect_documents(targets: Iterable[str]) -> list[Document]:
                 if path.is_file()
                 and not _ignored(path.relative_to(target).as_posix())
             )
-        elif target.is_file() and not _ignored(target.name):
+        elif target.is_file():
+            # Explicitly selected evidence always wins over filename-based
+            # directory-scan exclusions (e.g. source named solve.py).
             files.append((target.parent, target))
     documents = [
         document

@@ -23,6 +23,8 @@ on:
       - "src/cryptoscan/source_units.py"
       - "src/cryptoscan/crypto_hypotheses.py"
       - "tests/test_source_units.py"
+      - "src/cryptoscan/masked_ec_signature.py"
+      - "tests/test_masked_ec_signature.py"
   workflow_dispatch:
 
 permissions:

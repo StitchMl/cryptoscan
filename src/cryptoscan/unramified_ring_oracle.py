@@ -5,6 +5,8 @@ remote service. Requires an independently installed SageMath runtime.
 """
 from __future__ import annotations
 
+from .source_units import parse_python
+
 import ast
 import hashlib
 import json
@@ -94,11 +96,8 @@ def _has_algebraic_oracle(tree: ast.Module) -> bool:
 
 
 def _source_rounds(document: Document):
-    if not document.path.lower().endswith((".sage", ".py")):
-        return None
-    try:
-        tree = ast.parse(document.text)
-    except SyntaxError:
+    tree = parse_python(document)
+    if tree is None:
         return None
     if not _has_algebraic_oracle(tree):
         return None

@@ -6,6 +6,8 @@ source. No challenge fixture, known secret, flag or public point is embedded.
 """
 from __future__ import annotations
 
+from .source_units import parse_python
+
 import ast
 import json
 import re
@@ -155,11 +157,8 @@ def _prompts(tree: ast.Module) -> tuple[str, str, str] | None:
 
 
 def _source_model(doc: Document) -> tuple[ast.Module, dict[str, int]] | None:
-    if not doc.path.lower().endswith(".py"):
-        return None
-    try:
-        tree = ast.parse(doc.text)
-    except SyntaxError:
+    tree = parse_python(doc)
+    if tree is None:
         return None
     symbols = _constants(tree)
     if not {"p", "q", "Gx", "Gy"} <= symbols.keys():

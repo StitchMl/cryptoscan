@@ -154,11 +154,11 @@ def _integral_factor_groups(dimension):
     ]
     if len(factors) < 2:
         raise ValueError("polynomial not decomposable over integers")
-    cap = min(64, max(divisor.degree() for divisor in factors))
-    groups = _factor_groups(factors, cap)
-    if any(divisor.degree() > 128 for divisor in groups):
+    if any(divisor.degree() > 128 for divisor in factors):
         raise ValueError("factor degree exceeds supported lattice dimension")
-    return groups
+    # Work in irreducible integer factors individually: arbitrary products
+    # may amplify projected small coefficients and reduce lattice reliability.
+    return factors
 
 
 def _recover(message):

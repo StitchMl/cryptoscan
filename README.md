@@ -776,6 +776,34 @@ RSA public keys in PKCS#1 or SubjectPublicKeyInfo PEM and DER form are parsed wi
 
 By default, recursive corpus collection skips documentation, notebooks, tests, writeups, solvers, and exploit scripts. Files supplied explicitly are always examined, regardless of their filename or extension. Exact duplicate artifacts across release, server, and archive copies are scanned once. Cross-artifact attacks stay inside one inferred challenge boundary, so unrelated challenge directories do not produce shared-prime, common-modulus, nonce-reuse, or broadcast findings.
 
+## Offline recovery of message-masked EC signatures
+
+CryptoScan supports a source-verified recovery pattern in which one genuine
+elliptic-curve signature is hidden among random signature-shaped decoys. The
+signing relation permits reconstructing a point from each candidate and the
+public key; its coordinate masks a reversibly encoded secret. An independent
+hash relation identifies the authentic candidate before any expensive KDF is
+invoked. The recovered material is then passed to a source-derived KDF and
+symmetric cipher profile.
+
+The scanner derives the finite field, curve coefficients, generator, group
+order, coordinate transformation, message-expansion domains, salt, KDF
+parameters and cipher nonce from the supplied source. It does not use known
+flags, hardcoded challenge constants or filenames, and accepts candidate
+transcripts in separate files within the same scope.
+
+```powershell
+cryptoscan . --no-assist
+cryptoscan . --solve
+```
+
+The offline solver requires `bcrypt` and `pycryptodome`, which are installed
+as project dependencies. A high KDF work factor can make the final decryption
+significantly more expensive than identification of the authentic signature.
+Source-inferred compatibility does not establish exploitability until a
+candidate passes the independent hash check and the decrypted plaintext
+passes validation.
+
 ## Source-independent detection and exploratory hypotheses
 
 CryptoScan distinguishes three levels of evidence:

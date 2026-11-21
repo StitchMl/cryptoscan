@@ -108,98 +108,122 @@ def _field_eval(node, values, p):
     raise ValueError("unsupported coordinate transformation")
 
 
+def _curve_field(fn):
+    assignments = _assignments(fn)
+    for alias, node in assignments.items():
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "GF" and len(node.args) == 1
+                and isinstance(node.args[0], ast.Name)):
+            continue
+        modulus_node = assignments.get(node.args[0].id)
+        if modulus_node is None:
+            continue
+        try:
+            modulus = _static_integer(modulus_node)
+        except ValueError:
+            continue
+        if 127 <= modulus.bit_length() <= 1024 and modulus % 2:
+            return modulus, alias, assignments
+    return None
+
+
+def _curve_constants(assignments, field_alias, modulus):
+    constants = {}
+    for name, expr in assignments.items():
+        value = _literal_call(expr, field_alias)
+        if value is not None:
+            constants[name] = value % modulus
+    return constants
+
+
+def _curve_generator(fn, field_alias):
+    candidates = [
+        node for node in ast.walk(fn) if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name) and len(node.args) == 2
+        and all(_literal_call(arg, field_alias) is not None for arg in node.args)
+    ]
+    if len(candidates) != 1:
+        return None
+    call = candidates[0]
+    coordinates = tuple(_literal_call(arg, field_alias) for arg in call.args)
+    return call.func.id, coordinates
+
+
+def _curve_conversion(fn, generator_name, constants, xy, modulus):
+    transforms = [
+        inner for inner in fn.body if isinstance(inner, ast.FunctionDef)
+        and inner.name == generator_name and len(inner.args.args) == 2
+        and any(isinstance(stmt, ast.Return)
+                and isinstance(stmt.value, ast.Tuple)
+                and len(stmt.value.elts) == 2 for stmt in inner.body)
+    ]
+    if len(transforms) != 1:
+        return None
+    transform = transforms[0]
+    result = next(
+        stmt.value.elts[0] for stmt in transform.body
+        if isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.Tuple)
+    )
+    used = {
+        item.id for item in ast.walk(result) if isinstance(item, ast.Name)
+    }
+    options = [
+        (name_a, name_d)
+        for name_a in constants for name_d in constants
+        if name_a != name_d and {name_a, name_d} <= used
+        and (constants[name_a]*xy[0]**2 + xy[1]**2 - 1
+             - constants[name_d]*xy[0]**2*xy[1]**2) % modulus == 0
+    ]
+    if len(options) != 1:
+        return None
+    return options[0], result, tuple(arg.arg for arg in transform.args.args)
+
+
+def _curve_order(fn, generator, modulus, alpha, delta):
+    setters = [
+        node for node in ast.walk(fn)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "set_order" and len(node.args) == 1
+    ]
+    if len(setters) != 1:
+        return None
+    try:
+        group_size = _static_integer(setters[0].args[0])
+    except ValueError:
+        return None
+    for cofactor in (16, 8, 4, 2, 1):
+        if group_size % cofactor:
+            continue
+        order = group_size // cofactor
+        if order.bit_length() < 120:
+            continue
+        point = _multiply(_point(generator, modulus), order,
+                          modulus, alpha, delta)
+        if point[0] % modulus == 0 and (point[1]-point[2]) % modulus == 0:
+            return order
+    return None
+
+
 def _curve_spec(tree):
     for fn in (item for item in tree.body if isinstance(item, ast.FunctionDef)):
-        assignments = _assignments(fn)
-        field = next((
-            (target, assignments[node.args[0].id])
-            for target, node in assignments.items()
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == "GF" and len(node.args) == 1
-            and isinstance(node.args[0], ast.Name)
-            and node.args[0].id in assignments
-        ), None)
-        if field is None:
+        context = _curve_field(fn)
+        if context is None:
             continue
-        try:
-            p = _static_integer(field[1])
-        except ValueError:
+        p, field_alias, assignments = context
+        constants = _curve_constants(assignments, field_alias, p)
+        generator = _curve_generator(fn, field_alias)
+        if generator is None:
             continue
-        if not 127 <= p.bit_length() <= 1024 or p % 2 == 0:
+        converter, coords = generator
+        converted = _curve_conversion(fn, converter, constants, coords, p)
+        if converted is None:
             continue
-        scalars = {}
-        for name, expr in assignments.items():
-            value = _literal_call(expr, field[0])
-            if value is not None:
-                scalars[name] = value % p
-        transforms = [
-            inner for inner in fn.body if isinstance(inner, ast.FunctionDef)
-            and len(inner.args.args) == 2
-            and any(isinstance(stmt, ast.Return)
-                    and isinstance(stmt.value, ast.Tuple)
-                    and len(stmt.value.elts) == 2 for stmt in inner.body)
-        ]
-        calls = [
-            node for node in ast.walk(fn) if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "set_order" and len(node.args) == 1
-        ]
-        if len(calls) != 1 or not transforms:
-            continue
-        try:
-            group_size = _static_integer(calls[0].args[0])
-        except ValueError:
-            continue
-        generators = [
-            node for node in ast.walk(fn) if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name) and len(node.args) == 2
-            and all(_literal_call(arg, field[0]) is not None for arg in node.args)
-        ]
-        if len(generators) != 1:
-            continue
-        coords = tuple(_literal_call(arg, field[0]) for arg in generators[0].args)
-        transform = next((
-            inner for inner in transforms
-            if any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                   and node.func.id == inner.name for node in ast.walk(fn))
-            and any(isinstance(node, ast.Name) and node.id in scalars
-                    for node in ast.walk(inner))
-        ), None)
-        if transform is None:
-            continue
-        result = next(item for item in transform.body if isinstance(item, ast.Return))
-        if not isinstance(result.value, ast.Tuple):
-            continue
-        params = tuple(item.arg for item in transform.args.args)
-        if len(scalars) < 2:
-            continue
-        edwards = [
-            (name_a, name_d)
-            for name_a in scalars for name_d in scalars if name_a != name_d
-            if (scalars[name_a]*coords[0]**2 + coords[1]**2
-                - 1 - scalars[name_d]*coords[0]**2*coords[1]**2) % p == 0
-            and all(any(isinstance(item, ast.Name) and item.id == name
-                        for item in ast.walk(result.value.elts[0]))
-                    for name in (name_a, name_d))
-        ]
-        if len(edwards) != 1:
-            continue
-        name_a, name_d = edwards[0]
-        a, d = scalars[name_a], scalars[name_d]
-        subgroup = None
-        for factor in (16, 8, 4, 2, 1):
-            if group_size % factor:
-                continue
-            candidate = group_size // factor
-            if candidate.bit_length() >= 120:
-                check = _multiply(_point(coords, p), candidate, p, a, d)
-                if check[0] % p == 0 and (check[1] - check[2]) % p == 0:
-                    subgroup = candidate
-                    break
-        if subgroup is None:
-            continue
-        return (p, a, d, coords, subgroup, result.value.elts[0], params,
-                (name_a, name_d))
+        field_names, expression, parameter_names = converted
+        alpha, delta = (constants[name] for name in field_names)
+        order = _curve_order(fn, coords, p, alpha, delta)
+        if order is not None:
+            return (p, alpha, delta, coords, order, expression,
+                    parameter_names, field_names)
     return None
 
 

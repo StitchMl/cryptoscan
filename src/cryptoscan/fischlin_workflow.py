@@ -49,8 +49,11 @@ def _ro(a0: int, a1: int, e: int, e0: int, e1: int, z0: int, z1: int) -> int:
     return int.from_bytes(hashlib.sha512(b"".join(parts)).digest(), "big")
 
 
-def identify_simulated_branch(proof: dict[str, int], leaked_witness: int,
-                              leaked_index: int, q: int) -> int | None:
+def identify_simulated_branch(
+    proof: dict[str, int], leaked_witness: int, leaked_index: int, q: int,
+    *, challenge_count: int = 1024, acceptance_bound: int = 1 << 506,
+    random_oracle: Callable[..., int] = _ro,
+) -> int | None:
     """Return the *other* branch only when a counterfactual hash proves it.
 
     Under the hypothesis that the leaked branch is real, its commitment
@@ -58,13 +61,14 @@ def identify_simulated_branch(proof: dict[str, int], leaked_witness: int,
     Recreate all prior attempts of that hypothesis. One earlier acceptable
     hash contradicts first-hit selection, so the other branch must be real.
     """
-    if leaked_index not in (0, 1) or q <= 2:
-        raise ValueError("Invalid witness index or group order")
+    if (leaked_index not in (0, 1) or q <= 2
+            or challenge_count < 2 or acceptance_bound <= 0):
+        raise ValueError("Invalid Fischlin proof parameters")
     required = {"a0", "a1", "e", "e0", "e1", "z0", "z1"}
     if set(proof) != required or not all(type(proof[k]) is int for k in required):
         raise ValueError("Malformed Fischlin transcript")
     chosen_e = proof["e"]
-    if not 0 <= chosen_e < 1024 or proof["e0"] ^ proof["e1"] != chosen_e:
+    if not 0 <= chosen_e < challenge_count or proof["e0"] ^ proof["e1"] != chosen_e:
         raise ValueError("Invalid Fischlin challenge")
     other = 1 - leaked_index
     r = (proof[f"z{leaked_index}"] - proof[f"e{leaked_index}"] * leaked_witness) % q
@@ -76,7 +80,7 @@ def identify_simulated_branch(proof: dict[str, int], leaked_witness: int,
                   else (simulated_e, real_e))
         z0, z1 = ((real_z, proof["z1"]) if leaked_index == 0
                   else (proof["z0"], real_z))
-        if _ro(proof["a0"], proof["a1"], candidate_e, e0, e1, z0, z1) < 2**506:
+        if random_oracle(proof["a0"], proof["a1"], candidate_e, e0, e1, z0, z1) < acceptance_bound:
             return other
     return None
 

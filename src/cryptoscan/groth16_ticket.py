@@ -38,16 +38,21 @@ class ReusableProofIdentity:
 
 def _constants(source: str) -> dict[str, int]:
     values = {}
-    definitions = re.findall(
-        r"(?m)^\s*const\s+(\w+)\s*:\s*i64\s*=\s*([^;]+);", source,
-    )
-    for name, expression in definitions:
+    for line in source.splitlines():
+        match = re.fullmatch(
+            r"[ \t]*const[ \t]+([A-Z][A-Z0-9_]*)[ \t]*:[ \t]*"
+            r"i64[ \t]*=[ \t]*([^;\r\n]{1,160});[ \t]*",
+            line,
+        )
+        if match is None:
+            continue
+        name, expression = match.groups()
         expression = expression.strip()
         if expression.isdecimal():
             values[name] = int(expression)
-        elif (match := re.fullmatch(r"(\d+)\s*\*\s*(\w+)", expression)):
-            if match.group(2) in values:
-                values[name] = int(match.group(1)) * values[match.group(2)]
+        elif (product := re.fullmatch(r"(\d+)[ \t]*\*[ \t]*([A-Z][A-Z0-9_]*)", expression)):
+            if product.group(2) in values:
+                values[name] = int(product.group(1)) * values[product.group(2)]
     return values
 
 

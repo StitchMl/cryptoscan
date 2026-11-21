@@ -213,3 +213,19 @@ def test_pairing_recognition_is_not_bound_to_a_sage_filename():
     model = extract_instance([Document("binary_protocol.snapshot", _invented_source(), None)])
     assert model is not None
     assert model.identity == "root"
+
+
+def test_pairing_detector_infers_renamed_protocol_constructor_and_message():
+    source = _invented_source()
+    for old, new in (
+        ("pkg = PKG()", "factory = PKG()"),
+        ("handle = input(", "participant = input("),
+        ("{handle}", "{participant}"),
+        ("target = f'", "verifier_message = f'"),
+        ("m == target", "m == verifier_message"),
+    ):
+        source = source.replace(old, new)
+    model = extract_instance([Document("anonymous.bundle", source, None)])
+    assert model is not None
+    assert model.username_variable == "participant"
+    assert model.message_template == "Authentication for {participant} is required."

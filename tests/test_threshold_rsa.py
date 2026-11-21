@@ -170,3 +170,9 @@ def test_synthetic_tcp_reshare_protocol():
     thread.join(timeout=3)
     assert not problems
     assert found == "TOY{synthetic}"
+
+
+def test_filename_and_extension_do_not_gate_truncated_share_attack():
+    model = extract_instance([Document("opaque_payload.data", _invented_source(), None)])
+    assert model is not None
+    assert model.coefficient_count == 5

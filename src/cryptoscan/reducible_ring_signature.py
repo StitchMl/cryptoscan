@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import operator
 import re
 import socket
 from dataclasses import dataclass
@@ -29,21 +30,29 @@ class ReducibleRingSignature:
     prompt_labels: tuple[str, str, str]
 
 
+_INTEGER_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+}
+
+
 def _integer_operator(node, names):
     left, right = _integer(node.left, names), _integer(node.right, names)
-    if isinstance(node.op, ast.Add):
-        return left + right
-    if isinstance(node.op, ast.Sub):
-        return left - right
-    if isinstance(node.op, ast.Mult):
-        return left * right
+    operation = _INTEGER_OPERATORS.get(type(node.op))
+    if operation is not None:
+        return operation(left, right)
     if isinstance(node.op, ast.FloorDiv) and right:
         return left // right
     if isinstance(node.op, (ast.Pow, ast.BitXor)):
-        if 0 <= right <= 2048 and 0 <= left <= (1 << 40):
-            return left ** right
+        return _bounded_power(left, right)
     raise ValueError("unsupported source arithmetic")
 
+
+def _bounded_power(base, exponent):
+    if not 0 <= exponent <= 2048 or not 0 <= base <= (1 << 40):
+        raise ValueError("unsupported source exponent")
+    return base ** exponent
 
 def _integer(node, names):
     if isinstance(node, ast.Constant) and type(node.value) is int:

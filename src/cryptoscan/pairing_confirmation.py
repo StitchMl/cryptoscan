@@ -57,25 +57,34 @@ def _twist(source: str) -> tuple[int, int] | None:
 
 
 def _protocol(source: str):
-    tail = source.rsplit("pkg = PKG()", 1)
-    if len(tail) != 2:
-        return None
-    code = tail[1]
-    matches = re.findall(r"\binput\(('[^'\n]*'|\"[^\"\n]*\")\)", code)
+    """Infer wire prompts, role and message template from executable source."""
+    matches = re.findall(r"\binput\(('[^'\n]*'|\"[^\"\n]*\")\)", source)
     if len(matches) != 5:
         return None
     prompts = tuple(item[1:-1] for item in matches)
-    username = re.search(r"\b(\w+)\s*=\s*input\(", code)
-    template = re.search(r"(?m)^\s*target\s*=\s*f(['\"])(.*?)\1\s*$", code)
-    role = re.search(
-        r"\bcase\s+True\s*,\s*(['\"])([^'\"]{1,80})\1\s*,\s*True", code
+    username = re.search(
+        r"(?m)^\s*([A-Za-z_]\w*)\s*=\s*input\(", source,
     )
-    if not username or not template or not role:
+    templates = re.findall(
+        r"(?m)^\s*([A-Za-z_]\w*)\s*=\s*f(['\"])(.*?)\2\s*$",
+        source,
+    )
+    roles = re.findall(
+        r"\bcase\s+True\s*,\s*(['\"])([^'\"]{1,80})\1\s*,\s*True",
+        source,
+    )
+    if not username or len(templates) != 1 or len(roles) != 1:
         return None
+    target_name, _, template = templates[0]
     user_var = username.group(1)
-    if template.group(2).count("{" + user_var + "}") != 1:
+    if template.count("{" + user_var + "}") != 1:
         return None
-    return prompts, role.group(2), template.group(2), user_var
+    if not re.search(
+        r"(?m)^\s*match\s+[^\r\n]*\b" + re.escape(target_name)
+        + r"\s*:", source,
+    ):
+        return None
+    return prompts, roles[0][1], template, user_var
 
 
 def _proof_shape(source: str) -> bool:

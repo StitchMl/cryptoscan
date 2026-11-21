@@ -55,6 +55,7 @@ def _matching_output(output, msgs: list) -> Instance | None:
 
 
 def extract_instance(documents: Sequence) -> Instance | None:
+    matches = []
     for source in documents:
         if not detect_ec_lcg([source]):
             continue
@@ -66,8 +67,10 @@ def extract_instance(documents: Sequence) -> Instance | None:
                 continue
             instance = _matching_output(output, msgs)
             if instance is not None:
-                return instance
-    return None
+                matches.append(instance)
+    # Never silently choose the first of several plausible public outputs.
+    return matches[0] if len(matches) == 1 else None
+
 
 def _orthogonal(vectors, modulus):
     from flint import fmpz_mat

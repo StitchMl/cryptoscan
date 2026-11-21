@@ -38,7 +38,7 @@ def rust_sources(documents: Iterable[Document]) -> Iterator[Document]:
         if (not source or len(source) > MAX_SOURCE_LENGTH or "\0" in source):
             continue
         # Structural Rust grammar markers, rather than an .rs suffix.
-        if (re.search(r"\b(?:fn|impl|enum|struct|use|mod)\s+[A-Za-z_]", source)
+        if (re.search(r"\b(?:fn|impl|enum|struct|use|mod|match|const)\s+[A-Za-z_]", source)
                 and ("{" in source and "}" in source)):
             yield document
 

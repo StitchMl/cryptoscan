@@ -95,3 +95,12 @@ def test_full_source_produces_finding_and_cli_flag(capsys):
 def test_binary_field_solver_rejects_inconsistency():
     assert solve_gf2([(1, 0), (1, 1)], 1) is None
     assert solve_gf2([(1, 1), (2, 1)], 2) == 3
+
+
+def test_lfsr_recognizer_does_not_require_python_suffix():
+    from dataclasses import replace
+    original = _fixture_documents()
+    alternate = [replace(doc, path=f"anon_{index}.data")
+                 for index, doc in enumerate(original)]
+    models = recognize_stream_cipher(alternate)
+    assert len(models) == 1

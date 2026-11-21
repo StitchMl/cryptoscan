@@ -399,6 +399,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
                 "public_a": public_a,
                 "public_t": public_t,
                 "coefficient_bound": instance.secret_bound,
+                "budget_seconds": max(10, min(540, int(timeout) - 45)),
             })
             proof = forge_signature(
                 instance, public_a, public_t,

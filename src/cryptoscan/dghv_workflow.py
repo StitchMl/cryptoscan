@@ -160,8 +160,8 @@ def recover_flag(
             result = plaintext.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise RuntimeError("Recovered plaintext is not UTF-8") from exc
-        if not re.fullmatch(r"CSC\{[^\r\n]{1,256}\}", result):
-            raise RuntimeError("Recovered plaintext does not match the expected flag shape")
+        if not re.fullmatch(r"\w{2,32}\{[^\r\n{}]{1,256}\}", result):
+            raise RuntimeError("Recovered plaintext does not match a generic flag shape")
         progress(
             f"[DGHV] Recovered 128-bit private key and {len(plaintext)} plaintext bytes"
         )

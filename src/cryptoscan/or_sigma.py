@@ -5,6 +5,8 @@ No CTF fixtures, parameters, witness values, or flags are embedded.
 """
 from __future__ import annotations
 
+from .source_units import python_sources
+
 import ast
 import operator
 import re
@@ -141,7 +143,7 @@ def _valid_or_group(p: int, q: int, g: int,
 
 
 def extract_instance(documents: Sequence[Document]) -> OrSchnorr | None:
-    sources = [doc.text for doc in documents if doc.path.lower().endswith(".py")]
+    sources = [doc.text for doc, _ in python_sources(documents)]
     if sum(_verifier(source) for source in sources) != 1:
         return None
     merged = _merged_source_constants(sources)

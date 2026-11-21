@@ -170,3 +170,10 @@ def test_mutable_nonce_disqualifies_fixed_nonce_finding():
         'if cmd == "tag":\\n        nonce = urandom(12)'
     )
     assert recognize_gcm_tag_oracle([Document("rotating_nonce.py", source, None)]) == []
+
+
+def test_gcm_oracle_recognizes_python_syntax_in_renamed_document():
+    docs = [Document("packet_capture.export", SOURCE, None)]
+    recognized = recognize_gcm_tag_oracle(docs)
+    assert len(recognized) == 1
+    assert recognized[0].timeout_seconds == 20

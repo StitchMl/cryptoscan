@@ -261,13 +261,25 @@ class _SageWorker:
                 f"{type(exc).__name__}: {exc}"
             ) from exc
         if not response:
-            status = self.process.poll()
+            # A closed stdout can become observable before a WSL/Conda
+            # wrapper has reaped its child. Give the wrapper a brief chance
+            # to report the actual exit status and error stream.
+            try:
+                status = self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                status = self.process.poll()
             details = ""
             if status is not None and self.process.stderr is not None:
-                details = self.process.stderr.read()[-1200:]
+                details = self.process.stderr.read()[-3000:]
+            detail_hint = (
+                "Possible WSL process termination, Sage startup failure, "
+                "or lattice-reducer crash/OOM; inspect WSL logs with "
+                "'wsl --exec dmesg -T' and verify the worker backend."
+            )
             raise RuntimeError(
-                f"Sage worker exited during {message.get('mode', 'unknown')}; "
-                f"process return code {status}; stderr tail={details!r}"
+                f"Sage worker stdout closed during {message.get('mode', 'unknown')}; "
+                f"process return code {status}; stderr tail={details!r}. "
+                + detail_hint
             )
         try:
             result = json.loads(response)

@@ -5,6 +5,8 @@ Sympy is imported only when running an actual lattice calculation.
 """
 from __future__ import annotations
 
+from .source_units import MAX_SOURCE_LENGTH
+
 import ast
 import base64
 import gzip
@@ -69,7 +71,7 @@ def recognize_weak_mlwe_ring(documents: Sequence[Document]) -> list[MLWEContext]
     """Require reducible x^N-1 modulus plus short-secret MLWE vs uniform code."""
     scopes: dict[str, list[Document]] = {}
     for document in documents:
-        if document.path.lower().endswith((".sage", ".py")):
+        if document.text and len(document.text) <= MAX_SOURCE_LENGTH:
             scopes.setdefault(document.scope, []).append(document)
     findings = []
     for scope, docs in scopes.items():

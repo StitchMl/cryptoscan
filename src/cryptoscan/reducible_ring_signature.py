@@ -29,6 +29,22 @@ class ReducibleRingSignature:
     prompt_labels: tuple[str, str, str]
 
 
+def _integer_operator(node, names):
+    left, right = _integer(node.left, names), _integer(node.right, names)
+    if isinstance(node.op, ast.Add):
+        return left + right
+    if isinstance(node.op, ast.Sub):
+        return left - right
+    if isinstance(node.op, ast.Mult):
+        return left * right
+    if isinstance(node.op, ast.FloorDiv) and right:
+        return left // right
+    if isinstance(node.op, (ast.Pow, ast.BitXor)):
+        if 0 <= right <= 2048 and 0 <= left <= (1 << 40):
+            return left ** right
+    raise ValueError("unsupported source arithmetic")
+
+
 def _integer(node, names):
     if isinstance(node, ast.Constant) and type(node.value) is int:
         return node.value
@@ -37,20 +53,8 @@ def _integer(node, names):
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
         return -_integer(node.operand, names)
     if isinstance(node, ast.BinOp):
-        left, right = _integer(node.left, names), _integer(node.right, names)
-        if isinstance(node.op, ast.Add):
-            return left + right
-        if isinstance(node.op, ast.Sub):
-            return left - right
-        if isinstance(node.op, ast.Mult):
-            return left * right
-        if isinstance(node.op, ast.FloorDiv) and right:
-            return left // right
-        if isinstance(node.op, (ast.Pow, ast.BitXor)):
-            if 0 <= right <= 2048 and 0 <= left <= (1 << 40):
-                return left ** right
+        return _integer_operator(node, names)
     raise ValueError("unsupported integer source parameter")
-
 
 def _constants(tree):
     values = {}

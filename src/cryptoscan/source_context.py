@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from .parser import Document
+from .source_units import python_sources
 
 
 @dataclass(frozen=True)
@@ -33,13 +34,7 @@ class TokenRecipe:
 
 
 def _functions(documents: Sequence[Document]):
-    for document in documents:
-        if not document.path.lower().endswith(".py"):
-            continue
-        try:
-            tree = ast.parse(document.text)
-        except (SyntaxError, ValueError):
-            continue
+    for document, tree in python_sources(documents):
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 yield document, node

@@ -187,3 +187,44 @@ def test_groth16_replay_matches_content_without_rs_extensions():
     model = extract_instance(docs)
     assert model is not None
     assert model.redemptions_needed == 7
+
+
+def test_groth16_protocol_and_variable_names_are_derived():
+    first, second = _synthetic_rust_sources()
+    proof = first.text
+    for old, new in (
+        ("proof.serialize(&mut ser)", "witness.serialize(&mut packed)"),
+        ("self.digest.serialize(&mut ser)", "self.commitment.serialize(&mut packed)"),
+        ("Blake2b::digest(&ser)", "Blake2b::digest(&packed)"),
+        ("pub proof: String", "pub witness: String"),
+        ("spent: HashSet", "redeemed: HashSet"),
+    ):
+        proof = proof.replace(old, new)
+    economy = second.text
+    for old, new in (
+        ("COST_OF_TICKET", "VOUCHER_FEE"),
+        ("VALUE_OF_TICKET", "VOUCHER_REWARD"),
+        ("COST_OF_FLAG", "REWARD_PRICE"),
+        ("BALANCE", "CREDITS"),
+        ("balance", "wallet"),
+        ("BuyTicket", "Acquire"),
+        ("GoodTicket", "Accepted"),
+        ("BuyFlag", "Prize"),
+        ("Redeem", "Cash"),
+        ("Ticket", "Voucher"),
+        ("Flag", "Reward"),
+    ):
+        economy = economy.replace(old, new)
+    result = extract_instance([
+        Document("proof.blob", proof, None),
+        Document("economy.data", economy, None),
+    ])
+    assert result is not None
+    assert result.buy_command == "Acquire"
+    assert result.redeem_command == "Cash"
+    assert result.flag_command == "Prize"
+    assert result.ticket_response == "Voucher"
+    assert result.accepted_response == "Accepted"
+    assert result.flag_response == "Reward"
+    assert result.proof_field == "witness"
+    assert result.redemptions_needed == 7

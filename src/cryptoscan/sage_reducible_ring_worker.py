@@ -38,16 +38,30 @@ def _factor_groups(factors, maximum_degree):
     return [math.prod(group) for group, _ in groups]
 
 
+def _fast_reducer():
+    """Select installed lattice backends without importing user source."""
+    custom = os.environ.get("CRYPTOSCAN_FLATTER")
+    if custom:
+        return [custom], "flatter"
+    flatter = shutil.which("flatter")
+    if flatter:
+        return [flatter], "flatter"
+    fplll = shutil.which("fplll")
+    if fplll:
+        return [fplll, "-a", "lll"], "fplll"
+    return None, "sage-lll"
+
+
 def _reduce_lattice(basis):
     """Prefer an installed fast lattice reducer; fall back to Sage LLL."""
-    backend = os.environ.get("CRYPTOSCAN_FLATTER") or shutil.which("flatter")
-    if backend is not None:
+    command, backend = _fast_reducer()
+    if command is not None:
         serialized = "[[" + "]\n[".join(
             " ".join(map(str, row)) for row in basis
         ) + "]]"
         try:
             completed = subprocess.run(
-                [backend], input=serialized, text=True,
+                command, input=serialized, text=True,
                 capture_output=True, check=True, timeout=240,
             )
             entries = [
@@ -184,18 +198,21 @@ def _preflight(message):
         raise ValueError("unsupported ring dimension")
     groups = _integral_factor_groups(dimension)
     max_degree = max(factor.degree() for factor in groups)
-    backend = os.environ.get("CRYPTOSCAN_FLATTER") or shutil.which("flatter")
-    if max_degree >= 42 and not backend and os.environ.get("CRYPTOSCAN_SLOW_LLL") != "1":
+    command, backend = _fast_reducer()
+    if max_degree >= 42 and command is None and os.environ.get("CRYPTOSCAN_SLOW_LLL") != "1":
         raise RuntimeError(
             "The cyclic ring has a high-degree lattice component "
-            f"(degree {max_degree}); fast reducer 'flatter' is required "
-            "for this time-limited attack. Install flatter inside Ubuntu "
-            "WSL (https://github.com/keeganryan/flatter), then run "
-            "'wsl --exec which flatter' from PowerShell. "
+            f"(degree {max_degree}); install a fast reducer ('flatter' " +
+            "or 'fplll') "
+            "for this time-limited attack. Install fplll-tools with " +
+            "'sudo apt install fplll-tools' in Ubuntu WSL, or build flatter "
+            "(https://github.com/keeganryan/flatter), then run "
+            "'wsl --exec which fplll' or 'wsl --exec which flatter' " +
+            "from PowerShell. "
             "Sage LLL fallback can be enabled with CRYPTOSCAN_SLOW_LLL=1 "
             "inside the WSL environment, but may exceed the service timeout."
         )
-    return {"backend": "flatter" if backend else "sage-lll",
+    return {"backend": backend,
             "max_factor_degree": max_degree}
 
 

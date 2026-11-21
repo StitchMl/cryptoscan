@@ -22,6 +22,7 @@ from .unramified_ring_oracle import _SageWorker
 class ReducibleRingSignature:
     modulus: int
     dimension: int
+    secret_bound: int
     short_bound: int
     slack: int
     encoding_width: int
@@ -112,7 +113,7 @@ def _cyclic_ring(tree, values):
 
 
 def _sampled_secret_names(fn, samplers, constants):
-    sampled = set()
+    sampled = {}
     for node in ast.walk(fn):
         if not (isinstance(node, ast.Assign) and len(node.targets) == 1
                 and isinstance(node.targets[0], ast.Name)
@@ -125,8 +126,8 @@ def _sampled_secret_names(fn, samplers, constants):
             value = _integer(node.value.args[0], constants)
         except ValueError:
             continue
-        if value == 1:
-            sampled.add(node.targets[0].id)
+        if 1 <= value <= 8:
+            sampled[node.targets[0].id] = value
     return sampled
 
 
@@ -142,8 +143,9 @@ def _key_equations(fn, sampled):
                 and isinstance(node.value.right, ast.Name)):
             continue
         secret, noise = node.value.left.right.id, node.value.right.id
-        if secret != noise and {secret, noise} <= sampled:
-            equations.append((secret, noise))
+        if (secret != noise and secret in sampled and noise in sampled
+                and sampled[secret] == sampled[noise]):
+            equations.append((secret, noise, sampled[secret]))
     return equations
 
 
@@ -181,7 +183,10 @@ def _short_secret_shape(tree, values):
     ]
     if len(equations) != 1:
         return None
-    return _verification_bounds(tree, values)
+    limits = _verification_bounds(tree, values)
+    if limits is None:
+        return None
+    return (*limits, equations[0][2])
 
 
 def _message_bytes(tree):
@@ -247,12 +252,12 @@ def extract_instance(documents: Sequence[Document]) -> ReducibleRingSignature | 
         if ring is None or short is None or protocol is None:
             continue
         q, n = ring
-        bound, slack = short
+        bound, slack, secret_bound = short
         width, message, public, prompts = protocol
         if not (0 < slack < bound < q // 2 and q < (1 << (width * 8))):
             continue
         matches.append(ReducibleRingSignature(
-            q, n, bound, slack, width, message, public, prompts,
+            q, n, secret_bound, bound, slack, width, message, public, prompts,
         ))
     return matches[0] if len(matches) == 1 else None
 
@@ -285,7 +290,10 @@ def forge_signature(instance, public_a, public_t, secret, error):
     n, q, width = instance.dimension, instance.modulus, instance.encoding_width
     if any(len(seq) != n for seq in (public_a, public_t, secret, error)):
         raise ValueError("invalid recovered ring dimension")
-    if any(value % q not in {0, 1, q - 1} for value in secret + error):
+    permitted = set(range(instance.secret_bound + 1)) | set(
+        range(q - instance.secret_bound, q)
+    )
+    if any(value % q not in permitted for value in secret + error):
         raise ValueError("recovered secret is not ternary")
     product = _cyclic_product(public_a, secret, q)
     if any((a + e - t) % q for a, e, t in zip(
@@ -369,7 +377,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
                 "modulus": instance.modulus,
                 "public_a": public_a,
                 "public_t": public_t,
-                "coefficient_bound": 1,
+                "coefficient_bound": instance.secret_bound,
             })
             proof = forge_signature(
                 instance, public_a, public_t,

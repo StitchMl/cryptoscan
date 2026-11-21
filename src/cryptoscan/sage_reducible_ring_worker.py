@@ -195,9 +195,20 @@ def _integral_factor_groups(dimension):
         raise ValueError("polynomial not decomposable over integers")
     if any(divisor.degree() > 128 for divisor in factors):
         raise ValueError("factor degree exceeds supported lattice dimension")
-    # Work in irreducible integer factors individually: arbitrary products
-    # may amplify projected small coefficients and reduce lattice reliability.
-    return factors
+    # High-degree factors are treated separately to keep their residues
+    # sparse. Pack the smaller coprime factors into balanced quotient rings,
+    # reducing the number of expensive lattice jobs without relying on
+    # precomputed factors for any particular ring dimension.
+    largest = max(factor.degree() for factor in factors)
+    threshold = max(2, largest // 2)
+    major = [factor for factor in factors if factor.degree() >= threshold]
+    minor = [factor for factor in factors if factor.degree() < threshold]
+    capacity = min(96, max(32, 3 * largest // 4))
+    packed = _factor_groups(minor, capacity) if minor else []
+    result = major + packed
+    if len(result) == 1:
+        return factors
+    return sorted(result, key=lambda factor: factor.degree(), reverse=True)
 
 
 def _preflight(message):

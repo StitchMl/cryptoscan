@@ -18,6 +18,8 @@ on:
       - "src/cryptoscan/pairing_confirmation.py"
       - "src/cryptoscan/sage_pairing_confirmation_worker.py"
       - "tests/test_pairing_confirmation.py"
+      - "src/cryptoscan/groth16_ticket.py"
+      - "tests/test_groth16_ticket.py"
   workflow_dispatch:
 
 permissions:

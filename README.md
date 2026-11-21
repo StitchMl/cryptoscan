@@ -776,6 +776,38 @@ RSA public keys in PKCS#1 or SubjectPublicKeyInfo PEM and DER form are parsed wi
 
 By default, recursive corpus collection skips documentation, notebooks, tests, writeups, solvers, and exploit scripts. Files supplied explicitly are always examined, regardless of their filename or extension. Exact duplicate artifacts across release, server, and archive copies are scanned once. Cross-artifact attacks stay inside one inferred challenge boundary, so unrelated challenge directories do not produce shared-prime, common-modulus, nonce-reuse, or broadcast findings.
 
+## Reducible cyclic-ring signatures (source-derived GLP-like verification)
+
+The interactive resolver recognizes short-secret signatures whose public key
+satisfies `t = a*s + e` over a ring `F_q[x]/(x^n - 1)`, when the program
+uses a hash-to-polynomial challenge and a coefficient-bounded verifier.
+It reads `q`, `n`, the coefficient limits, the public-polynomial wire
+encoding and message from the provided source; no fixed cyclotomic factors
+or challenge parameters are bundled.
+
+The Sage worker factors the cyclic modulus over the integers, constructs
+small quotient lattices from each factor, attempts embedded-CVP recovery
+with LLL (or the optional external `flatter` reducer), and reconstructs
+the short private key with CRT. The Python frontend verifies the entire
+public-key relation, recomputes a valid signature, and submits it using
+source-derived prompts. This is a **potentially expensive technique**, not a
+universal guarantee: factors of large degree, inadequate lattice reduction
+or nonstandard serialization can prevent recovery.
+
+On Windows, invoke CryptoScan **from PowerShell** as usual; the algebraic
+worker runs automatically under an existing SageMath installation in WSL:
+
+```powershell
+cryptoscan . --no-assist
+cryptoscan . --solve --host <authorized-host> --port <port> --timeout 600
+```
+
+If reduction is too slow, a compiled `flatter` executable available on
+the WSL Sage environment's `PATH` will be used automatically, otherwise
+the worker falls back to Sage LLL. Synthetic tests cover the source-independent
+detector, algebraic forgery and JSON/TCP adapter; real Sage lattice
+performance must be validated for each parameter regime.
+
 ## Offline recovery of message-masked EC signatures
 
 CryptoScan supports a source-verified recovery pattern in which one genuine

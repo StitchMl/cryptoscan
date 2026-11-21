@@ -100,7 +100,8 @@ def test_renamed_source_fields_and_nonstandard_extension():
         Document("something.opaque", invented_source(), None),
     ])
     assert instance is not None
-    assert instance.dimension == 60 and instance.modulus == 257
+    assert instance.dimension == 60
+    assert instance.modulus == 257
     assert instance.message == b"synthetic task"
     assert instance.public_labels == ("first_enc", "second_enc")
     assert instance.prompt_labels == ("first = ", "second = ", "challenge = ")
@@ -223,6 +224,7 @@ def test_worker_has_no_source_execution_and_is_python_parseable():
     tree = ast.parse(source)
     assert any(isinstance(node, ast.FunctionDef) and node.name == "_recover"
                for node in tree.body)
-    assert "exec(" not in source and "eval(" not in source
+    assert "exec(" not in source
+    assert "eval(" not in source
     with pytest.raises(ValueError, match="unsupported Sage worker"):
         _sage_worker_command("unexpected_sage_worker.py")

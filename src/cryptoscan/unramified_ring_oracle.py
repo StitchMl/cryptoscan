@@ -226,7 +226,7 @@ def _sage_worker_command(worker_name: str = DEFAULT_SAGE_WORKER) -> list[str]:
     if local:
         return _local_sage_command(local, worker)
     raise RuntimeError(
-        "SageMath is required for unramified ring arithmetic. "
+        "SageMath is required for this algebraic solver. "
         "On Windows, keep running cryptoscan in PowerShell and install Sage "
         "once inside WSL (for example using Miniforge's sage environment); "
         "CryptoScan will launch the WSL worker automatically. "
@@ -274,7 +274,7 @@ class _SageWorker:
         except json.JSONDecodeError as exc:
             raise RuntimeError("Unexpected Sage worker output") from exc
         if "error" in result:
-            raise RuntimeError("Sage ring mapping failed: " + str(result["error"]))
+            raise RuntimeError("Sage worker failed: " + str(result["error"]))
         return result
 
     def close(self) -> None:

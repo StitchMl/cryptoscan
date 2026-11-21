@@ -297,7 +297,7 @@ def _kdf_scheme(tree):
         ]
         if len(aes) != 1:
             continue
-        nonce = next((value.value for value in aes[0].keywords
+        nonce = next((value.value.value for value in aes[0].keywords
                       if value.arg == "nonce" and isinstance(value.value, ast.Constant)
                       and isinstance(value.value.value, bytes)), None)
         if nonce is not None:

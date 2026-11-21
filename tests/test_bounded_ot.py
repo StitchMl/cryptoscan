@@ -96,3 +96,9 @@ def test_chosen_ciphertext_recovers_independent_message_pairs():
                     return response
 
             assert _recover_reply(Reply(), ECC.EccPoint, secret, table) == (m0, m1)
+
+
+def test_bounded_ot_resolver_accepts_renamed_data_file():
+    model = extract_instance([Document("generic_payload.unknown", synthetic_source(), None)])
+    assert model is not None
+    assert model.rounds == 5

@@ -174,3 +174,14 @@ def test_full_synthetic_tcp_ticket_lifecycle(monkeypatch):
     thread.join(timeout=4)
     assert not problems
     assert result == "DEMO{synthetic_redeem}"
+
+
+def test_groth16_replay_matches_content_without_rs_extensions():
+    first, second = _synthetic_rust_sources()
+    docs = [
+        Document("arbitrary_document.txt", first.text, None),
+        Document("ticket_economy.backup", second.text, None),
+    ]
+    model = extract_instance(docs)
+    assert model is not None
+    assert model.redemptions_needed == 7

@@ -28,6 +28,7 @@ from .bounded_ot import extract_instance as extract_bounded_ot, recover_flag as 
 from .spn_linear_oracle import extract_instance as extract_linear_spn, recover_flag as recover_linear_spn_flag
 from .unramified_ring_oracle import extract_instance as extract_unramified, recover_flag as recover_unramified_flag
 from .threshold_rsa import extract_instance as extract_truncated_rsa, recover_flag as recover_truncated_rsa_flag
+from .groth16_ticket import extract_instance as extract_groth16_tickets, recover_flag as recover_groth16_tickets_flag
 from .pairing_confirmation import extract_instance as extract_pairing_confirmation, recover_flag as recover_pairing_confirmation_flag
 from .terminal_report import render_findings
 
@@ -80,6 +81,11 @@ def _execute_recovery(label, solver, *parameters, **options) -> int:
 
 
 def _solve_remote(args, documents) -> int | None:
+    if extract_groth16_tickets(documents) is not None:
+        return _execute_recovery(
+            "Groth16 proof-identity replay", recover_groth16_tickets_flag,
+            documents, args.host, args.port, timeout=args.timeout,
+        )
     if extract_pairing_confirmation(documents) is not None:
         return _execute_recovery(
             "Pairing confirmation forgery", recover_pairing_confirmation_flag,
@@ -194,6 +200,11 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    groth16_tickets = extract_groth16_tickets(documents)
+    if groth16_tickets is not None:
+        print("Detected: Groth16 proof-byte identifier replay; proof "
+              "rerandomization with invariant pairing equation available "
+              f"({groth16_tickets.redemptions_needed} redemptions, pure Python).")
     if extract_pairing_confirmation(documents) is not None:
         print("Detected: pairing-based confirmation protocol exposes a product "
               "of verifier secrets; source-gated signature-confirmation forgery "

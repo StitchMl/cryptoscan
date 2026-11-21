@@ -28,6 +28,7 @@ def _synthetic_rust_sources():
     proof_source = """
 use ark_serialize::{CanonicalSerialize, CanonicalDeserialize};
 struct Store { spent: HashSet<[u8; 32]> }
+struct Ticket { pub proof: String }
 fn proof(bytes: Vec<u8>) {
     Groth16::<Bn254>::prove();
     Groth16::<Bn254>::verify();
@@ -40,6 +41,7 @@ fn proof(bytes: Vec<u8>) {
 """
     economy_source = """
 const BALANCE: i64 = 6;
+let mut balance: i64 = BALANCE;
 const COST_OF_FLAG: i64 = 3 * BALANCE;
 const COST_OF_TICKET: i64 = 1;
 const VALUE_OF_TICKET: i64 = 2;

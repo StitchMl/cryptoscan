@@ -122,7 +122,11 @@ def inspect_hypotheses(documents: Sequence[Document]) -> list[AttackHypothesis]:
         if document.text and len(document.text) <= MAX_SOURCE_LENGTH:
             by_scope.setdefault(document.scope, []).append(document)
     unique: dict[str, AttackHypothesis] = {}
-    for docs in by_scope.values():
+    groups = [
+        group for scope, docs in by_scope.items()
+        for group in ([[doc] for doc in docs] if scope == "." else [docs])
+    ]
+    for docs in groups:
         features = set()
         for document in docs:
             features |= _signatures(document.text)

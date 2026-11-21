@@ -236,6 +236,19 @@ def _protocol(tree, source):
     )
 
 
+def _euler_totient(value: int) -> int:
+    remaining, result, factor = value, value, 2
+    while factor * factor <= remaining:
+        if remaining % factor == 0:
+            result -= result // factor
+            while remaining % factor == 0:
+                remaining //= factor
+        factor += 1
+    if remaining > 1:
+        result -= result // remaining
+    return result
+
+
 def extract_instance(documents: Sequence[Document]) -> ReducibleRingSignature | None:
     matches = []
     for document in documents:
@@ -254,7 +267,8 @@ def extract_instance(documents: Sequence[Document]) -> ReducibleRingSignature | 
         q, n = ring
         bound, slack, secret_bound = short
         width, message, public, prompts = protocol
-        if not (0 < slack < bound < q // 2 and q < (1 << (width * 8))):
+        if not (0 < slack < bound < q // 2 and q < (1 << (width * 8))
+                and _euler_totient(n) <= 128):
             continue
         matches.append(ReducibleRingSignature(
             q, n, secret_bound, bound, slack, width, message, public, prompts,

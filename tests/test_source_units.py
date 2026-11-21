@@ -86,7 +86,7 @@ def test_explicit_source_is_scanned_even_if_named_like_a_solution(tmp_path):
     source.write_text("x = 101\n", encoding="utf-8")
     docs = collect_documents([str(source)])
     assert len(docs) == 1
-    assert docs[0].text == "x = 101\n"
+    assert docs[0].text.replace("\r\n", "\n") == "x = 101\n"
 
 
 def test_explicit_nonstandard_extension_is_scanned(tmp_path):

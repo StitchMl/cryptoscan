@@ -6,6 +6,8 @@ secrets, fixtures or known plaintext/ciphertext pairs are included.
 """
 from __future__ import annotations
 
+from .source_units import parse_python
+
 import ast
 import random
 import re
@@ -172,11 +174,8 @@ def _padded_block_size(tree: ast.Module, constants: dict[str, int]) -> int | Non
 
 
 def _source_candidate(doc: Document) -> LinearSPN | None:
-    if not doc.path.lower().endswith('.py'):
-        return None
-    try:
-        tree = ast.parse(doc.text)
-    except SyntaxError:
+    tree = parse_python(doc)
+    if tree is None:
         return None
     constants, tables = _constant_values(tree)
     if not tables or not _algebraic_functions(tree, tables):

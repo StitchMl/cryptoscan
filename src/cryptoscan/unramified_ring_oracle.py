@@ -204,7 +204,8 @@ def _local_sage_command(executable: str, worker: Path) -> list[str]:
 
 
 def _sage_worker_command(worker_name: str = DEFAULT_SAGE_WORKER) -> list[str]:
-    if worker_name not in (DEFAULT_SAGE_WORKER, "sage_pairing_confirmation_worker.py"):
+    if worker_name not in (DEFAULT_SAGE_WORKER, "sage_pairing_confirmation_worker.py",
+                           "sage_reducible_ring_worker.py"):
         raise ValueError("unsupported Sage worker")
     worker = Path(__file__).with_name(worker_name).resolve()
     configured = os.getenv("CRYPTOSCAN_SAGE")

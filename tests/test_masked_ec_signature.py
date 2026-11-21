@@ -10,6 +10,7 @@ import sys
 import types
 
 from cryptoscan.masked_ec_signature import (
+    _curve_spec, _hash_scheme, _hash_parameters, _kdf_scheme, _source_model, _read_output,
     _point, _multiply, _expand_sha256, _field_eval,
     extract_instance, recover_flag,
 )
@@ -190,3 +191,16 @@ def test_unrelated_code_and_bad_public_point_not_accepted():
     docs = _documents()
     invalid = docs[1].text.replace("Public = ", "Public = (0, 0) #")
     assert extract_instance([docs[0], Document("raw", invalid, None)]) is None
+
+
+def test_source_grammar_probes_independently():
+    import ast
+    source = Document("fresh-content.txt", _synthetic_source(), None)
+    tree = ast.parse(source.text)
+    assert _hash_scheme(tree) is not None
+    assert _hash_parameters(tree) is not None
+    assert _kdf_scheme(tree) is not None
+    assert _curve_spec(tree) is not None
+    assert _source_model(source) is not None
+    _, ciphertext = _transcript()
+    assert _read_output(Document("records.dat", ciphertext, None), 16) is not None

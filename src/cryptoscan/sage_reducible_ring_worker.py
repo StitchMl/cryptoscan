@@ -55,8 +55,13 @@ def _reduce_lattice(basis):
             ]
             if len(entries) == basis.nrows() * basis.ncols():
                 return matrix(ZZ, basis.nrows(), basis.ncols(), entries)
-        except (OSError, subprocess.SubprocessError):
-            pass
+        except (OSError, subprocess.SubprocessError) as exc:
+            if basis.nrows() >= 85 and os.environ.get("CRYPTOSCAN_SLOW_LLL") != "1":
+                raise RuntimeError(
+                    f"fast lattice reducer failed on {basis.nrows()}x{basis.ncols()} "
+                    f"matrix: {type(exc).__name__}: {exc}. "
+                    "Check flatter installation and its runtime libraries in WSL."
+                ) from exc
     if basis.nrows() >= 85 and os.environ.get("CRYPTOSCAN_SLOW_LLL") != "1":
         raise RuntimeError(
             "Fast lattice reducer 'flatter' is not installed or failed. "

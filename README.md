@@ -802,11 +802,22 @@ cryptoscan . --no-assist
 cryptoscan . --solve --host <authorized-host> --port <port> --timeout 600
 ```
 
-If reduction is too slow, a compiled `flatter` executable available on
-the WSL Sage environment's `PATH` will be used automatically, otherwise
-the worker falls back to Sage LLL. Synthetic tests cover the source-independent
-detector, algebraic forgery and JSON/TCP adapter; real Sage lattice
-performance must be validated for each parameter regime.
+For medium and large quotient lattices, the solver preflights an accelerated
+reducer **before opening the remote connection**. It prefers `flatter` and
+otherwise tries the packaged `fplll` executable. To install the latter,
+run `sudo apt update && sudo apt install -y fplll-tools` in Ubuntu WSL.
+Verify from PowerShell using `wsl --exec which fplll`.
+For more demanding instances, compile `flatter` from the
+[upstream installation instructions](https://github.com/keeganryan/flatter).
+Small lattices can fall back to Sage LLL; an explicit
+`CRYPTOSCAN_SLOW_LLL=1` setting in the worker's WSL environment can
+allow a slower fallback for large lattices, potentially exceeding the service
+deadline. The remote resolver bounds lattice work to leave time for proof
+submission, reports the failing factor and surfaces reducer errors.
+
+Synthetic tests cover the source-independent detector, algebraic forgery,
+backend preflight and JSON/TCP adapter; successful recovery on live Sage
+lattices must still be verified per parameter regime.
 
 ## Offline recovery of message-masked EC signatures
 

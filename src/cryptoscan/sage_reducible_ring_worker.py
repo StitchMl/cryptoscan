@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 from sage.all import GF, PolynomialRing, ZZ, crt, matrix
 
@@ -60,7 +61,7 @@ def _fast_reducer():
     return None, "sage-lll"
 
 
-def _reduce_lattice(basis):
+def _reduce_lattice(basis, deadline=None):
     """Prefer an installed fast lattice reducer; fall back to Sage LLL."""
     command, backend = _fast_reducer()
     if command is not None:
@@ -68,9 +69,13 @@ def _reduce_lattice(basis):
             " ".join(map(str, row)) for row in basis
         ) + "]]"
         try:
+            remaining = (
+                240 if deadline is None
+                else max(1, min(240, deadline - time.monotonic()))
+            )
             completed = subprocess.run(
                 command, input=serialized, text=True,
-                capture_output=True, check=True, timeout=240,
+                capture_output=True, check=True, timeout=remaining,
             )
             entries = [
                 int(value) for value in re.findall(r"-?\d+", completed.stdout)
@@ -121,12 +126,12 @@ def _lattice_for_quotient(a, t, factor, modulus, embedding, shortened):
     return basis, removed, divisor
 
 
-def _recover_component(a, t, factor, modulus, embedding, shortened):
+def _recover_component(a, t, factor, modulus, embedding, shortened, deadline=None):
     basis, removed, divisor = _lattice_for_quotient(
         a, t, factor, modulus, embedding, shortened,
     )
     degree = divisor.degree()
-    reduced = _reduce_lattice(basis)
+    reduced = _reduce_lattice(basis, deadline)
     coefficient_limit = max(32, 4 * math.isqrt(modulus))
     for row in reduced.rows():
         if abs(int(row[-1])) != embedding:
@@ -151,19 +156,25 @@ def _recover_component(a, t, factor, modulus, embedding, shortened):
     )
 
 
-def _candidate_component(a, t, factor, modulus):
-    for shortened in (True, False):
-        # The modulus-sized embedding is the natural first choice: it
-        # keeps the secret/error solution in the distinguished tail row.
-        for embedding in (modulus, 128, 64, 32):
-            try:
-                return _recover_component(
-                    a, t, factor, modulus, embedding, shortened,
-                )
-            except ComponentNotRecovered:
-                continue
+def _candidate_component(a, t, factor, modulus, deadline=None):
+    degree = factor.degree()
+    strategies = [(True, modulus), (False, modulus)]
+    # Low-dimensional quotients can afford additional embedding strengths.
+    if degree <= 24:
+        strategies.extend(((True, 128), (False, 128)))
+    for shortened, embedding in strategies:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise LatticeBackendError(
+                "Cyclic-ring recovery exhausted the allotted lattice time budget"
+            )
+        try:
+            return _recover_component(
+                a, t, factor, modulus, embedding, shortened, deadline,
+            )
+        except ComponentNotRecovered:
+            continue
     raise ComponentNotRecovered(
-        f"lattice reduction did not recover short secret modulo degree-{factor.degree()} factor"
+        f"No verified short component modulo a factor of degree {degree}"
     )
 
 
@@ -236,6 +247,10 @@ def _recover(message):
     ring, q, n, bound, a, t = _public_ring(message)
     full = ring.gen() ** n - 1
     groups = _integral_factor_groups(n)
+    budget = int(message.get("budget_seconds", 540))
+    if not 10 <= budget <= 3600:
+        raise ValueError("invalid lattice time budget")
+    deadline = time.monotonic() + budget
     components = []
     for position, factor in enumerate(groups, start=1):
         print(
@@ -244,7 +259,7 @@ def _recover(message):
             file=sys.stderr, flush=True,
         )
         components.append(
-            (ring(factor), _candidate_component(a, t, factor, q))
+            (ring(factor), _candidate_component(a, t, factor, q, deadline))
         )
     moduli = [modulus for modulus, _ in components]
     if any(

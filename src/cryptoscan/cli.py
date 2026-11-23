@@ -8,6 +8,7 @@ import sys
 from . import __version__
 from .crypto_hypotheses import inspect_hypotheses
 from .masked_ec_signature import extract_instance as extract_masked_ec, recover_flag as recover_masked_ec_flag
+from .affine_ec_leak import extract_instance as extract_affine_ec_leak, recover_flag as recover_affine_ec_leak_flag
 from .cookie import main as cookie_main
 from .assistant import assistant_session
 from .diagnostics import diagnose_runtime
@@ -140,6 +141,11 @@ def _solve_remote(args, documents) -> int | None:
 
 
 def _solve_offline(args, documents) -> int | None:
+    if extract_affine_ec_leak(documents) is not None:
+        return _execute_recovery(
+            "Affine EC public-combination discrete log",
+            recover_affine_ec_leak_flag, documents,
+        )
     if extract_masked_ec(documents) is not None:
         return _execute_recovery(
             "Masked EC signature inlier", recover_masked_ec_flag, documents,
@@ -216,6 +222,12 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    affine_ec = extract_affine_ec_leak(documents)
+    if affine_ec is not None:
+        print("Detected: public affine combinations of elliptic-curve points "
+              "expose a hidden scalar relation; independent point recovery "
+              f"and smooth-subgroup DLP available ({len(affine_ec.records)} "
+              "observations, SageMath worker).")
     model = extract_reducible_glp(documents)
     if model is not None:
         print("Detected: short-secret signature over a reducible cyclic "

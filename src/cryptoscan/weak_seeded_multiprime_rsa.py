@@ -276,7 +276,8 @@ def _message_length(tree, message, definitions):
     return next(iter(sizes)) if len(sizes) == 1 else None
 
 
-def _encryption(tree, modulus, definitions):
+def _encryption(tree, modulus, definitions, modules, imports):
+    """Find a source-defined plaintext-to-integer RSA encryption operation."""
     candidates = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call)
@@ -286,16 +287,25 @@ def _encryption(tree, modulus, definitions):
                 and _name(node.args[2]) == modulus):
             continue
         plain = node.args[0]
-        if not (isinstance(plain, ast.Call) and len(plain.args) == 1
-                and ((isinstance(plain.func, ast.Name)
-                      and plain.func.id == "bytes_to_long")
-                     or (isinstance(plain.func, ast.Attribute)
-                         and plain.func.attr == "bytes_to_long"))):
+        if not isinstance(plain, ast.Call):
+            continue
+        module, conversion = _origin(plain.func, modules, imports)
+        if (conversion == "bytes_to_long"
+                and module in (None, "Crypto.Util.number")
+                and len(plain.args) == 1):
+            secret = _name(plain.args[0])
+        elif (isinstance(plain.func, ast.Attribute)
+                and _name(plain.func.value) == "int"
+                and plain.func.attr == "from_bytes"
+                and len(plain.args) == 2
+                and isinstance(plain.args[1], ast.Constant)
+                and plain.args[1].value == "big"):
+            secret = _name(plain.args[0])
+        else:
             continue
         exponent = _integer(node.args[1], definitions)
-        name = _name(plain.args[0])
-        if name and exponent and exponent > 1 and exponent % 2:
-            candidates.append((name, exponent))
+        if secret and exponent and exponent > 1 and exponent % 2:
+            candidates.append((secret, exponent))
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -341,7 +351,7 @@ def _source_profile(source):
                 and len(loop.iter.args) == 2):
             continue
         start = _integer(loop.iter.args[0], definitions)
-        encryption = _encryption(tree, modulus, definitions)
+        encryption = _encryption(tree, modulus, definitions, modules, imports)
         if start is None or start < 0 or start > 16 or encryption is None:
             continue
         message, exponent = encryption

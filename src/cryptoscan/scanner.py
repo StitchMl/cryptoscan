@@ -41,6 +41,7 @@ from .biased_shamir import _source_profile as biased_shamir_profile
 from .cyclotomic_rsa import _source_profile as cyclotomic_rsa_profile, extract_instance as extract_cyclotomic_rsa
 from .modular_noise_mixture import _source_profile as modular_noise_profile, extract_instance as extract_modular_noise
 from .ec_twist_oracle import _source_profile as ec_twist_profile
+from .hyperelliptic_state_leak import _source_profile as hyperelliptic_leak_profile
 from .weak_seeded_multiprime_rsa import (
     extract_instance as extract_weak_seeded_rsa,
     _source_profile as weak_seeded_rsa_profile,
@@ -2062,6 +2063,64 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "Use discrete logarithms and CRT to infer scalar residues.",
                 "Validate that the recovered residue uniquely identifies "
                 "the original secret before claiming a plaintext.",
+            ],
+        ))
+    for document in documents:
+        hyper = hyperelliptic_leak_profile(document)
+        if hyper is None:
+            continue
+        findings.append(Finding(
+            "HYPERELLIPTIC-MUMFORD-STATE-DISCLOSURE",
+            "Chosen plaintext reveals serialized Jacobian divisor coefficients",
+            "high", "high", document.path,
+            {
+                "source_verified": True,
+                "finite_field_bits": hyper.prime.bit_length(),
+                "genus": hyper.genus,
+                "curve_polynomial_degree_bound": hyper.polynomial_degree_bound,
+                "state_bytes": hyper.state_bytes,
+                "coefficients_per_state": hyper.coefficients_per_state,
+                "known_plaintext_suffix": hyper.known_plaintext_suffix is not None,
+                "chosen_plaintext": hyper.chosen_plaintext,
+                "fixed_scalar_for_flag": hyper.scalar_multiplier_reused_for_flag,
+                "full_flag_recovery_implemented": False,
+            },
+            [
+                "An attacker supplies arbitrary plaintext that is XORed "
+                "with bytes serializing consecutive Jacobian state coefficients.",
+                "Zero plaintext reveals complete Mumford u,v coefficients "
+                "from a scalar-multiplied hyperelliptic divisor.",
+                "Every disclosed divisor satisfies f(x) congruent to "
+                "v(x)**2 modulo u(x), giving linear constraints on "
+                "the hidden curve polynomial coefficients.",
+                "A fixed nonrandom scalar controls the flag keystream; "
+                "known plaintext in that ciphertext may leak partial state.",
+            ],
+            "Query zero plaintext long enough to expose multiple full "
+            "Mumford states. Reconstruct the curve polynomial by finite-field "
+            "linear algebra from f modulo u = v**2 modulo u. "
+            "Analyze the remaining incomplete flag keystream state with "
+            "curve constraints and any known plaintext before attempting "
+            "secret recovery. A full flag is not yet certified.",
+            {
+                "kind": "hyperelliptic_jacobian_mumford_state_leak",
+                "remote": True,
+                "source_verified": True,
+                "recovery_status": "partial_state_and_curve",
+                "requires": ["authorized host", "port", "chosen plaintext"],
+            },
+            "Never expose algebraic PRNG internal state through reversible "
+            "serialization and XOR with attacker-controlled plaintext. "
+            "Use a cryptographically secure stream cipher and derive "
+            "keys independently of exposed group elements.",
+            [
+                "Normalize Sage polynomial rings and identify Jacobian "
+                "scalar-multiplication state.",
+                "Trace u,v coefficients into binary packing and XOR output.",
+                "Exploit chosen zero plaintext to obtain full divisor states.",
+                "Use the Mumford congruence to recover the hidden curve.",
+                "Determine whether the secret ciphertext can be decrypted "
+                "with enough uniquely constrained state information.",
             ],
         ))
     return findings

@@ -30,7 +30,7 @@ class PolynomialGCDPrefix:
     variable: str
 
 
-def _polynomial(node: ast.AST, variable: str) -> Poly:
+def _polynomial(node: ast.AST, variable: str, bindings=None, seen=frozenset()) -> Poly:
     """Interpret a bounded arithmetic AST, never eval arbitrary source."""
     if isinstance(node, ast.Constant) and type(node.value) is int:
         if abs(node.value).bit_length() > 4096:
@@ -38,18 +38,24 @@ def _polynomial(node: ast.AST, variable: str) -> Poly:
         return Poly(node.value, VAR, domain="ZZ")
     if isinstance(node, ast.Name) and node.id == variable:
         return Poly(VAR, VAR, domain="ZZ")
+    if isinstance(node, ast.Name) and bindings and node.id in bindings:
+        if node.id in seen:
+            raise ValueError("cyclic polynomial source alias")
+        return _polynomial(
+            bindings[node.id], variable, bindings, seen | {node.id},
+        )
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-        return -_polynomial(node.operand, variable)
+        return -_polynomial(node.operand, variable, bindings, seen)
     if isinstance(node, ast.BinOp):
         if isinstance(node.op, ast.Pow):
             if not (isinstance(node.right, ast.Constant)
                     and type(node.right.value) is int
                     and 0 <= node.right.value <= 64):
                 raise ValueError("unsupported exponent")
-            result = _polynomial(node.left, variable) ** node.right.value
+            result = _polynomial(node.left, variable, bindings, seen) ** node.right.value
         else:
-            left = _polynomial(node.left, variable)
-            right = _polynomial(node.right, variable)
+            left = _polynomial(node.left, variable, bindings, seen)
+            right = _polynomial(node.right, variable, bindings, seen)
             if isinstance(node.op, ast.Add):
                 result = left + right
             elif isinstance(node.op, ast.Sub):
@@ -136,6 +142,27 @@ def _is_math_gcd_call(node, direct, modules):
     )
 
 
+def _prior_polynomial_bindings(tree, consumer):
+    """Resolve unambiguous assignments made before a GCD expression.
+
+    An alias is accepted only when it has exactly one definition before
+    the use site. Cycles, unknown calls, and unsupported operations are
+    rejected by the bounded polynomial interpreter.
+    """
+    definitions = {}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.lineno < consumer.lineno):
+            name = node.targets[0].id
+            definitions.setdefault(name, []).append(node.value)
+    return {
+        name: values[0] for name, values in definitions.items()
+        if len(values) == 1
+    }
+
+
 def _source_profile(document: Document):
     if len(document.text) > 1_000_000:
         return None
@@ -153,9 +180,10 @@ def _source_profile(document: Document):
             if not (_is_math_gcd_call(call, direct, modules)
                     and _slice_is_printed(tree, node.targets[0].id)):
                 continue
+            bindings = _prior_polynomial_bindings(tree, node)
             try:
-                left = _polynomial(call.args[0], variable)
-                right = _polynomial(call.args[1], variable)
+                left = _polynomial(call.args[0], variable, bindings)
+                right = _polynomial(call.args[1], variable, bindings)
             except (ValueError, TypeError, ArithmeticError):
                 continue
             if (1 <= left.degree() <= 64 and 1 <= right.degree() <= 64

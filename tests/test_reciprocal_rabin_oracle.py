@@ -308,3 +308,74 @@ def test_rejects_oracle_without_nested_decrypt_then_encrypt():
         "stamp(123,pub)",
     )
     assert extract_instance([Document("no_decryption.py",source,None)]) is None
+
+
+def test_jacobi_import_alias_and_reordered_additive_terms():
+    source = _fresh_source(bits=47, labels=("rho", "chi", "selection"))
+    source = source.replace(
+        "from sympy import jacobi_symbol as jacobi",
+        "from sympy import jacobi_symbol as arithmetic_character",
+    ).replace("jacobi(", "arithmetic_character(")
+    source = source.replace(
+        "(message + public.multiplier * pow(message,-1,public.mod))",
+        "(pow(message,-1,public.mod) * public.multiplier + message)",
+    )
+    profile = extract_instance([
+        Document("different_group_formula.py", source, None)
+    ])
+    assert profile is not None
+    assert profile.factor_bits == 47
+    assert profile.ciphertext_labels == ("rho", "chi", "selection")
+
+
+def test_named_jacobi_stub_is_not_a_cryptographic_certificate():
+    source = _fresh_source()
+    source = source.replace(
+        "from sympy import jacobi_symbol as jacobi",
+        "def jacobi(message, modulus):\n    return 1",
+    )
+    assert extract_instance([
+        Document("wrong_quadratic_character.py", source, None)
+    ]) is None
+
+
+def test_unrelated_modular_inverse_and_root_pair_are_not_a_quadratic_solver():
+    source = _fresh_source()
+    start = source.index("def inverted_quadratic(")
+    end = source.index("def chinese(", start)
+    impostor = """
+def inverted_quadratic(a,b,modulus):
+    data = [a, b]
+    reciprocal = pow(data[1], -1, modulus)
+    exponent = (modulus-1)//2
+    candidate = a + b*reciprocal
+    alternate = (a-candidate) % modulus
+    return candidate, alternate
+
+"""
+    # A superficial inverse+tuple-return detector falsely recognized this.
+    source = source[:start] + impostor + source[end:]
+    assert extract_instance([
+        Document("not_a_quotient_root_solver.py", source, None)
+    ]) is None
+
+
+def test_crt_requires_both_residues_not_only_modulus_product():
+    source = _fresh_source()
+    source = source.replace(
+        "return (x + p * ((y-x) * pow(p, -1, q) % q)) % (p*q)",
+        "return x % (p*q)",
+    )
+    assert extract_instance([
+        Document("fake_recombination.py", source, None)
+    ]) is None
+
+
+def test_distinct_error_message_is_control_flow_not_keyword_signature():
+    source = _fresh_source().replace(
+        'print("invalid parameters")',
+        'print("mismatch: 0x4e! test different languages")',
+    )
+    profile = extract_instance([Document("new_errors.py", source, None)])
+    assert profile is not None
+    assert profile.failure_marker == "mismatch: 0x4e! test different languages"

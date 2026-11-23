@@ -185,7 +185,61 @@ def _candidate_component(a, t, factor, modulus, deadline=None):
 
 
 
-def _recover_factor_components(a, t, factor, modulus, deadline=None):
+
+def _projected_coefficient_limits(factor, dimension, secret_bound, modulus):
+    """Exact coordinate bounds for a short polynomial reduced modulo factor.
+
+    Every source coefficient contributes at most secret_bound times the
+    absolute coefficient of x**i mod factor. Summing these contributions
+    gives a necessary bound for BOTH the secret and error residues.
+    Operates on the integral factor, not coefficients reduced modulo q.
+    """
+    degree = int(factor.degree())
+    if degree < 1 or dimension < degree:
+        raise ValueError("invalid quotient projection dimensions")
+    coefficients = [int(factor[i]) for i in range(degree)]
+    if int(factor[degree]) != 1:
+        raise ValueError("expected monic integral factor")
+    running = [1] + [0] * (degree - 1)
+    totals = [0] * degree
+    for _ in range(dimension):
+        for index, value in enumerate(running):
+            totals[index] += abs(value)
+        lead = running[-1]
+        running = [0] + running[:-1]
+        if lead:
+            running = [
+                value - lead * coefficients[index]
+                for index, value in enumerate(running)
+            ]
+    return [
+        min(modulus // 2, int(secret_bound) * total)
+        for total in totals
+    ]
+
+
+def _verified_projected_candidate(a, t, factor, modulus, candidate,
+                                  dimension, coefficient_bound):
+    """Reject locally plausible vectors inconsistent with short input keys."""
+    limits = _projected_coefficient_limits(
+        factor, dimension, coefficient_bound, modulus,
+    )
+    divisor = a.parent()(factor)
+    noise = (t - a * candidate) % divisor
+    if any(
+        abs(_center(candidate[index], modulus)) > limit
+        or abs(_center(noise[index], modulus)) > limit
+        for index, limit in enumerate(limits)
+    ):
+        raise ComponentNotRecovered(
+            f"candidate violates source-derived short projection bounds "
+            f"(factor degree {int(factor.degree())})"
+        )
+    return candidate
+
+
+def _recover_factor_components(a, t, factor, modulus, deadline=None,
+                               dimension=None, coefficient_bound=None):
     """Recover a quotient or refine a failed composite quotient.
 
     Grouped factors reduce the number of lattice calls, but their coefficient
@@ -194,9 +248,12 @@ def _recover_factor_components(a, t, factor, modulus, deadline=None):
     any challenge-specific factorization or coefficients.
     """
     try:
-        return [(a.parent()(factor), _candidate_component(
-            a, t, factor, modulus, deadline,
-        ))]
+        candidate = _candidate_component(a, t, factor, modulus, deadline)
+        if dimension is not None and coefficient_bound is not None:
+            candidate = _verified_projected_candidate(
+                a, t, factor, modulus, candidate, dimension, coefficient_bound,
+            )
+        return [(a.parent()(factor), candidate)]
     except ComponentNotRecovered as exc:
         factors = [
             divisor for divisor, multiplicity in factor.factor()
@@ -222,6 +279,7 @@ def _recover_factor_components(a, t, factor, modulus, deadline=None):
                 )
             recovered.extend(_recover_factor_components(
                 a, t, divisor, modulus, deadline,
+                dimension=dimension, coefficient_bound=coefficient_bound,
             ))
         return recovered
 
@@ -307,7 +365,10 @@ def _recover(message):
             file=sys.stderr, flush=True,
         )
         components.extend(
-            _recover_factor_components(a, t, factor, q, deadline)
+            _recover_factor_components(
+                a, t, factor, q, deadline,
+                dimension=n, coefficient_bound=bound,
+            )
         )
     moduli = [modulus for modulus, _ in components]
     if any(

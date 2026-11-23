@@ -77,11 +77,83 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
         for node in ast.walk(tree)
     ):
         result.add("shuffle")
+    nodes = list(ast.walk(tree))
+    if any(isinstance(node, ast.Call)
+           and (isinstance(node.func, ast.Name) and node.func.id == "gcd"
+                or isinstance(node.func, ast.Attribute)
+                and node.func.attr == "gcd")
+           and len(node.args) == 2 for node in nodes):
+        result.add("gcd_operation")
+    if any(
+        isinstance(node, ast.Subscript)
+        and isinstance(node.slice, ast.Slice)
+        and node.slice.upper is not None
+        and not isinstance(node.slice.upper, ast.Constant)
+        for node in nodes
+    ):
+        result.add("computed_output_slice")
+    if any(
+        isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Subscript) for target in node.targets)
+        and isinstance(node.value, ast.BinOp)
+        and isinstance(node.value.op, ast.Mod)
+        for node in nodes
+    ):
+        result.add("indexed_modular_reduction")
+    if any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"getrandbits", "randbits", "randbelow", "randrange"}
+        for node in nodes
+    ):
+        result.add("sampled_random_scalars")
+    if any(
+        isinstance(node, ast.BinOp)
+        and isinstance(node.op, ast.Pow)
+        and isinstance(node.right, ast.UnaryOp)
+        and isinstance(node.right.op, ast.USub)
+        and isinstance(node.right.operand, ast.Constant)
+        and node.right.operand.value == 1
+        for node in nodes
+    ) and any(
+        isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult)
+        for node in nodes
+    ):
+        result.add("inverse_conjugation")
+    if any(
+        isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)
+        and isinstance(node.left, ast.BinOp)
+        and isinstance(node.left.op, ast.Mult)
+        and isinstance(node.right, ast.BinOp)
+        and isinstance(node.right.op, ast.Mult)
+        for node in nodes
+    ):
+        result.add("sum_of_scaled_terms")
     return result
 
 
 # Requirements describe mechanisms rather than target service names.
 HYPOTHESIS_RULES = (
+    ({"gcd_operation", "computed_output_slice", "interaction"},
+     "Attacker-controlled polynomial GCD information leak",
+     "An attacker-controlled input influences an integer GCD and the length of an output.",
+     ("Build polynomial expressions and calculate their resultant",
+      "Check whether a modular common root forces a large GCD")),
+    ({"indexed_modular_reduction", "sampled_random_scalars"},
+     "Signature scalar distribution distinguishability",
+     "Arrays of responses include modular reductions and a separate random sampler.",
+     ("Trace sampled scalars into each signer response array",
+      "Compare the true and decoy distributions and check statistical significance")),
+    ({"inverse_conjugation", "key_derivation"},
+     "Conjugation equivalent-key recovery",
+     "An algebraic inverse conjugation and symmetric-key derivation occur together.",
+     ("Build the noncommutative equation graph and locate commuting public powers",
+      "Search for an equivalent key through modular linear equations")),
+    ({"elliptic_curve", "sum_of_scaled_terms"},
+     "Public linear combinations over a group",
+     "The source forms additive combinations of scaled terms on an elliptic curve.",
+     ("Determine whether observations invert to hidden group elements",
+      "Inspect the generated subgroup order for feasible discrete logarithms")),
     ({"elliptic_curve", "random_scalar", "shuffle", "authentication"},
      "Hidden authentic signature among decoys",
      "An elliptic-curve signature generator is combined with randomized or shuffled candidates.",

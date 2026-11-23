@@ -290,6 +290,34 @@ def _quotient_quadratic_solver(fn):
     if len(final_return) != 1:
         return False
     root, complement = (_name(item) for item in final_return[0].value.elts)
+    # Root-validation guards can prevent a faulty component from ever
+    # reaching CRT and therefore invalidate this attack's precondition.
+    # Reject when the root is used in a post-computation assertion or an
+    # explicit failing control-flow branch.
+    root_assignments = [
+        stmt for stmt in fn.body
+        if isinstance(stmt, ast.Assign)
+        and any(_name(target) == root for target in stmt.targets)
+    ]
+    if len(root_assignments) != 1:
+        return False
+    root_line = root_assignments[0].lineno
+    for statement in ast.walk(fn):
+        if getattr(statement, "lineno", 0) <= root_line:
+            continue
+        if isinstance(statement, ast.Assert) and any(
+            isinstance(child, ast.Name) and child.id == root
+            for child in ast.walk(statement.test)
+        ):
+            return False
+        if isinstance(statement, ast.If) and any(
+            isinstance(child, ast.Name) and child.id == root
+            for child in ast.walk(statement.test)
+        ) and any(
+            isinstance(child, (ast.Raise, ast.Return))
+            for branch in statement.body for child in ast.walk(branch)
+        ):
+            return False
     complementary = any(
         isinstance(node, ast.Assign)
         and len(node.targets) == 1

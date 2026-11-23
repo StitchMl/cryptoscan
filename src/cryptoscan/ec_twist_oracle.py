@@ -338,6 +338,40 @@ def _bsgs(curve, base, target, order, *, step_limit=500_000):
     raise RuntimeError("no subgroup discrete logarithm matches target")
 
 
+def feasible_twist(model, *, max_bsgs_steps=500_000):
+    """Prove that source parameters admit a bounded twist subgroup attack.
+
+    This is planning-only: it never connects to the oracle or guesses
+    plaintext. Source-only detection remains available without an order.
+    """
+    from sympy import factorint, isprime
+    q = model.field_prime
+    if model.curve_order is None or not isprime(q):
+        return False
+    if not 16 <= q.bit_length() <= 160:
+        return False
+    if not 0 < model.curve_order < 2*(q+1):
+        return False
+    order = 2*(q+1)-model.curve_order
+    if order <= 1:
+        return False
+    factors = factorint(order, limit=1_000_000)
+    if math.prod(int(p)**int(e) for p,e in factors.items()) != order:
+        return False
+    if not all(
+        math.isqrt(int(p)**int(e))+1 <= max_bsgs_steps
+        for p,e in factors.items()
+    ):
+        return False
+    # A random-looking candidate order is not sufficient. We also check
+    # that a full-order point exists on the supposed twist.
+    try:
+        twist_generator(model, factors)
+    except RuntimeError:
+        return False
+    return True
+
+
 def twist_generator(model, factors):
     """Find a full-order twist point using *derived* parameters only."""
     from sympy import sqrt_mod

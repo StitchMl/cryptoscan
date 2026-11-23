@@ -78,23 +78,71 @@ def _bound_difference(node):
     return None
 
 
-def _sampler_bound(node):
+def _sampler_imports(tree):
+    """Bind a sampling API to trusted standard/Crypto modules."""
+    known = {
+        "getRandomRange": "Crypto.Util.number",
+        "randbelow": "secrets",
+        "randrange": "random",
+        "randint": "random",
+    }
+    names, modules = set(), set()
+    for statement in tree.body:
+        if isinstance(statement, ast.ImportFrom):
+            if statement.module not in set(known.values()):
+                continue
+            for alias in statement.names:
+                if alias.name == "*":
+                    names.update(
+                        name for name, module in known.items()
+                        if module == statement.module
+                    )
+                elif known.get(alias.name) == statement.module:
+                    names.add(alias.asname or alias.name)
+        elif isinstance(statement, ast.Import):
+            for alias in statement.names:
+                if alias.name in set(known.values()):
+                    modules.add(alias.asname or alias.name)
+    return names, modules
+
+
+def _sampler_bound(node, permitted):
     if not isinstance(node, ast.Call):
         return None
+    names, modules = permitted
     func = node.func
-    method = func.attr if isinstance(func, ast.Attribute) else _symbol(func)
-    if method in ("getRandomRange", "randrange") and len(node.args) == 2:
+    if isinstance(func, ast.Name):
+        if func.id not in names:
+            return None
+        method = func.id
+        # Renamed imports retain API semantics; infer from arity.
+    elif (isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id in modules):
+        method = func.attr
+    else:
+        return None
+    if method in ("getRandomRange", "randrange", "randint") or (
+            method in names and len(node.args) == 2):
+        if len(node.args) != 2:
+            return None
         low, high = node.args
         if not (isinstance(low, ast.Constant) and low.value == 0):
             return None
-    elif method == "randbelow" and len(node.args) == 1:
-        high = node.args[0]
-    else:
-        return None
-    return _bound_difference(high)
+        bound = _bound_difference(high)
+        if bound and method == "randint":
+            member, name, difference = bound
+            if difference <= 1:
+                return None
+            return member, name, difference - 1
+        return bound
+    if method in ("randbelow", "randrange") or (
+            method in names and len(node.args) == 1):
+        return _bound_difference(node.args[0]) if len(node.args) == 1 else None
+    return None
 
 
-def _constructor_roles(class_node):
+def _constructor_roles(class_node, permitted):
     """Infer modulus, threshold, and constant-term roles from a class AST."""
     for method in class_node.body:
         if not isinstance(method, ast.FunctionDef) or len(method.args.args) < 4:
@@ -123,7 +171,7 @@ def _constructor_roles(class_node):
                     or not isinstance(random_part, ast.ListComp)
                     or len(random_part.generators) != 1):
                 continue
-            sampler = _sampler_bound(random_part.elt)
+            sampler = _sampler_bound(random_part.elt, permitted)
             if sampler is None:
                 continue
             modulus_member, modulus_arg, excluded = sampler
@@ -284,7 +332,8 @@ def _sharing_print(tree):
                 and isinstance(value.slice.upper.op, ast.USub)
                 and isinstance(value.slice.upper.operand, ast.Constant)
                 and value.slice.upper.operand.value == 1):
-            outputs.add(node.args[0].value.strip())
+            if (name := _symbol(value.value)) is not None:
+                outputs.add((node.args[0].value.strip(), name))
     return next(iter(outputs)) if len(outputs) == 1 else None
 
 
@@ -295,10 +344,11 @@ def _source_profile(document):
     if tree is None:
         return None
     candidates = []
+    permitted = _sampler_imports(tree)
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
             continue
-        roles = _constructor_roles(node)
+        roles = _constructor_roles(node, permitted)
         if roles is None:
             continue
         p_arg, n_arg, secret_arg, excluded, coeff_field, _, _ = roles
@@ -352,8 +402,36 @@ def _source_profile(document):
                 continue
             lower = _prime_range_check(tree, public_p, public_n)
             bound = _secret_size(tree, public_secret)
-            label = _sharing_print(tree)
-            if lower is None or bound is None or label is None:
+            printing = _sharing_print(tree)
+            if lower is None or bound is None or printing is None:
+                continue
+            label, printed_name = printing
+            # The observed slice must be derived from this very constructor.
+            # A disjoint share print elsewhere in the source is not evidence.
+            if not any(
+                isinstance(assign, ast.Assign)
+                and len(assign.targets) == 1
+                and _symbol(assign.targets[0]) == printed_name
+                and isinstance(assign.value, ast.Call)
+                and isinstance(assign.value.func, ast.Attribute)
+                and assign.value.func.value is instance
+                for assign in ast.walk(tree)
+            ):
+                continue
+            loops = [
+                loop for loop in ast.walk(tree)
+                if isinstance(loop, ast.While)
+                and any(child is instance for child in ast.walk(loop))
+            ]
+            secret_definitions = [
+                assign for assign in ast.walk(tree)
+                if isinstance(assign, ast.Assign)
+                and len(assign.targets) == 1
+                and _symbol(assign.targets[0]) == public_secret
+            ]
+            if (len(loops) != 1 or len(secret_definitions) != 1
+                    or secret_definitions[0].lineno >= loops[0].lineno):
+                # Repeated observations must share the SAME constant term.
                 continue
             secrets = set()
             for branch in ast.walk(tree):

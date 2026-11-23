@@ -397,7 +397,7 @@ def _recover(message):
         raise RuntimeError("recovered key violates public ring equation")
     return {
         "secret": secret_coefficients,
-        "error": error_coefficients,
+        "noise": error_coefficients,
         "factor_degrees": [int(factor.degree()) for factor, _ in components],
     }
 

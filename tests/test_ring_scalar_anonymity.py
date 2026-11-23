@@ -207,3 +207,23 @@ def test_direct_group_order_symbol_is_accepted():
     ]
     assert extract_instance(transformed) is not None
     assert recover_flag(transformed) == "TEST{generalized_ring_signature}"
+
+
+def test_equivalent_wide_random_scalar_samplers_are_detected():
+    """Sampling APIs are implementation choices, not different attacks."""
+    docs = documents()
+    for sampling_expression in (
+        "secrets.randbelow(1 << 256)",
+        "random.randrange(2**256)",
+        "secrets.randbits(256)",
+    ):
+        changed = source().replace(
+            "return random.SystemRandom().getrandbits(256)",
+            "return " + sampling_expression,
+        )
+        changed = "import secrets\n" + changed
+        transformed = [
+            Document("sampling_variant", changed, None), *docs[1:],
+        ]
+        assert extract_instance(transformed) is not None
+        assert recover_flag(transformed) == "TEST{generalized_ring_signature}"

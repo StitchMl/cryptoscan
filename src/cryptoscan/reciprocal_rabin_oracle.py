@@ -558,23 +558,32 @@ def _source_profile(document):
         for node in ast.walk(tree)
     ):
         return None
-    # Parse the field names from the representation class, not from
-    # hard-coded r/s/t symbols.
-    enc_types = []
+    # Follow the encryption function's *constructed* ciphertext type.
+    # Unrelated three-field records are not evidence of an output schema.
+    classes = {}
     for node in tree.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        fields = [
-            stmt.target.id for stmt in node.body
-            if isinstance(stmt, ast.AnnAssign)
-            and isinstance(stmt.target, ast.Name)
-        ]
-        if len(fields) == 3:
-            enc_types.append(tuple(fields))
-    if len(enc_types) != 1:
+        if isinstance(node, ast.ClassDef):
+            fields = [
+                stmt.target.id for stmt in node.body
+                if isinstance(stmt, ast.AnnAssign)
+                and isinstance(stmt.target, ast.Name)
+            ]
+            if len(fields) == 3:
+                classes[node.name] = tuple(fields)
+    encrypt_fn = next(
+        fn for fn in tree.body
+        if isinstance(fn, ast.FunctionDef) and fn.name == encrypt
+    )
+    output_types = {
+        _name(call.func) for call in ast.walk(encrypt_fn)
+        if isinstance(call, ast.Call)
+        and _name(call.func) in classes
+    }
+    if len(output_types) != 1:
         return None
+    ciphertext_class = next(iter(output_types))
     return ReciprocalRabinOracle(
-        bits, enc_types[0], protocol[0], protocol[1],
+        bits, classes[ciphertext_class], protocol[0], protocol[1],
         protocol[2], protocol[3],
     )
 

@@ -39,6 +39,7 @@ from .aead_diagnostics import unused_validation_flags
 from .stream_combiner_workflow import recognize_stream_cipher
 from .biased_shamir import _source_profile as biased_shamir_profile
 from .cyclotomic_rsa import _source_profile as cyclotomic_rsa_profile, extract_instance as extract_cyclotomic_rsa
+from .modular_noise_mixture import _source_profile as modular_noise_profile, extract_instance as extract_modular_noise
 from .weak_seeded_multiprime_rsa import (
     extract_instance as extract_weak_seeded_rsa,
     _source_profile as weak_seeded_rsa_profile,
@@ -1959,6 +1960,57 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "Verify gcd-derived factors and the source relation.",
                 "Decrypt with the certified factorization and verify "
                 "RSA re-encryption.",
+            ],
+        ))
+    modular_model = extract_modular_noise(documents)
+    for document in documents:
+        profile = modular_noise_profile(document.text)
+        if profile is None:
+            continue
+        size, modulus, bits, samples, true_bit = profile
+        has_public = modular_model is not None and modular_model.key_bytes == size
+        findings.append(Finding(
+            "LWE-MODULAR-NOISE-SUBGROUP-LEAK",
+            "LWE-like samples reveal exact linear equations modulo a small power of two",
+            "high", "high", document.path,
+            {
+                "source_verified": True,
+                "key_coordinates": size,
+                "sample_modulus": modulus,
+                "noise_trailing_zero_bits": bits,
+                "samples_per_classification": samples,
+                "authentic_selector_bit": true_bit,
+                "public_transcript_matched": has_public,
+            },
+            [
+                "The additive noise is shifted left at the end of every "
+                "generation round and its offset preserves trailing zeros.",
+                "Authentic observations expose exact modular linear equations.",
+                "Decoy observations are uniform modulo the public sample modulus.",
+                "One reused hidden key provides cross-block consistency.",
+            ],
+            "Reduce the observations modulo 2**t to eliminate the noise. "
+            "Recover secret key residues with bounded block-wise RANSAC over "
+            "linear systems, classify genuine observation groups, and "
+            "reconstruct the source-defined bit packing.",
+            {
+                "kind": "lwe_modular_noise_mixture",
+                "offline": True,
+                "source_verified": True,
+                "public_corpus_available": has_public,
+                "requires": ["source", "mixed observation transcript"],
+            },
+            "Do not use a restricted-noise distribution whose support is "
+            "contained in a proper additive subgroup modulo the public "
+            "arithmetic modulus. Sample full-support noise where appropriate "
+            "or use a cryptographically justified LWE parameterization.",
+            [
+                "Check the additive noise support modulo every small divisor "
+                "of the sample modulus.",
+                "Eliminate the noise under a supported modular projection.",
+                "Solve a subset of coherent blocks for the secret residues.",
+                "Validate on independent observations and classify the "
+                "true/fake mixture, accounting for accidental decoy matches.",
             ],
         ))
     return findings

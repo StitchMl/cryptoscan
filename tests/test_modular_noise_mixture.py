@@ -228,3 +228,18 @@ def test_error_accumulator_must_not_change_after_final_shift():
         "        z <<= 1\n    z += 1\n    return z",
     )
     assert _source_profile(source) is None
+
+
+@pytest.mark.parametrize("replacement", [
+    "(honest if bit == 0 else decoy)(secret)",
+    "(decoy if bit == 1 else honest)(secret)",
+    "{0: honest, 1: decoy}[bit](secret)",
+])
+def test_semantically_equivalent_sampler_dispatch(replacement):
+    docs, _ = independent_corpus()
+    source = docs[0].text.replace(
+        "[honest, decoy][bit](secret)", replacement,
+    )
+    assert recover_flag([
+        Document("new_dispatch_syntax.py", source, None), docs[1],
+    ]) == "LAB{new_mixture_model}"

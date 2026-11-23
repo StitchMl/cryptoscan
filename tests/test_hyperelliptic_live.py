@@ -132,7 +132,7 @@ def test_tcp_capture_full_investigation_and_verified_solver(monkeypatch):
         services.append(srv)
         return srv
     monkeypatch.setattr(live.socket, "create_connection", connect)
-    first = investigate(docs, "localhost", 39003)
+    first = investigate(docs, "localhost", 31337)
     assert first.recovered_flag == flag.decode()
     assert first.polynomial == tuple(polynomial)
     assert services[-1].requests == [
@@ -155,7 +155,7 @@ def test_cli_investigate_json_is_one_document(tmp_path, monkeypatch, capsys):
     )
     assert main([
         str(path), "--investigate", "--format", "json",
-        "--host", "example.invalid", "--port", "39003",
+        "--host", "example.invalid", "--port", "31337",
     ]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["schema_version"] == 1
@@ -189,7 +189,7 @@ def test_cli_solve_uses_verification_and_never_networks_during_planning(
     monkeypatch.setattr(live.socket, "create_connection", connect)
     assert main([
         str(path), "--plan-attacks", "--format", "json",
-        "--host", "example.invalid", "--port", "39003",
+        "--host", "example.invalid", "--port", "31337",
     ]) == 0
     report = json.loads(capsys.readouterr().out)
     assert any(
@@ -200,7 +200,7 @@ def test_cli_solve_uses_verification_and_never_networks_during_planning(
     assert not calls
     assert main([
         str(path), "--solve",
-        "--host", "example.invalid", "--port", "39003",
+        "--host", "example.invalid", "--port", "31337",
     ]) == 0
     assert calls == [1]
     assert "FLAG: LAB{a}" in capsys.readouterr().out
@@ -268,7 +268,7 @@ def test_short_known_suffix_keeps_only_analysis_not_false_flag_solver(
     path.write_text(source, encoding="utf-8")
     assert main([
         str(path), "--plan-attacks", "--format", "json",
-        "--host", "example.invalid", "--port", "39003",
+        "--host", "example.invalid", "--port", "31337",
     ]) == 0
     report = json.loads(capsys.readouterr().out)
     assert any(

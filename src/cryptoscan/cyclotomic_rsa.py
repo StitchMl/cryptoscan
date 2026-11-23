@@ -83,9 +83,47 @@ def _sum_of_powers(node, base, index, degree):
             and _name(elt.right) == index)
 
 
+def _geometric_ratio(node, base, degree):
+    """(p**d - 1)//(p - 1) is the same geometric polynomial."""
+    if not (isinstance(node, ast.BinOp)
+            and isinstance(node.op, ast.FloorDiv)):
+        return False
+    numerator, denominator = node.left, node.right
+    return (
+        isinstance(numerator, ast.BinOp)
+        and isinstance(numerator.op, ast.Sub)
+        and isinstance(numerator.left, ast.BinOp)
+        and isinstance(numerator.left.op, ast.Pow)
+        and _name(numerator.left.left) == base
+        and _name(numerator.left.right) == degree
+        and isinstance(numerator.right, ast.Constant)
+        and numerator.right.value == 1
+        and isinstance(denominator, ast.BinOp)
+        and isinstance(denominator.op, ast.Sub)
+        and _name(denominator.left) == base
+        and isinstance(denominator.right, ast.Constant)
+        and denominator.right.value == 1
+    )
+
+
+def _crypto_functions(tree):
+    """Resolve import aliases rather than the challenge's identifier names."""
+    aliases = {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.ImportFrom) and stmt.module in (
+                "Crypto.Util.number", "sympy"):
+            for alias in stmt.names:
+                if alias.name in ("getPrime", "isPrime", "isprime"):
+                    aliases[alias.asname or alias.name] = alias.name
+                if alias.name == "*" and stmt.module == "Crypto.Util.number":
+                    aliases.update({"getPrime": "getPrime", "isPrime": "isPrime"})
+    return aliases
+
+
 def _function_roles(tree):
     """Return name and formal parameter names of a coupled-prime factory."""
     candidates = []
+    imported = _crypto_functions(tree)
     for function in tree.body:
         if not isinstance(function, ast.FunctionDef):
             continue
@@ -103,30 +141,36 @@ def _function_roles(tree):
             if (isinstance(value, ast.Call)
                     and len(value.args) == 1
                     and (call := value.func)
-                    and ((isinstance(call, ast.Name) and call.id == "getPrime")
-                         or (isinstance(call, ast.Attribute)
-                             and call.attr == "getPrime"))
+                    and isinstance(call, ast.Name)
+                    and imported.get(call.id) == "getPrime"
                     and _name(value.args[0]) == formal[0]):
                 prime = name
-            if (isinstance(value, ast.Call)
-                    and _name(value.func) == "sum"
-                    and len(value.args) == 1
-                    and isinstance(value.args[0], (ast.ListComp, ast.GeneratorExp))):
-                comp = value.args[0]
-                if len(comp.generators) == 1:
-                    idx = _name(comp.generators[0].target)
-                    if idx and prime and _sum_of_powers(value, prime, idx, formal[1]):
-                        correlated = name
+            if prime:
+                geometric_sum = False
+                if (isinstance(value, ast.Call)
+                        and _name(value.func) == "sum"
+                        and len(value.args) == 1
+                        and isinstance(value.args[0],
+                                       (ast.ListComp, ast.GeneratorExp))):
+                    comp = value.args[0]
+                    if len(comp.generators) == 1:
+                        idx = _name(comp.generators[0].target)
+                        geometric_sum = bool(
+                            idx and _sum_of_powers(
+                                value, prime, idx, formal[1],
+                            )
+                        )
+                if geometric_sum or _geometric_ratio(
+                        value, prime, formal[1]):
+                    correlated = name
         if not prime or not correlated:
             continue
         primality = any(
             isinstance(node, ast.Call)
             and len(node.args) == 1
             and _name(node.args[0]) == correlated
-            and ((isinstance(node.func, ast.Name)
-                  and node.func.id in ("isPrime", "isprime"))
-                 or (isinstance(node.func, ast.Attribute)
-                     and node.func.attr in ("isPrime", "isprime")))
+            and (isinstance(node.func, ast.Name)
+                 and imported.get(node.func.id) in ("isPrime", "isprime"))
             for node in ast.walk(function)
         )
         returns = any(

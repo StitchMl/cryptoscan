@@ -137,3 +137,25 @@ def test_cli_never_runs_network_strategy_without_network_opt_in(tmp_path, monkey
     ))
     assert cli.main([str(tmp_path), "--solve"]) == 2
     assert called == []
+
+
+def test_cli_json_plan_is_one_valid_structured_document(tmp_path, monkeypatch, capsys):
+    import json
+    import cryptoscan.cli as cli
+
+    (tmp_path / "unseen.txt").write_text(
+        "source-defined mathematical evidence", encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "_attack_strategies", lambda args: (
+        Strategy("modular equations", "offline",
+                 lambda docs: {"coefficient_matrix": [[1, 2]]},
+                 lambda docs: "TEST{not_executed}"),
+    ))
+    assert cli.main([
+        str(tmp_path), "--plan-attacks", "--format", "json",
+    ]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["schema_version"] == 1
+    assert isinstance(report["findings"], list)
+    assert report["attack_plan"][0]["family"] == "modular equations"
+    assert report["attack_plan"][0]["status"] == "applicable"

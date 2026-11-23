@@ -231,3 +231,18 @@ def test_unrelated_prng_call_does_not_supply_prime():
     assert extract_instance([
         Document("ignored_prng.py", changed, None), docs[1],
     ]) is None
+
+
+def test_source_alone_is_a_finding_but_not_a_solvable_corpus():
+    from cryptoscan.scanner import scan
+
+    source = _independent_instance()[0]
+    assert extract_instance([source]) is None
+    findings = scan([source])
+    relevant = [
+        item for item in findings
+        if item.rule == "RSA-WEAK-SEEDED-PRIME-GENERATOR"
+    ]
+    assert len(relevant) == 1
+    assert relevant[0].evidence["public_output_matched"] is False
+    assert relevant[0].recovery_status == "validation-only"

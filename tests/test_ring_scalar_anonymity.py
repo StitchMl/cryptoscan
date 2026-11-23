@@ -247,3 +247,31 @@ def test_generator_must_return_random_scalar_not_ignore_it():
     assert extract_instance([
         Document("ignored_random_sample", changed, None), *docs[1:],
     ]) is None
+
+
+def test_same_signer_unrelated_rng_does_not_prove_response_bias():
+    """A random number unrelated to signature arrays cannot deanonymize."""
+    docs = documents()
+    changed = source().replace(
+        "responses_a = [sample_response() for _ in group]",
+        "unused_random = sample_response()\n    responses_a = [1 for _ in group]",
+    ).replace(
+        "responses_b = [sample_response() for _ in group]",
+        "responses_b = [2 for _ in group]",
+    )
+    assert extract_instance([
+        Document("unrelated_rng_inside_signer.py", changed, None),
+        *docs[1:],
+    ]) is None
+
+
+def test_response_arrays_must_both_contain_wide_decoys():
+    docs = documents()
+    changed = source().replace(
+        "responses_b = [sample_response() for _ in group]",
+        "responses_b = [0 for _ in group]",
+    )
+    assert extract_instance([
+        Document("only_one_decoy_array.py", changed, None),
+        *docs[1:],
+    ]) is None

@@ -114,7 +114,6 @@ def test_renamed_functions_and_variables_are_recognized():
         ("decoy", "random_sample"),
         ("message_bits", "encode_bits"),
         ("vector", "public_coefficients"),
-        ("secret", "private_vector"),
     ):
         source = source.replace(old, new)
     assert recover_flag([

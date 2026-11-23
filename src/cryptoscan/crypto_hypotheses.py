@@ -204,11 +204,48 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
         for node in nodes
     ):
         result.add("polynomially_related_primes")
+    if any(
+        isinstance(node, (ast.BinOp, ast.AugAssign))
+        and isinstance(node.op, ast.LShift)
+        and isinstance(node.value if isinstance(node, ast.AugAssign)
+                       else node.right, ast.Constant)
+        and type((node.value if isinstance(node, ast.AugAssign)
+                  else node.right).value) is int
+        and (node.value if isinstance(node, ast.AugAssign)
+             else node.right).value > 0
+        for node in nodes
+    ):
+        result.add("shifted_noise_support")
+    if any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "sum" and len(node.args) == 1
+        and isinstance(node.args[0], (ast.GeneratorExp, ast.ListComp))
+        and isinstance(node.args[0].elt, ast.BinOp)
+        and isinstance(node.args[0].elt.op, ast.Mult)
+        for node in nodes
+    ):
+        result.add("linear_observation")
+    if any(
+        isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod)
+        and isinstance(node.right, ast.Constant)
+        and type(node.right.value) is int
+        and node.right.value >= 4
+        and node.right.value & (node.right.value - 1) == 0
+        for node in nodes
+    ):
+        result.add("power_two_modulus")
     return result
 
 
 # Requirements describe mechanisms rather than target service names.
 HYPOTHESIS_RULES = (
+    ({"shifted_noise_support", "linear_observation", "power_two_modulus"},
+     "Noise-subgroup leakage in linear modular samples",
+     "A linear observation is reduced modulo a power of two while "
+     "another source operation shifts a noise-like quantity.",
+     ("Trace the shifted data into the actual additive error",
+      "Check whether the error vanishes under reduction modulo 2**t",
+      "Look for repeated authentic blocks among random decoys")),
     ({"rsa", "polynomially_related_primes"},
      "Algebraically correlated RSA prime factors",
      "A candidate RSA factor is a polynomial in another variable and "

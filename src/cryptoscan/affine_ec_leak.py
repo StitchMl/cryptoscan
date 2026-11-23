@@ -60,13 +60,20 @@ def _source_profile(source: str):
     hidden_name, secret_name = second.groups()
     if not re.search(rf"\b{re.escape(secret_name)}\s*=\s*bytes_to_long\(", source):
         return None
+    # Scalar addition in the EC group is commutative. The order of the
+    # two public terms is not evidence of a different vulnerability.
     combinations = re.findall(
-        rf"\.append\(\(\s*(\w+)\s*,\s*(\w+)\s*,\s*"
-        rf"(\w+)\s*\*\s*{re.escape(base_name)}\s*\+\s*"
-        rf"(\w+)\s*\*\s*{re.escape(hidden_name)}\s*\)\)",
+        r"\.append\(\(\s*(\w+)\s*,\s*(\w+)\s*,\s*"
+        r"(\w+)\s*\*\s*(\w+)\s*\+\s*"
+        r"(\w+)\s*\*\s*(\w+)\s*\)\)",
         source,
     )
-    if len(combinations) != 1 or combinations[0][:2] != combinations[0][2:]:
+    if len(combinations) != 1:
+        return None
+    first, second, u, u_point, v, v_point = combinations[0]
+    if {(u, u_point), (v, v_point)} != {
+        (first, base_name), (second, hidden_name),
+    }:
         return None
     field_match = re.search(
         rf"\b{re.escape(field)}\s*=\s*GF\(\s*(\w+)\s*\)", source,

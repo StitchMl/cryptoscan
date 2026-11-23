@@ -21,6 +21,9 @@ from .weak_seeded_multiprime_rsa import extract_instance as extract_weak_seeded_
 from .cyclotomic_rsa import extract_instance as extract_cyclotomic_rsa, recover_flag as recover_cyclotomic_rsa_flag
 from .modular_noise_mixture import extract_instance as extract_modular_noise, recover_flag as recover_modular_noise_flag
 from .hyperelliptic_state_leak import extract_instance as extract_hyperelliptic_leak
+from .hyperelliptic_live import (investigate as investigate_hyperelliptic,
+    recover_flag as recover_hyperelliptic_flag,
+    source_input_prompt as hyperelliptic_input_prompt)
 from .ec_twist_oracle import extract_instance as extract_ec_twist, recover_flag as recover_ec_twist_flag
 from .ec_twist_oracle import feasible_twist as feasible_ec_twist
 from .biased_shamir import extract_instance as extract_biased_shamir, recover_flag as recover_biased_shamir_flag
@@ -69,6 +72,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--fail-on-findings", action="store_true", help="return exit status 1 when findings exist")
     parser.add_argument("--solve", action="store_true", help="run a source-verified supported CTF solver (opt-in network)")
     parser.add_argument("--plan-attacks", action="store_true", help="show applicable attack families and required capabilities without running attacks")
+    parser.add_argument("--investigate", action="store_true", help="run a source-verified partial cryptanalysis investigation on an explicitly authorized remote oracle")
     parser.add_argument("--host", help="authorized CTF service hostname for --solve")
     parser.add_argument("--port", type=int, help="authorized CTF service TCP port for --solve")
     parser.add_argument("--timeout", type=float, default=30.0, help="network socket timeout for --solve")
@@ -170,6 +174,9 @@ def _attack_strategies(args):
             preflight=preflight,
         )
     interactive = (
+        remote("Jacobian Mumford known-plaintext divisor recovery",
+               extract_hyperelliptic_leak, recover_hyperelliptic_flag, 2,
+               preflight=lambda model: model.known_plaintext_suffix is not None),
         remote("Chosen-coordinate EC quadratic-twist subgroup recovery",
                extract_ec_twist, recover_ec_twist_flag, 3,
                preflight=feasible_ec_twist),
@@ -308,10 +315,13 @@ def _validate_arguments(args) -> None:
         _parser().error("--assist and --no-assist cannot be combined")
     if args.solve and (args.format == "json" or args.assist or args.no_assist):
         _parser().error("--solve cannot be combined with --format json, --assist, or --no-assist")
-    if (args.solve or args.plan_attacks) and bool(args.host) != bool(args.port):
+    if (args.solve or args.plan_attacks or args.investigate) and bool(args.host) != bool(args.port):
         _parser().error("--host and --port must be supplied together")
-    if args.solve and args.plan_attacks:
-        _parser().error("--solve and --plan-attacks cannot be combined")
+    if sum(bool(option) for option in (args.solve, args.plan_attacks,
+                                        args.investigate)) > 1:
+        _parser().error("--solve, --plan-attacks and --investigate are mutually exclusive")
+    if args.investigate and not (args.host and args.port):
+        _parser().error("--investigate requires an authorized --host and --port")
     if args.assist and args.format == "json":
         _parser().error("--assist cannot be combined with --format json")
 
@@ -452,6 +462,32 @@ def main(argv: list[str] | None = None) -> int:
     _validate_arguments(args)
     documents = collect_documents(args.targets)
     findings = scan(documents, args.fermat_steps)
+    if args.investigate:
+        if len({document.scope for document in documents}) != 1:
+            _parser().error("--investigate requires a single source scope")
+        try:
+            result = investigate_hyperelliptic(
+                documents, args.host, args.port, timeout=args.timeout,
+            )
+        except (RuntimeError, ValueError, OSError, ImportError,
+                ArithmeticError) as exc:
+            print(f"Source-verified mathematical investigation failed: {exc}",
+                  file=sys.stderr)
+            return 2
+        if args.format == "json":
+            print(json.dumps({
+                "schema_version": 1,
+                "investigation": result.report(),
+            }, sort_keys=True, indent=2, ensure_ascii=False))
+        else:
+            print("Jacobian curve reconstructed and verified from "
+                  f"{result.states} observed divisor states.")
+            print("Recovered curve coefficients (ascending degree): "
+                  + ", ".join(map(str, result.polynomial)))
+            print("Flag recovery: " +
+                  (result.recovered_flag or
+                   "not uniquely established; " + result.explanation))
+        return 0
     if args.plan_attacks and args.format == "json":
         plan = _candidate_plan(args, documents)
         print(json.dumps({

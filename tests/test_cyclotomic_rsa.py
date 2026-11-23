@@ -21,7 +21,7 @@ from cryptoscan.parser import Document
 
 def new_corpus(*, bits=32, degree=3, comprehension="list"):
     rng = random.Random(2026 + bits * 19 + degree * 7)
-    current = (1 << (bits - 1)) + rng.randrange(1 << (bits - 2))
+    current = ((1 << (bits - 1)) + rng.randrange(1 << (bits - 2))) | 1
     for _ in range(40000):
         current += 2
         if current.bit_length() != bits:
@@ -32,7 +32,7 @@ def new_corpus(*, bits=32, degree=3, comprehension="list"):
             break
     else:
         raise AssertionError("synthetic correlated prime not found")
-    extra = (1 << (bits * degree - 1)) + rng.randrange(1 << (bits * degree - 2))
+    extra = ((1 << (bits * degree - 1)) + rng.randrange(1 << (bits * degree - 2))) | 1
     while not isPrime(extra):
         extra += 2
     n = p * q * extra

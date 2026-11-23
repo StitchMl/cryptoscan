@@ -31,6 +31,43 @@ The attack only applies when limited entropy makes some factor seeds
 enumerable and when enough recovered factors exceed a known message
 bound. Other RSA constructions cannot be assumed vulnerable.
 
+## Biased Shamir secret-sharing: candidate elimination and CRT
+
+Shamir's information-theoretic secrecy assumes uniformly random
+nonconstant polynomial coefficients over the entire field F_p. A
+half-open sampler such as getRandomRange(0, p-1) excludes p-1 and
+breaks that assumption. Given one fewer share than the reconstruction
+threshold, each possible secret determines the missing polynomial
+degree of freedom. Coefficients forbidden by the sampler eliminate
+candidate secrets. Repeated independent polynomials with the same
+constant term allow safe candidate intersection.
+
+CryptoScan separates a generic finite-field core from an optional
+source-verified TCP adapter. The core accepts arbitrary distinct
+nonzero share coordinates and an arbitrary count of excluded high
+field elements, rather than a stored instance or CTF-specific indices.
+After one residue becomes unique modulo each small prime, the solver
+combines independently recovered residues by CRT. It submits a secret
+only when the product of the resolved prime fields strictly exceeds
+the source-derived bit bound on the secret.
+
+The remote adapter first verifies that the source reuses one secret,
+creates independently randomized sharing polynomials, publishes all
+but one share, and lets the client choose prime-field parameters. It
+recognizes the semantics of bounded inclusive and exclusive random
+sampling APIs and records the original public input/output labels.
+
+```powershell
+cryptoscan server.py
+cryptoscan server.py --plan-attacks --host HOST --port PORT
+cryptoscan server.py --solve --host HOST --port PORT --timeout 60
+```
+
+The server's own execution time limit may be shorter than the CLI
+socket timeout; the solver respects source-derived deadlines where
+possible. This attack is not applicable to uniformly sampled
+polynomials or to transcripts without a fixed secret across queries.
+
 ## Readable output and colors
 
 By default the terminal report is a short, color-coded finding summary

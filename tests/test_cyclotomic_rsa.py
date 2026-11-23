@@ -215,3 +215,22 @@ def test_untrusted_primality_name_is_not_mathematical_evidence():
     assert extract_instance([
         Document("untrusted_isprime.py", changed, None), docs[1],
     ]) is None
+
+
+def test_unknown_cyclotomic_polynomial_emits_hypothesis_not_a_false_solver():
+    from cryptoscan.crypto_hypotheses import inspect_hypotheses
+
+    source = """
+from Crypto.Util.number import getPrime, isPrime
+def derive(bits):
+    root = getPrime(bits)
+    candidate = root**4 - root**3 + root**2 - root + 1
+    if isPrime(candidate):
+        return root, candidate
+"""
+    document = Document("unseen_phi10.py", source, None)
+    assert extract_instance([document]) is None
+    assert any(
+        hypothesis.family == "Algebraically correlated RSA prime factors"
+        for hypothesis in inspect_hypotheses([document])
+    )

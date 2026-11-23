@@ -106,12 +106,43 @@ def _slice_is_printed(tree: ast.Module, length_name: str):
     return False
 
 
+def _gcd_call_names(tree: ast.Module):
+    """Resolve imported gcd aliases without interpreting source code."""
+    direct = set()
+    modules = set()
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "math":
+            direct.update(
+                alias.asname or alias.name
+                for alias in node.names if alias.name == "gcd"
+            )
+        elif isinstance(node, ast.Import):
+            modules.update(
+                alias.asname or alias.name
+                for alias in node.names if alias.name == "math"
+            )
+    return direct, modules
+
+
+def _is_math_gcd_call(node, direct, modules):
+    if not isinstance(node, ast.Call) or len(node.args) != 2:
+        return False
+    func = node.func
+    return (
+        isinstance(func, ast.Name) and func.id in direct
+    ) or (
+        isinstance(func, ast.Attribute) and func.attr == "gcd"
+        and isinstance(func.value, ast.Name) and func.value.id in modules
+    )
+
+
 def _source_profile(document: Document):
     if len(document.text) > 1_000_000:
         return None
     tree = parse_python(document)
     if tree is None:
         return None
+    direct, modules = _gcd_call_names(tree)
     found = []
     for variable, prompt in _controlled_input(tree):
         for node in ast.walk(tree):
@@ -119,9 +150,7 @@ def _source_profile(document: Document):
                     and isinstance(node.targets[0], ast.Name)):
                 continue
             call = node.value
-            if not (isinstance(call, ast.Call)
-                    and isinstance(call.func, ast.Name)
-                    and call.func.id == "gcd" and len(call.args) == 2
+            if not (_is_math_gcd_call(call, direct, modules)
                     and _slice_is_printed(tree, node.targets[0].id)):
                 continue
             try:

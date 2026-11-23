@@ -219,7 +219,13 @@ def test_64bit_field_genus_seven_factor_recovery_is_parameterized():
     """Stress the factor algorithm on a fresh 64-bit finite field."""
     from cryptoscan.hyperelliptic_state_leak import HyperellipticStreamLeak
 
-    prime = 17585255163044402023
+    import random
+    from sympy import nextprime
+
+    rng = random.Random(651223)
+    prime = int(nextprime((1 << 63) + rng.getrandbits(62)))
+    while prime % 4 != 3:
+        prime = int(nextprime(prime))
     genus = 7
     polynomial, observations = _valid_observations(
         prime, genus, seed=65027,

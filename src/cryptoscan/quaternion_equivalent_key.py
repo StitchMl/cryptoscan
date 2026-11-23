@@ -39,10 +39,13 @@ def _source_shape(source: str) -> bytes | None:
         "hashlib.sha256(str(", "pad(", "getPrime(", "def __str__(",
     )):
         return None
+    # Canonicalize instance-field access without changing executable source.
+    # This accommodates public state held on an object or in local variables.
+    equations = source.replace("self.", "")
     # Discover roles by the equations, never by their identifiers.
     inverse_conjugate = re.search(
         rf"(?m)^\s*{_NAME}\s*=\s*{_NAME}\s*\*\*\s*-1\s*\*\s*"
-        rf"{_NAME}\s*\*\*\s*-1\s*\*\s*([^\W\d]\w*)\s*$", source,
+        rf"{_NAME}\s*\*\*\s*-1\s*\*\s*([^\W\d]\w*)\s*$", equations,
     )
     if inverse_conjugate is None:
         return None
@@ -51,14 +54,14 @@ def _source_shape(source: str) -> bytes | None:
         return None
     gamma_match = re.search(
         rf"(?m)^\s*{_NAME}\s*=\s*{re.escape(chi)}\s*\*\*\s*{_NAME}\s*$",
-        source,
+        equations,
     )
     if gamma_match is None:
         return None
     gamma = gamma_match.group(1)
     delta_match = re.search(
         rf"(?m)^\s*{_NAME}\s*=\s*{re.escape(gamma)}\s*\*\*\s*{_NAME}\s*$",
-        source,
+        equations,
     )
     if delta_match is None:
         return None
@@ -67,7 +70,7 @@ def _source_shape(source: str) -> bytes | None:
         return re.search(
             rf"(?m)^\s*{_NAME}\s*=\s*{re.escape(delta)}\s*\*\*\s*-1"
             rf"\s*\*\s*{re.escape(value)}\s*\*\s*{re.escape(delta)}\s*$",
-            source,
+            equations,
         )
     eps, kap = conjugated(alpha), conjugated(beta)
     if eps is None or kap is None:
@@ -87,15 +90,15 @@ def _source_shape(source: str) -> bytes | None:
         return None
     # Require the exact public order and ciphertext order written by source.
     public = re.search(
-        r"(?s)def\s+pub\s*\([^)]*\).*?return\s*\(\s*self\.\w+\s*,"
-        rf"\s*self\.{re.escape(alpha)}\s*,\s*self\.{re.escape(beta)}"
-        rf"\s*,\s*self\.{re.escape(gamma)}\s*\)", source,
+        r"(?s)def\s+pub\s*\([^)]*\).*?return\s*\(\s*\w+\s*,"
+        rf"\s*{re.escape(alpha)}\s*,\s*{re.escape(beta)}"
+        rf"\s*,\s*{re.escape(gamma)}\s*\)", equations,
     )
     if public is None:
         return None
     encrypted = re.search(
         rf"(?s)return\s*\(\s*\w+\s*,\s*{re.escape(mu.group(1))}\s*,"
-        rf"\s*{re.escape(eps.group(1))}\s*\)", source,
+        rf"\s*{re.escape(eps.group(1))}\s*\)", equations,
     )
     if encrypted is None:
         return None
@@ -118,8 +121,18 @@ def _source_shape(source: str) -> bytes | None:
         for keyword in node.keywords:
             if keyword.arg != "iv":
                 continue
+            expression = keyword.value
             try:
-                value = ast.literal_eval(keyword.value)
+                if (isinstance(expression, ast.BinOp)
+                        and isinstance(expression.op, ast.Mult)
+                        and isinstance(expression.left, ast.Constant)
+                        and isinstance(expression.left.value, bytes)
+                        and isinstance(expression.right, ast.Constant)
+                        and type(expression.right.value) is int
+                        and 0 <= expression.right.value <= 32):
+                    value = expression.left.value * expression.right.value
+                else:
+                    value = ast.literal_eval(expression)
             except (ValueError, TypeError, SyntaxError):
                 continue
             if isinstance(value, bytes) and len(value) == 16:

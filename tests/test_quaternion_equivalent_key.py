@@ -227,3 +227,26 @@ def test_quaternion_noncommutative_operand_swap_is_rejected():
         "self.B = self.X**-1 * self.X * self.A**-1",
     )
     assert _source_shape(changed) is None
+
+
+def test_quaternion_output_tolerates_unrelated_log_lines_and_labels():
+    documents, plaintext = synthetic_instance()
+    rewritten = (
+        "starting session\n"
+        + documents[1].text.replace("Public key:", "Published parameters:")
+        .replace("Encryption:", "Sealed message:")
+        + "\nstatistics: completed\n"
+    )
+    transformed = [
+        documents[0],
+        Document("different_log_format", rewritten, None),
+    ]
+    assert extract_instance(transformed) is not None
+    assert recover_flag(transformed) == plaintext.decode()
+
+
+def test_quaternion_duplicate_public_records_are_ambiguous():
+    documents, _ = synthetic_instance()
+    first = documents[1].text.splitlines()[0]
+    duplicate = first + "\n" + documents[1].text
+    assert _parse_output(duplicate) is None

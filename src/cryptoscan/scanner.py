@@ -38,6 +38,7 @@ from .fiat_shamir_batch import extract_instance as extract_batch_fiat_shamir
 from .aead_diagnostics import unused_validation_flags
 from .stream_combiner_workflow import recognize_stream_cipher
 from .biased_shamir import _source_profile as biased_shamir_profile
+from .cyclotomic_rsa import _source_profile as cyclotomic_rsa_profile, extract_instance as extract_cyclotomic_rsa
 from .weak_seeded_multiprime_rsa import (
     extract_instance as extract_weak_seeded_rsa,
     _source_profile as weak_seeded_rsa_profile,
@@ -1908,6 +1909,56 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "over the same prime and intersect candidate residues.",
                 "Combine uniquely identified residues from coprime fields "
                 "using CRT; submit only after a uniqueness certificate.",
+            ],
+        ))
+    related_rsa = extract_cyclotomic_rsa(documents)
+    for document in documents:
+        related = cyclotomic_rsa_profile(document.text)
+        if related is None:
+            continue
+        _, _, _, bits, degree, exponent = related
+        matched_public = (
+            related_rsa is not None and related_rsa.degree == degree
+        )
+        findings.append(Finding(
+            "RSA-CYCLOTOMIC-PRIME-RELATION",
+            "RSA primes related by a cyclotomic geometric sum",
+            "high", "high", document.path,
+            {
+                "source_verified": True,
+                "polynomial_degree": degree,
+                "prime_bits": bits,
+                "public_exponent": exponent,
+                "public_modulus_matched": matched_public,
+                "factor_relation": "Q(p) = sum(p**j, j=0..degree-1)",
+            },
+            [
+                "The RSA modulus has two prime factors p and Q(p), "
+                "with Q(p) dividing p**degree - 1.",
+                "The generator requires primality of both related factors.",
+                "A degree-matched finite-field extension can collapse "
+                "nonconstant components after exponentiation by N.",
+            ],
+            "Try monic degree-matched quotient polynomials over Z/NZ. "
+            "Exponentiate a nonconstant element to the public modulus; "
+            "gcd the resulting nonconstant coefficients with N. Verify "
+            "that Q(p) divides N/p and recover the remaining RSA factor.",
+            {
+                "kind": "rsa_cyclotomic_finite_field_factorization",
+                "offline": True,
+                "source_verified": True,
+                "public_corpus_available": matched_public,
+                "requires": ["source", "public modulus", "ciphertext"],
+            },
+            "Choose independent random primes without algebraic "
+            "relationships that expose their group orders.",
+            [
+                "Extract the prime relation and extension degree.",
+                "Construct quotient rings and test finite-field "
+                "subgroup collapse using bounded independent polynomials.",
+                "Verify gcd-derived factors and the source relation.",
+                "Decrypt with the certified factorization and verify "
+                "RSA re-encryption.",
             ],
         ))
     return findings

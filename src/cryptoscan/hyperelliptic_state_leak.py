@@ -383,7 +383,12 @@ def _polynomial_remainder(polynomial, divisor, p):
         if factor:
             for j in range(len(divisor)):
                 result[i-len(divisor)+1+j] -= factor*divisor[j]
-    return [int(v % p) for v in result[:len(divisor)-1]]
+    # The remainder is a fixed-width coefficient vector of degree < deg(u).
+    # Basis monomials of lower degree still need explicit trailing zeros.
+    return [
+        int(result[index] % p) if index < len(result) else 0
+        for index in range(len(divisor)-1)
+    ]
 
 
 def curve_from_divisors(observations, model: HyperellipticStreamLeak):

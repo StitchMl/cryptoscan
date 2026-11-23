@@ -379,3 +379,42 @@ def test_distinct_error_message_is_control_flow_not_keyword_signature():
     profile = extract_instance([Document("new_errors.py", source, None)])
     assert profile is not None
     assert profile.failure_marker == "mismatch: 0x4e! test different languages"
+
+
+def test_different_root_algorithm_gets_crt_hypothesis_not_false_verification():
+    from cryptoscan.crypto_hypotheses import inspect_hypotheses
+
+    source = _fresh_source()
+    start = source.index("def inverted_quadratic(")
+    end = source.index("def chinese(", start)
+    alternate = """
+def inverted_quadratic(r,c,p):
+    # Legitimate alternative root algorithm; unlike the flawed quotient
+    # exponentiation, it does not automatically imply the same fault.
+    from sympy import sqrt_mod
+    roots = sqrt_mod((r*r-4*c) % p, p, all_roots=True)
+    return tuple((r+root)*pow(2,-1,p)%p for root in roots)
+
+"""
+    source = source[:start] + alternate + source[end:]
+    doc = Document("other_quadratic_algorithm.py", source, None)
+    assert extract_instance([doc]) is None
+    matches = [
+        item.family for item in inspect_hypotheses([doc])
+    ]
+    assert "CRT component-consistency and chosen-ciphertext oracle" in matches
+
+
+def test_quadratic_solver_must_use_both_polynomial_coefficients():
+    source = _fresh_source()
+    source = source.replace(
+        "head = (left[0]*right[0] - left[1]*right[1]*b) % modulus",
+        "head = left[0]*right[0] % modulus",
+    )
+    source = source.replace(
+        "+ left[1]*right[1]*a) % modulus",
+        ") % modulus",
+    )
+    assert extract_instance([
+        Document("not_a_quadratic_quotient.py", source, None)
+    ]) is None

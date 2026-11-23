@@ -156,7 +156,7 @@ def _recover_component(a, t, factor, modulus, embedding, shortened, deadline=Non
     )
 
 
-def _candidate_component(a, t, factor, modulus, deadline=None):
+def _candidate_component(a, t, factor, modulus, deadline=None, validator=None):
     degree = factor.degree()
     # A q-sized embedding can bury the desired affine-coset vector among
     # shorter homogeneous vectors. Try a balanced, parameter-derived scale
@@ -174,9 +174,10 @@ def _candidate_component(a, t, factor, modulus, deadline=None):
                 "Cyclic-ring recovery exhausted the allotted lattice time budget"
             )
         try:
-            return _recover_component(
+            candidate = _recover_component(
                 a, t, factor, modulus, embedding, shortened, deadline,
             )
+            return validator(candidate) if validator is not None else candidate
         except ComponentNotRecovered:
             continue
     raise ComponentNotRecovered(
@@ -248,11 +249,17 @@ def _recover_factor_components(a, t, factor, modulus, deadline=None,
     any challenge-specific factorization or coefficients.
     """
     try:
-        candidate = _candidate_component(a, t, factor, modulus, deadline)
         if dimension is not None and coefficient_bound is not None:
-            candidate = _verified_projected_candidate(
-                a, t, factor, modulus, candidate, dimension, coefficient_bound,
+            def validate(candidate):
+                return _verified_projected_candidate(
+                    a, t, factor, modulus, candidate, dimension,
+                    coefficient_bound,
+                )
+            candidate = _candidate_component(
+                a, t, factor, modulus, deadline, validator=validate,
             )
+        else:
+            candidate = _candidate_component(a, t, factor, modulus, deadline)
         return [(a.parent()(factor), candidate)]
     except ComponentNotRecovered as exc:
         factors = [

@@ -162,6 +162,99 @@ def _crt_functions(tree):
     return result
 
 
+def _quotient_quadratic_solver(fn):
+    """Source-proof the specific root extraction identity used by the fault.
+
+    Do not confuse any modular inverse and two-value return with an
+    implementation of a quadratic solver. The faulty extraction computes
+    x = -(v[0]-1)/v[1] modulo p after exponentiation by (p-1)//2 in the
+    polynomial quotient, and returns x alongside the complementary r-x.
+    The surrounding code must also use both polynomial parameters in
+    arithmetic. Other root algorithms require separate recognizers.
+    """
+    if not isinstance(fn, ast.FunctionDef) or len(fn.args.args) < 3:
+        return False
+    r, c, p = (arg.arg for arg in fn.args.args[:3])
+    calls = [
+        node for node in ast.walk(fn)
+        if isinstance(node, ast.Call) and _name(node.func) == "pow"
+        and len(node.args) == 3 and _name(node.args[2]) == p
+        and isinstance(node.args[1], ast.UnaryOp)
+        and isinstance(node.args[1].op, ast.USub)
+        and isinstance(node.args[1].operand, ast.Constant)
+        and node.args[1].operand.value == 1
+        and isinstance(node.args[0], ast.Subscript)
+        and isinstance(node.args[0].value, ast.Name)
+        and isinstance(node.args[0].slice, ast.Constant)
+        and node.args[0].slice.value == 1
+    ]
+    if len(calls) != 1:
+        return False
+    state_name = node_name = _name(calls[0].args[0].value)
+    power = any(
+        isinstance(node, ast.BinOp) and isinstance(node.op, ast.FloorDiv)
+        and isinstance(node.left, ast.BinOp)
+        and isinstance(node.left.op, ast.Sub)
+        and _name(node.left.left) == p
+        and isinstance(node.left.right, ast.Constant)
+        and node.left.right.value == 1
+        and isinstance(node.right, ast.Constant)
+        and node.right.value == 2
+        for node in ast.walk(fn)
+    )
+    if not power:
+        return False
+    # Require the same quotient-ring coefficient vector in the numerator
+    # of the root formula and in its inverse denominator.
+    coefficient_zero = any(
+        isinstance(node, ast.Subscript)
+        and _name(node.value) == state_name
+        and isinstance(node.slice, ast.Constant)
+        and node.slice.value == 0
+        for node in ast.walk(fn)
+    )
+    if not coefficient_zero:
+        return False
+    # Reject unrelated modular inverse routines by checking the root-sum
+    # relationship in both the returned pair and the function's equations.
+    final_return = [
+        node for node in fn.body
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Tuple)
+        and len(node.value.elts) == 2
+        and all(isinstance(item, ast.Name) for item in node.value.elts)
+    ]
+    if len(final_return) != 1:
+        return False
+    root, complement = (_name(item) for item in final_return[0].value.elts)
+    complementary = any(
+        isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and _name(node.targets[0]) == complement
+        and isinstance(node.value, ast.BinOp)
+        and isinstance(node.value.op, ast.Mod)
+        and _name(node.value.right) == p
+        and isinstance(node.value.left, ast.BinOp)
+        and isinstance(node.value.left.op, ast.Sub)
+        and _name(node.value.left.left) == r
+        and _name(node.value.left.right) == root
+        for node in fn.body
+    )
+    # A proper quotient-field multiplication/reduction must involve both
+    # coefficients of X**2-rX+c, not simply a formal inverse.
+    uses_r = any(
+        isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult)
+        and (_name(node.left) == r or _name(node.right) == r)
+        for node in ast.walk(fn)
+    )
+    uses_c = any(
+        isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult)
+        and (_name(node.left) == c or _name(node.right) == c)
+        for node in ast.walk(fn)
+    )
+    return complementary and uses_r and uses_c
+
+
 def _quadratic_decrypt(tree, encryption):
     """Match a CRT combination of independently inverted quadratic roots.
 
@@ -175,32 +268,10 @@ def _quadratic_decrypt(tree, encryption):
     if not crt_names:
         return None
     for fn in tree.body:
-        if not isinstance(fn, ast.FunctionDef):
-            continue
-        modular_inverses = [
-            call for call in _calls(fn, "pow")
-            if len(call.args) == 3
-            and isinstance(call.args[1], ast.UnaryOp)
-            and isinstance(call.args[1].op, ast.USub)
-            and isinstance(call.args[1].operand, ast.Constant)
-            and call.args[1].operand.value == 1
-            and isinstance(call.args[2], ast.Name)
-        ]
-        if not modular_inverses:
-            continue
-        has_complementary_root = any(
-            isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub)
-            and any(isinstance(child, ast.Name)
-                    for child in (node.left, node.right))
-            for node in ast.walk(fn)
-        )
-        has_pair = any(
-            isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple)
-            and len(node.value.elts) == 2
-            for node in ast.walk(fn)
-        )
-        if has_pair and has_complementary_root:
+        if _quotient_quadratic_solver(fn):
             solver_names.add(fn.name)
+    if not solver_names:
+        return None
     for fn in tree.body:
         if not isinstance(fn, ast.FunctionDef) or fn.name == encryption:
             continue

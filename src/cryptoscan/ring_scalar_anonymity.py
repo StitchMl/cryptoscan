@@ -59,16 +59,18 @@ def _random_scalar_width(call):
 
 
 def _scalar_sampler_functions(tree, minimum_bits):
-    """Statically identify helper functions returning wide random scalars."""
-    identified = set()
+    """Resolve source-level functions that return the PRNG result itself."""
+    identified = {}
     for function in (node for node in ast.walk(tree)
                      if isinstance(node, ast.FunctionDef)):
-        if (any(
-            (_random_scalar_width(node) or 0) >= minimum_bits
-            for node in ast.walk(function)
-        ) and any(isinstance(node, ast.Return)
-                  for node in ast.walk(function))):
-            identified.add(function.name)
+        widths = [
+            bits for node in ast.walk(function)
+            if isinstance(node, ast.Return)
+            and (bits := _random_scalar_width(node.value)) is not None
+            and bits >= minimum_bits
+        ]
+        if widths:
+            identified[function.name] = max(widths)
     return identified
 
 
@@ -98,32 +100,30 @@ def _source_profile(source):
     tree = parse_python(Document("candidate.py", source, None))
     if tree is None:
         return None
-    bit_widths = {
-        bits for node in ast.walk(tree)
-        if (bits := _random_scalar_width(node)) is not None
-        and 128 <= bits <= 1024
-    }
-    if not bit_widths:
-        return None
     generators = _scalar_sampler_functions(tree, 128)
-    linked = set()
+    linked = {}
     for function in (node for node in ast.walk(tree)
                      if isinstance(node, ast.FunctionDef)):
         function_orders = _reduced_scalar_arrays(function)
         if not function_orders:
             continue
-        calls = [node for node in ast.walk(function)
-                 if isinstance(node, ast.Call)]
-        if any(
-            isinstance(call.func, ast.Name) and call.func.id in generators
-            or (isinstance(call.func, ast.Attribute)
-                and _random_scalar_width(call) is not None)
-            for call in calls
-        ):
-            linked.update(function_orders)
+        widths = []
+        for call in (node for node in ast.walk(function)
+                     if isinstance(node, ast.Call)):
+            if isinstance(call.func, ast.Name):
+                if call.func.id in generators:
+                    widths.append(generators[call.func.id])
+            else:
+                bits = _random_scalar_width(call)
+                if bits is not None:
+                    widths.append(bits)
+        if widths:
+            for order_name in function_orders:
+                linked.setdefault(order_name, set()).update(widths)
     if len(linked) != 1:
         return None
-    symbols = linked
+    symbols = set(linked)
+    simulated_bits = max(next(iter(linked.values())))
     if not any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
@@ -151,7 +151,7 @@ def _source_profile(source):
         and node.func.attr == "fromhex" for node in ast.walk(tree)
     ):
         return None
-    return slices.pop(), symbols.pop(), max(bit_widths)
+    return slices.pop(), symbols.pop(), simulated_bits
 
 
 def _order(source, symbol):

@@ -228,6 +228,49 @@ Reconstruction of the hidden curve is mathematically distinct from
 full recovery of a partially observed unknown divisor. A general
 solver for that latter case remains a separate problem.
 
+## Reciprocal-Rabin CRT fault oracles
+
+CryptoScan recognizes a family of chosen-ciphertext faults in
+reciprocal-Rabin cryptosystems. Encryption maps an invertible message
+`m` to the modular reciprocal expression `r = m + c/m (mod N)`
+with two auxiliary bits selecting the unique inverse. Decryption
+recovers roots of `X**2 - r*X + c` separately modulo the factors of
+the RSA-like modulus and combines the results by CRT.
+
+When an implementation does not check that the quadratic root
+exists modulo *both* primes, a chosen ciphertext can cause an
+incorrect CRT component. A decrypt-then-reencrypt service then
+exposes two different values of `r` for the same chosen input.
+Their difference is often divisible by exactly one hidden prime.
+Pairwise GCDs of independently obtained differences recover both
+factors, **even if the public modulus is not explicitly supplied**.
+
+After the factorization, the root-sum identity provides an elementary
+linear congruence for the reciprocal parameter `c` modulo each
+prime. The solver CRT-combines those residues, derives candidate
+plaintext roots of the captured secret ciphertext and **verifies
+the result by full re-encryption**, including both disambiguation
+bits. The attack stops if the recovered factors, constant or
+plaintext fail their mathematical certificates.
+
+The AST recognizer traces the reciprocal encryptor, independent
+private-factor root inversions, CRT recombination, the visible
+decrypt/re-encrypt dataflow and the exception response. It derives
+the source's key-size, ciphertext field labels and wire prompts
+rather than requiring one challenge's identifiers.
+
+```powershell
+cryptoscan server.py
+cryptoscan server.py --plan-attacks --format json --host HOST --port PORT
+cryptoscan server.py --solve --host HOST --port PORT --timeout 60
+```
+
+Network access is always opt-in. A source-only scan can report the
+design flaw without sending requests. The executable attack depends
+on observing independent nontrivial re-encryption differences, so
+some valid reciprocal-Rabin implementations will not be exploitable
+by this solver.
+
 ## Readable output and colors
 
 By default the terminal report is a short, color-coded finding summary

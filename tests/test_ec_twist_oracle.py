@@ -274,3 +274,28 @@ def test_remote_solver_with_fresh_long_secret_and_mocked_x_oracle(monkeypatch):
         docs, "ctf.example", 1337, timeout=10,
     ) == "LAB{" + secret_text + "}"
     assert fake.asked == [query_x]
+
+
+def test_curve_membership_validation_prevents_verified_twist_finding():
+    source = _ec_source(65537, 4, 9, 65600)
+    source = source.replace(
+        '        print(publish_x(coordinate, secret))',
+        '        if not is_on_curve(coordinate):\n'
+        '            continue\n'
+        '        print(publish_x(coordinate, secret))',
+    )
+    assert extract_instance([
+        Document("validated_coordinate.py", source, None),
+    ]) is None
+
+
+def test_assertion_guard_prevents_invalid_point_classification():
+    source = _ec_source(65537, 4, 9, 65600)
+    source = source.replace(
+        '        print(publish_x(coordinate, secret))',
+        '        assert is_on_curve(coordinate)\n'
+        '        print(publish_x(coordinate, secret))',
+    )
+    assert extract_instance([
+        Document("asserts_point_membership.py", source, None),
+    ]) is None

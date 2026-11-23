@@ -109,3 +109,32 @@ def test_cli_source_verified_offline_dispatch(tmp_path, monkeypatch, capsys):
     assert "Detected: public affine combinations" in output
     assert "FLAG: TEST{synthetic_dispatch}" in output
     assert called == [2]
+
+
+def test_real_sage_affine_recovery_when_sage_is_available():
+    """End-to-end algebra check on a generated small curve, no CTF constants."""
+    import importlib.util
+    from pathlib import Path
+
+    import pytest
+
+    sage = pytest.importorskip("sage.all")
+    curve = sage.EllipticCurve(sage.GF(97), [2, 3])
+    base = curve([3, 6])
+    secret = 3
+    hidden = secret * base
+    scalars = ((1, 2), (2, 5), (4, 7), (7, 11))
+    rows = []
+    for u, v in scalars:
+        observed = u * base + v * hidden
+        rows.append([u, v, [int(c) for c in observed]])
+
+    path = (Path(__file__).resolve().parents[1] / "src" / "cryptoscan"
+            / "sage_affine_ec_leak_worker.py")
+    spec = importlib.util.spec_from_file_location("test_affine_ec_sage", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result = module._recover({
+        "prime": 97, "a": 2, "b": 3, "rows": rows,
+    })
+    assert (result["scalar"] - secret) % int(base.order()) == 0

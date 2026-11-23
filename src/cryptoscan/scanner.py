@@ -37,6 +37,7 @@ from .hamiltonicity_workflow import extract_instance as extract_fiat_shamir_grap
 from .fiat_shamir_batch import extract_instance as extract_batch_fiat_shamir
 from .aead_diagnostics import unused_validation_flags
 from .stream_combiner_workflow import recognize_stream_cipher
+from .biased_shamir import _source_profile as biased_shamir_profile
 from .weak_seeded_multiprime_rsa import (
     extract_instance as extract_weak_seeded_rsa,
     _source_profile as weak_seeded_rsa_profile,
@@ -1857,6 +1858,56 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "Recover enough independent factors that their product "
                 "exceeds the maximum plaintext integer.",
                 "Compute residues, combine via CRT and verify re-encryption.",
+            ],
+        ))
+    for document in documents:
+        profile = biased_shamir_profile(document)
+        if profile is None:
+            continue
+        findings.append(Finding(
+            "SHAMIR-COEFFICIENT-SAMPLING-BIAS",
+            "Shamir polynomial coefficients exclude valid field elements",
+            "high", "high", document.path,
+            {
+                "source_verified": True,
+                "excluded_high_field_elements": profile.excluded_high,
+                "secret_bits": profile.secret_bits,
+                "minimum_shares": profile.minimum_n,
+                "public_share_fraction": "all_but_one",
+                "interactive_prime_selection": True,
+            },
+            [
+                "Random nonconstant coefficients are sampled from a strict "
+                "subset of the field, rather than uniformly from F_p.",
+                "A fixed secret is reused across independently randomized "
+                "polynomials and the client chooses the prime field.",
+                "The server publishes one fewer evaluation than the "
+                "polynomial reconstruction threshold.",
+            ],
+            "Interpolate each observed polynomial up to its missing degree "
+            "of freedom. Exclude constant terms that require a forbidden "
+            "nonconstant coefficient, intersect candidates over repeated "
+            "samples, then use CRT over independent prime moduli once the "
+            "product exceeds the proven secret bound.",
+            {
+                "kind": "shamir_coefficient_bias_crt",
+                "remote": True,
+                "source_verified": True,
+                "requires": ["authorized host", "port"],
+            },
+            "Sample every nonconstant polynomial coefficient uniformly "
+            "over the entire finite field, including p-1. Never allow an "
+            "adversary to choose parameters that expose statistical bias "
+            "across multiple sharings of the same secret.",
+            [
+                "Identify the polynomial degree, participant coordinates, "
+                "random coefficient support and available share count.",
+                "Model missing polynomial coefficients symbolically and "
+                "derive forbidden secret residues from support constraints.",
+                "Request repeated fresh sharings of the same secret "
+                "over the same prime and intersect candidate residues.",
+                "Combine uniquely identified residues from coprime fields "
+                "using CRT; submit only after a uniqueness certificate.",
             ],
         ))
     return findings

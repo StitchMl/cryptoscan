@@ -9,6 +9,7 @@ from . import __version__
 from .crypto_hypotheses import inspect_hypotheses
 from .masked_ec_signature import extract_instance as extract_masked_ec, recover_flag as recover_masked_ec_flag
 from .affine_ec_leak import extract_instance as extract_affine_ec_leak, recover_flag as recover_affine_ec_leak_flag
+from .quaternion_equivalent_key import extract_instance as extract_quaternion_key, recover_flag as recover_quaternion_flag
 from .cookie import main as cookie_main
 from .assistant import assistant_session
 from .diagnostics import diagnose_runtime
@@ -141,6 +142,11 @@ def _solve_remote(args, documents) -> int | None:
 
 
 def _solve_offline(args, documents) -> int | None:
+    if extract_quaternion_key(documents) is not None:
+        return _execute_recovery(
+            "Equivalent quaternion conjugator", recover_quaternion_flag,
+            documents,
+        )
     if extract_affine_ec_leak(documents) is not None:
         return _execute_recovery(
             "Affine EC public-combination discrete log",
@@ -222,6 +228,12 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    quaternion = extract_quaternion_key(documents)
+    if quaternion is not None:
+        print("Detected: equivalent quaternion conjugation key from "
+              "commuting public power and inverse conjugacy; modular "
+              "linear-key recovery and offline AES-CBC verification available "
+              f"({quaternion.modulus.bit_length()}-bit modulus).")
     affine_ec = extract_affine_ec_leak(documents)
     if affine_ec is not None:
         print("Detected: public affine combinations of elliptic-curve points "

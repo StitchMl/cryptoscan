@@ -159,9 +159,10 @@ cryptoscan twist_source.py --solve --host HOST --port PORT --timeout 60
 ```
 
 The scanner flags source-only weaknesses. The planner additionally
-requires a prime field, known main-curve order, a feasible twist
-factorization, and a verified full-order twist point. This avoids
-claiming the attack is executable when group-order data is missing.
+requires a prime field, either a supplied main-curve order or a
+small-field order computed by bounded point counting, a feasible twist
+factorization, and a verified full-order twist point. Large-field
+point counting without source-provided order requires another backend.
 For a secret longer than the twist order, the recovered scalar is
 **only a residue**, not necessarily the original secret; decoding
 must be unique under explicit source-derived encoding constraints.

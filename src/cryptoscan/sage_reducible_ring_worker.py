@@ -227,7 +227,7 @@ def _preflight(message):
     if not 8 <= dimension <= 1024:
         raise ValueError("unsupported ring dimension")
     groups = _integral_factor_groups(dimension)
-    max_degree = max(factor.degree() for factor in groups)
+    max_degree = max(int(factor.degree()) for factor in groups)
     command, backend = _fast_reducer()
     if max_degree >= 42 and command is None and os.environ.get("CRYPTOSCAN_SLOW_LLL") != "1":
         raise LatticeBackendError(
@@ -282,7 +282,7 @@ def _recover(message):
     return {
         "secret": secret_coefficients,
         "error": error_coefficients,
-        "factor_degrees": [factor.degree() for factor in groups],
+        "factor_degrees": [int(factor.degree()) for factor in groups],
     }
 
 

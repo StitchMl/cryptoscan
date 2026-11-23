@@ -115,35 +115,99 @@ def _order(source, symbol):
     return None
 
 
+def _hex_bytes(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[a-fA-F0-9]+", value):
+        return None
+    if len(value) % 2:
+        return None
+    try:
+        return bytes.fromhex(value)
+    except ValueError:
+        return None
+
+
+def _ring_record(record):
+    """Normalize any uniquely identifiable ring record to a stable model."""
+    if not isinstance(record, dict):
+        return None
+    signatures, public_keys = [], []
+    for item in record.values():
+        if (isinstance(item, (tuple, list)) and len(item) == 3
+                and isinstance(item[0], str)
+                and _hex_bytes(item[0]) is not None
+                and all(isinstance(vector, (tuple, list)) for vector in item[1:])
+                and len(item[1]) == len(item[2])
+                and all(type(x) is int and 0 <= x
+                        for vector in item[1:] for x in vector)):
+            signatures.append(item)
+        if (isinstance(item, (tuple, list))
+                and 2 <= len(item) <= 256
+                and all((raw := _hex_bytes(value)) is not None
+                        and 16 <= len(raw) <= 128 for value in item)
+                and len({len(value) for value in item}) == 1):
+            public_keys.append(item)
+    compatible = [
+        (sig, keys) for sig in signatures for keys in public_keys
+        if len(sig[1]) == len(keys)
+    ]
+    if len(compatible) != 1:
+        return None
+    signature, keys = compatible[0]
+    return {
+        "signature": signature,
+        "public_keys": keys,
+    }
+
+
 def _corpus(document):
+    """Identify the payload from its nested types, not JSON field names."""
     try:
         data = (document.data if isinstance(document.data, dict)
                 else json.loads(document.text))
-        levels = data["levels"]
-        iv, ciphertext = bytes.fromhex(data["iv"]), bytes.fromhex(data["enc"])
-    except (ValueError, TypeError, KeyError, AttributeError):
+    except (ValueError, TypeError, AttributeError):
         return None
-    if (not isinstance(levels, list) or not 1 <= len(levels) <= 128
-            or len(iv) != 16 or not ciphertext or len(ciphertext) % 16):
+    if not isinstance(data, dict):
         return None
-    for level in levels:
-        if not isinstance(level, dict):
+    possible_levels = []
+    for value in data.values():
+        if not isinstance(value, list) or not 1 <= len(value) <= 128:
+            continue
+        parsed = [_ring_record(record) for record in value]
+        if all(record is not None for record in parsed):
+            possible_levels.append(tuple(parsed))
+    if len(possible_levels) != 1:
+        return None
+    levels = possible_levels[0]
+    # The public ciphertext and IV are identified by their CBC byte shapes.
+    # Known field names are only a disambiguation aid, not a requirement.
+    byte_fields = [
+        (name, raw) for name, value in data.items()
+        if (raw := _hex_bytes(value)) is not None
+        and len(raw) >= 16 and len(raw) % 16 == 0
+    ]
+    iv_candidates = [(name, raw) for name, raw in byte_fields if len(raw) == 16]
+    ct_candidates = [(name, raw) for name, raw in byte_fields
+                     if len(raw) > 16]
+    if len(iv_candidates) != 1 or len(ct_candidates) != 1:
+        # A single-block ciphertext is possible: use schema hints only to
+        # disambiguate, never silently guess two same-sized byte strings.
+        iv_candidates = [
+            (name, raw) for name, raw in byte_fields
+            if str(name).casefold() in ("iv", "nonce", "initialization_vector")
+            and len(raw) == 16
+        ]
+        ct_candidates = [
+            (name, raw) for name, raw in byte_fields
+            if str(name).casefold() in ("enc", "ciphertext", "encrypted")
+            and len(raw) % 16 == 0
+        ]
+        if len(iv_candidates) != 1 or len(ct_candidates) != 1:
             return None
-        signature, keys = level.get("signature"), level.get("public_keys")
-        if (not isinstance(signature, list) or len(signature) != 3
-                or not isinstance(keys, list) or not 2 <= len(keys) <= 256
-                or not isinstance(signature[1], list)
-                or not isinstance(signature[2], list)
-                or len(signature[1]) != len(keys)
-                or len(signature[2]) != len(keys)):
-            return None
-        if (not all(type(x) is int and 0 <= x
-                    for part in signature[1:] for x in part)
-                or not all(isinstance(key, str)
-                           and re.fullmatch(r"[a-fA-F0-9]{64}", key)
-                           for key in keys)):
-            return None
-    return tuple(levels), iv, ciphertext
+    iv = iv_candidates[0][1]
+    ciphertext = ct_candidates[0][1]
+    if iv == ciphertext and iv_candidates[0][0] == ct_candidates[0][0]:
+        return None
+    return levels, iv, ciphertext
 
 
 def extract_instance(documents: Sequence[Document]) -> RingScalarLeak | None:

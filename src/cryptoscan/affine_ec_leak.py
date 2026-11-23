@@ -6,6 +6,7 @@ No named challenge parameters, endpoints, or flag values are embedded.
 """
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import dataclass
 from typing import Sequence
@@ -30,6 +31,48 @@ class AffineECLeak:
     records: tuple[tuple[int, int, tuple[int, int, int]], ...]
     prefix: str
     suffix: str
+
+
+def _affine_append_roles(source, base, hidden):
+    """Read public affine equations from Sage source using AST where possible.
+
+    Preparse only Sage generator declarations. The source is NEVER executed.
+    The fallback below preserves support for unparseable Sage constructs.
+    """
+    normalized = re.sub(
+        r"(?m)^(\s*[A-Za-z_]\w*)\.<[A-Za-z_]\w*>\s*=",
+        r"\1 =", source,
+    )
+    try:
+        tree = ast.parse(normalized)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    candidates = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "append"
+                and len(node.args) == 1
+                and isinstance(node.args[0], ast.Tuple)
+                and len(node.args[0].elts) == 3):
+            continue
+        first, second, expression = node.args[0].elts
+        if not (isinstance(first, ast.Name) and isinstance(second, ast.Name)
+                and isinstance(expression, ast.BinOp)
+                and isinstance(expression.op, ast.Add)):
+            continue
+        terms = []
+        for term in (expression.left, expression.right):
+            if not (isinstance(term, ast.BinOp)
+                    and isinstance(term.op, ast.Mult)
+                    and isinstance(term.left, ast.Name)
+                    and isinstance(term.right, ast.Name)):
+                break
+            terms.append((term.left.id, term.right.id))
+        if len(terms) == 2 and set(terms) == {
+                (first.id, base), (second.id, hidden)}:
+            candidates.append(True)
+    return len(candidates) == 1 if candidates else False
 
 
 def _source_profile(source: str):
@@ -60,21 +103,26 @@ def _source_profile(source: str):
     hidden_name, secret_name = second.groups()
     if not re.search(rf"\b{re.escape(secret_name)}\s*=\s*bytes_to_long\(", source):
         return None
-    # Scalar addition in the EC group is commutative. The order of the
-    # two public terms is not evidence of a different vulnerability.
-    combinations = re.findall(
-        r"\.append\(\(\s*(\w+)\s*,\s*(\w+)\s*,\s*"
-        r"(\w+)\s*\*\s*(\w+)\s*\+\s*"
-        r"(\w+)\s*\*\s*(\w+)\s*\)\)",
-        source,
-    )
-    if len(combinations) != 1:
-        return None
-    first, second, u, u_point, v, v_point = combinations[0]
-    if {(u, u_point), (v, v_point)} != {
-        (first, base_name), (second, hidden_name),
-    }:
-        return None
+    affine_ast = _affine_append_roles(source, base_name, hidden_name)
+    if affine_ast is not True:
+        # Fallback for Sage constructs outside the supported Python AST.
+        # Never let a syntactically valid but semantically mismatched AST
+        # bypass the source consistency check.
+        if affine_ast is False:
+            return None
+        combinations = re.findall(
+            r"\\.append\\(\\(\\s*(\\w+)\\s*,\\s*(\\w+)\\s*,\\s*"
+            r"(\\w+)\\s*\\*\\s*(\\w+)\\s*\\+\\s*"
+            r"(\\w+)\\s*\\*\\s*(\\w+)\\s*\\)\\)",
+            source,
+        )
+        if len(combinations) != 1:
+            return None
+        first, second, u, u_point, v, v_point = combinations[0]
+        if {(u, u_point), (v, v_point)} != {
+            (first, base_name), (second, hidden_name),
+        }:
+            return None
     field_match = re.search(
         rf"\b{re.escape(field)}\s*=\s*GF\(\s*(\w+)\s*\)", source,
     )

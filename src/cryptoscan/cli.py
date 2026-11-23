@@ -18,6 +18,7 @@ from .ring_scalar_anonymity import signer_candidates as ring_signer_candidates
 from .polynomial_gcd_prefix import extract_instance as extract_polynomial_gcd_prefix, recover_flag as recover_polynomial_gcd_prefix_flag
 from .polynomial_gcd_prefix import construct_input as construct_polynomial_gcd_input
 from .weak_seeded_multiprime_rsa import extract_instance as extract_weak_seeded_rsa, recover_flag as recover_weak_seeded_rsa_flag
+from .biased_shamir import extract_instance as extract_biased_shamir, recover_flag as recover_biased_shamir_flag
 from .cookie import main as cookie_main
 from .assistant import assistant_session
 from .diagnostics import diagnose_runtime
@@ -160,6 +161,8 @@ def _attack_strategies(args):
             preflight=preflight,
         )
     interactive = (
+        remote("Biased Shamir coefficient inference + CRT",
+               extract_biased_shamir, recover_biased_shamir_flag, 5),
         remote("Polynomial GCD prefix oracle",
                extract_polynomial_gcd_prefix,
                recover_polynomial_gcd_prefix_flag, 10,
@@ -306,6 +309,12 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    biased_shamir = extract_biased_shamir(documents)
+    if biased_shamir is not None:
+        print("Detected: Shamir polynomial coefficients sampled from a "
+              "proper subset of the field; repeated share observations "
+              "can leak the constant term, with cross-field CRT recovery "
+              f"({biased_shamir.secret_bits}-bit secret).")
     weak_seeded_rsa = extract_weak_seeded_rsa(documents)
     if weak_seeded_rsa is not None:
         print("Detected: deterministic PRNG seeded from a bounded entropy "

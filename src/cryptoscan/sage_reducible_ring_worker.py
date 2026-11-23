@@ -158,10 +158,16 @@ def _recover_component(a, t, factor, modulus, embedding, shortened, deadline=Non
 
 def _candidate_component(a, t, factor, modulus, deadline=None):
     degree = factor.degree()
-    strategies = [(True, modulus), (False, modulus)]
-    # Low-dimensional quotients can afford additional embedding strengths.
-    if degree <= 24:
-        strategies.extend(((True, 128), (False, 128)))
+    # A q-sized embedding can bury the desired affine-coset vector among
+    # shorter homogeneous vectors. Try a balanced, parameter-derived scale
+    # before the legacy q-sized embedding. No challenge constants are used.
+    balanced = max(1, math.isqrt(modulus) // max(1, math.isqrt(degree)))
+    strengths = list(dict.fromkeys((balanced, modulus)))
+    strategies = [
+        (shortened, embedding)
+        for embedding in strengths
+        for shortened in (True, False)
+    ]
     for shortened, embedding in strategies:
         if deadline is not None and time.monotonic() >= deadline:
             raise LatticeBackendError(

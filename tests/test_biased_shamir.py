@@ -357,3 +357,24 @@ def test_aliased_exclusive_sampler_retains_correct_excluded_count():
     profile = extract_instance([Document("different_api.py", source, None)])
     assert profile is not None
     assert profile.excluded_high == 1
+
+
+def test_unknown_sharing_protocol_can_still_emit_unverified_hypothesis():
+    from cryptoscan.crypto_hypotheses import inspect_hypotheses
+
+    variant = '''
+from Crypto.Util.number import getRandomRange
+def distribute(field, hidden):
+    coefficients = [hidden] + [getRandomRange(0, field - 2) for _ in range(10)]
+    return [sum(a*pow(x,i,field) for i,a in enumerate(coefficients)) % field
+            for x in range(1, 8)]
+query = int(input("field> "))
+print(distribute(query, secret))
+'''
+    doc = Document("unknown_distribution.py", variant, None)
+    assert extract_instance([doc]) is None
+    hypotheses = inspect_hypotheses([doc])
+    assert any(
+        item.family == "Potential coefficient-support leakage in polynomial secret sharing"
+        for item in hypotheses
+    )

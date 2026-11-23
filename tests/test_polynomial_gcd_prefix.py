@@ -122,3 +122,32 @@ def test_cli_reports_and_dispatches_source_verified_oracle(tmp_path, monkeypatch
     assert "attacker-controlled polynomial GCD" in report
     assert "FLAG: TEST{verified_by_synthetic_server}" in report
     assert requests == [("127.0.0.1", 34567, 5.0)]
+
+
+def test_math_gcd_import_alias_and_module_alias_are_equivalent():
+    """Semantically equal import styles must retain the same attack."""
+    source = invented_source()
+    variants = (
+        source.replace("from math import gcd", "from math import gcd as common")
+        .replace("= gcd(", "= common("),
+        source.replace("from math import gcd", "import math as arithmetic")
+        .replace("= gcd(", "= arithmetic.gcd("),
+    )
+    for changed in variants:
+        model = extract_instance([
+            Document("same_vulnerability_unknown_filename", changed, None),
+        ])
+        assert model is not None
+        candidate, measured = construct_input(model)
+        assert measured == math.gcd(
+            int(model.first.eval(candidate)),
+            int(model.second.eval(candidate)),
+        )
+
+
+def test_unrelated_local_gcd_function_is_not_trusted_as_math_gcd():
+    changed = invented_source().replace(
+        "from math import gcd",
+        "def gcd(a, b):\n    return 1000",
+    )
+    assert extract_instance([Document("shadowed.py", changed, None)]) is None

@@ -362,3 +362,62 @@ def test_sage_worker_awaits_actual_process_exit_on_closed_stdout(monkeypatch):
     with pytest.raises(RuntimeError, match="process return code -9") as exc:
         worker.ask({"mode": "recover_short_secret"})
     assert "lattice job was terminated" in str(exc.value)
+
+
+def test_failed_composite_lattice_quotient_refines_without_fixed_factors(monkeypatch):
+    """A failed packed quotient can be recovered via generic integral factors."""
+    import importlib.util
+    import sys
+    import types
+
+    sage = types.ModuleType("sage")
+    sage.__path__ = []
+    sage_all = types.ModuleType("sage.all")
+    for name in ("GF", "PolynomialRing", "ZZ", "crt", "matrix"):
+        setattr(sage_all, name, object())
+    monkeypatch.setitem(sys.modules, "sage", sage)
+    monkeypatch.setitem(sys.modules, "sage.all", sage_all)
+
+    path = (Path(__file__).resolve().parents[1] / "src" / "cryptoscan"
+            / "sage_reducible_ring_worker.py")
+    spec = importlib.util.spec_from_file_location("refinement_worker", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Factor:
+        def __init__(self, degree, children=()):
+            self.n = degree
+            self.children = children
+
+        def degree(self):
+            return self.n
+
+        def factor(self):
+            return [(child, 1) for child in self.children] or [(self, 1)]
+
+    small_a, small_b = Factor(13), Factor(19)
+    combined = Factor(32, (small_a, small_b))
+    calls = []
+
+    def recover(a, t, factor, modulus, deadline):
+        calls.append(factor.degree())
+        if factor is combined:
+            raise module.ComponentNotRecovered("synthetic packed-quotient failure")
+        return f"residue-{factor.degree()}"
+
+    monkeypatch.setattr(module, "_candidate_component", recover)
+
+    class Public:
+        def parent(self):
+            return lambda factor: factor
+
+    recovered = module._recover_factor_components(
+        Public(), None, combined, 257,
+    )
+    assert calls == [32, 13, 19]
+    assert recovered == [(small_a, "residue-13"), (small_b, "residue-19")]
+
+    with pytest.raises(module.ComponentNotRecovered, match="irreducible"):
+        module._recover_factor_components(
+            Public(), None, Factor(17), 257,
+        )

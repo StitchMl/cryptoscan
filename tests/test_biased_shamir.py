@@ -213,6 +213,8 @@ class FakeOracle:
 
     def recv(self, maximum):
         if not self.output:
+            if self.verified_submission:
+                return b""
             raise socket.timeout()
         block = self.output[:maximum]
         del self.output[:maximum]
@@ -286,3 +288,44 @@ def test_unsupported_share_points_are_rejected():
         candidate_secrets([1, 2, 3], 17, x_coordinates=[1, 1, 2])
     with pytest.raises(ValueError):
         candidate_secrets([1, 2, 3], 17, x_coordinates=[0, 2, 3])
+
+
+@pytest.mark.parametrize("change", [
+    ("from Crypto.Util.number import getRandomRange, isPrime",
+     "from Crypto.Util.number import getRandomRange as sample, isPrime",
+     "getRandomRange(0, self.modulus - 1)",
+     "sample(0, self.modulus - 1)"),
+    ("from Crypto.Util.number import getRandomRange, isPrime",
+     "import secrets\nfrom Crypto.Util.number import isPrime",
+     "getRandomRange(0, self.modulus - 1)",
+     "secrets.randbelow(self.modulus - 1)"),
+    ("from Crypto.Util.number import getRandomRange, isPrime",
+     "import random\nfrom Crypto.Util.number import isPrime",
+     "getRandomRange(0, self.modulus - 1)",
+     "random.randrange(self.modulus - 1)"),
+    ("from Crypto.Util.number import getRandomRange, isPrime",
+     "import random\nfrom Crypto.Util.number import isPrime",
+     "getRandomRange(0, self.modulus - 1)",
+     "random.randint(0, self.modulus - 2)"),
+])
+def test_equivalent_random_coefficient_sampling_imports(change):
+    old_import, new_import, old_call, new_call = change
+    source = new_source().replace(old_import, new_import)
+    source = source.replace(old_call, new_call)
+    assert extract_instance([Document("new_sampler.py", source, None)]) is not None
+
+
+def test_secret_must_remain_constant_between_share_queries():
+    source = new_source().replace(
+        "hidden = bytes_to_long(os.urandom(6))\n    while True:",
+        "while True:\n        hidden = bytes_to_long(os.urandom(6))",
+    )
+    assert extract_instance([Document("fresh_secret_each_round.py", source, None)]) is None
+
+
+def test_share_output_must_derive_from_detected_sampler():
+    source = new_source().replace(
+        "print(\"observations =\", output[:-1])",
+        "print(\"observations =\", unrelated[:-1])",
+    )
+    assert extract_instance([Document("unrelated_print.py", source, None)]) is None

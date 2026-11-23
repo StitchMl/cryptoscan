@@ -20,6 +20,7 @@ from .polynomial_gcd_prefix import construct_input as construct_polynomial_gcd_i
 from .weak_seeded_multiprime_rsa import extract_instance as extract_weak_seeded_rsa, recover_flag as recover_weak_seeded_rsa_flag
 from .cyclotomic_rsa import extract_instance as extract_cyclotomic_rsa, recover_flag as recover_cyclotomic_rsa_flag
 from .modular_noise_mixture import extract_instance as extract_modular_noise, recover_flag as recover_modular_noise_flag
+from .ec_twist_oracle import extract_instance as extract_ec_twist, recover_flag as recover_ec_twist_flag
 from .biased_shamir import extract_instance as extract_biased_shamir, recover_flag as recover_biased_shamir_flag
 from .cookie import main as cookie_main
 from .assistant import assistant_session
@@ -167,6 +168,8 @@ def _attack_strategies(args):
             preflight=preflight,
         )
     interactive = (
+        remote("Chosen-coordinate EC quadratic-twist subgroup recovery",
+               extract_ec_twist, recover_ec_twist_flag, 3),
         remote("Biased Shamir coefficient inference + CRT",
                extract_biased_shamir, recover_biased_shamir_flag, 5),
         remote("Polynomial GCD prefix oracle",
@@ -315,6 +318,12 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    twist = extract_ec_twist(documents)
+    if twist is not None:
+        print("Detected: unvalidated x-only elliptic-curve scalar oracle; "
+              "arbitrary coordinates may enter the quadratic twist "
+              f"(field {twist.field_prime.bit_length()} bits; "
+              f"published curve order: {twist.curve_order is not None}).")
     modular_noise = extract_modular_noise(documents)
     if modular_noise is not None:
         print("Detected: mixed LWE-like samples have a noise component "

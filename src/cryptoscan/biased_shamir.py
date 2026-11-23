@@ -122,8 +122,9 @@ def _sampler_bound(node, permitted):
         method = func.attr
     else:
         return None
-    if method in ("getRandomRange", "randrange", "randint") or (
-            method in names and len(node.args) == 2):
+    if method in ("getRandomRange", "randint") or (
+            method in ("randrange",) and len(node.args) == 2
+    ) or (method in names and len(node.args) == 2):
         if len(node.args) != 2:
             return None
         low, high = node.args

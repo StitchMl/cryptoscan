@@ -175,12 +175,14 @@ def _power_of_two_bits(node, definitions):
     return None
 
 
-def _prime_draw(node, rng, definitions, seen=frozenset()):
+def _prime_draw(node, rng, definitions, seen=frozenset(), *,
+                allow_even_intermediate=False):
     # Resolve the call that supplies a prime candidate through local
     # assignments, but do not interpret code or follow cyclic definitions.
     if isinstance(node, ast.Name) and node.id in definitions and node.id not in seen:
         return _prime_draw(
             definitions[node.id], rng, definitions, seen | {node.id},
+            allow_even_intermediate=allow_even_intermediate,
         )
     mask = 0
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
@@ -191,11 +193,12 @@ def _prime_draw(node, rng, definitions, seen=frozenset()):
     if (isinstance(node, ast.Name) and node.id in definitions and node.id not in seen):
         returned = _prime_draw(
             definitions[node.id], rng, definitions, seen | {node.id},
+            allow_even_intermediate=bool(mask & 1) or allow_even_intermediate,
         )
         if returned is not None:
             bits, method, inherited_mask = returned
             combined_mask = mask | inherited_mask
-            if combined_mask & 1 and combined_mask.bit_length() <= bits:
+            if (combined_mask & 1 or allow_even_intermediate) and combined_mask.bit_length() <= bits:
                 return bits, method, combined_mask
         return None
     if not (isinstance(node, ast.Call) and len(node.args) == 1
@@ -210,7 +213,8 @@ def _prime_draw(node, rng, definitions, seen=frozenset()):
     else:
         return None
     if (bits is None or not 32 <= bits <= _MAX_PRIME_BITS
-            or not mask & 1 or mask.bit_length() > bits):
+            or (not mask & 1 and not allow_even_intermediate)
+            or mask.bit_length() > bits):
         return None
     return bits, method, mask
 

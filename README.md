@@ -195,12 +195,38 @@ cryptoscan chall.sage
 cryptoscan chall.sage --plan-attacks --format json --host HOST --port PORT
 ```
 
-The report distinguishes `status: "analysis-only"` from a complete
-`status: "applicable"` flag-recovery solver. **An analysis-only item
-is never executed by `--solve`**, even if host and port are supplied.
-Reconstruction of a hidden curve from exposed states is mathematically
-distinct from recovering the unknown flag keystream. A source-only finding
-must not falsely claim that the latter is already solved.
+The report distinguishes `status: "analysis-only"` (an analytical
+family) from `status: "applicable"` (a source-verified executable attack).
+The full-result solver only returns a flag when the captured transcript
+provides a **unique verified** Mumford-state completion.
+
+```powershell
+cryptoscan chall.sage --investigate --host HOST --port PORT --format json --timeout 60
+cryptoscan chall.sage --solve --host HOST --port PORT --timeout 60
+```
+
+The opt-in `--investigate` workflow connects once to the authorized
+service, captures its source-defined public ciphertext, queries a chosen
+zero plaintext to reveal several consecutive complete Jacobian states,
+and reconstructs the hidden curve polynomial by finite-field linear
+algebra. This yields a useful report even without any flag recovery.
+
+The conditional last stage uses the source-defined **known-plaintext
+suffix**. If it reveals all coefficients of the first state's Mumford
+`v(x)`, then `u(x)` is a monic degree-`g` divisor of
+`f(x) - v(x)**2`. The solver enumerates bounded finite-field factors,
+reconstructs candidate keystreams, and validates all known plaintext
+bytes and CTF text syntax. A plaintext is returned only if precisely
+one candidate passes. This factor method is generic over the field,
+genus, coefficient width and polynomial; it is not tied to a specific
+source, fixed scalar, ciphertext or flag.
+
+**Limit:** a suffix that exposes only *part* of `v(x)` does not meet
+these preconditions. The analyzer then still returns the recovered
+curve and an explicit partial result, not a fabricated plaintext.
+Reconstruction of the hidden curve is mathematically distinct from
+full recovery of a partially observed unknown divisor. A general
+solver for that latter case remains a separate problem.
 
 ## Readable output and colors
 

@@ -180,11 +180,41 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
         for node in nodes
     ):
         result.add("modular_polynomial_evaluation")
+    # Related prime polynomials may imply nontrivial subgroup orders.
+    prime_related = set()
+    for assignment in nodes:
+        if (isinstance(assignment, ast.Assign)
+                and len(assignment.targets) == 1
+                and isinstance(assignment.targets[0], ast.Name)
+                and any(
+                    isinstance(term, ast.BinOp)
+                    and isinstance(term.op, ast.Pow)
+                    and isinstance(term.left, ast.Name)
+                    for term in ast.walk(assignment.value)
+                )):
+            prime_related.add(assignment.targets[0].id)
+    if any(
+        isinstance(node, ast.Call) and len(node.args) == 1
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id in prime_related
+        and ((isinstance(node.func, ast.Name)
+              and node.func.id in ("isPrime", "isprime"))
+             or (isinstance(node.func, ast.Attribute)
+                 and node.func.attr in ("isPrime", "isprime")))
+        for node in nodes
+    ):
+        result.add("polynomially_related_primes")
     return result
 
 
 # Requirements describe mechanisms rather than target service names.
 HYPOTHESIS_RULES = (
+    ({"rsa", "polynomially_related_primes"},
+     "Algebraically correlated RSA prime factors",
+     "A candidate RSA factor is a polynomial in another variable and "
+     "then tested for primality.",
+     ("Extract its polynomial and test cyclotomic divisibility properties",
+      "Explore quotient-field subgroup-collapse and related factorization")),
     ({"restricted_polynomial_sampler", "modular_polynomial_evaluation",
       "interaction"},
      "Potential coefficient-support leakage in polynomial secret sharing",

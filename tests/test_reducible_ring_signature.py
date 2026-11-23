@@ -459,3 +459,54 @@ def test_quotient_embedding_scales_with_modulus_and_degree(monkeypatch):
     )
     balanced = max(1, math.isqrt(modulus) // math.isqrt(degree))
     assert calls == [(True, balanced), (False, balanced)]
+
+
+def test_integral_projection_bounds_are_valid_for_short_secrets(monkeypatch):
+    """Bound any ternary input before a quotient is accepted for CRT."""
+    import importlib.util
+    import itertools
+    import sys
+    import types
+
+    sage = types.ModuleType("sage")
+    sage.__path__ = []
+    sage_all = types.ModuleType("sage.all")
+    for name in ("GF", "PolynomialRing", "ZZ", "crt", "matrix"):
+        setattr(sage_all, name, object())
+    monkeypatch.setitem(sys.modules, "sage", sage)
+    monkeypatch.setitem(sys.modules, "sage.all", sage_all)
+    path = (Path(__file__).resolve().parents[1] / "src" / "cryptoscan"
+            / "sage_reducible_ring_worker.py")
+    spec = importlib.util.spec_from_file_location("projection_limits_worker", path)
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+
+    class MonicFactor:
+        # x^2 + x + 1
+        def degree(self):
+            return 2
+
+        def __getitem__(self, index):
+            return (1, 1, 1)[index]
+
+    factor = MonicFactor()
+    dimension = 6
+    limits = worker._projected_coefficient_limits(factor, dimension, 1, 257)
+    assert limits == [4, 4]
+
+    # x^2 = -x - 1, so reduce arbitrary degree-5 ternary polynomials
+    # exactly using integer (rather than finite-field) arithmetic.
+    remainders = [(1, 0), (0, 1), (-1, -1), (1, 0), (0, 1), (-1, -1)]
+    for secret in itertools.product((-1, 0, 1), repeat=dimension):
+        projected = [
+            sum(secret[i] * remainders[i][j] for i in range(dimension))
+            for j in range(2)
+        ]
+        assert all(abs(projected[j]) <= limits[j] for j in range(2))
+
+    class NonMonic(MonicFactor):
+        def __getitem__(self, index):
+            return (1, 1, 2)[index]
+
+    with pytest.raises(ValueError, match="monic"):
+        worker._projected_coefficient_limits(NonMonic(), dimension, 1, 257)

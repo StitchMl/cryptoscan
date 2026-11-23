@@ -197,3 +197,33 @@ def test_quaternion_public_tuple_order_is_a_required_equation():
         "return (self.mod, self.B, self.A, self.G)",
     )
     assert _source_shape(changed) is None
+
+
+def test_quaternion_parenthesized_multiline_equations_are_equivalent():
+    """AST normalization must ignore harmless grouping and formatting."""
+    documents, plaintext = synthetic_instance()
+    changed = documents[0].text
+    changed = changed.replace(
+        "self.B = self.X**-1 * self.A**-1 * self.X",
+        "self.B = (self.X ** (-1)) * ((self.A ** (-1)) * self.X)",
+    ).replace(
+        "E = D**-1 * self.A * D",
+        "E = (D ** (-1)) * (self.A * D)",
+    ).replace(
+        "H = D**-1 * self.B * D",
+        "H = ((D ** (-1)) * self.B) * D",
+    ).replace(
+        "M = H * k * H",
+        "M = H * (k * H)",
+    )
+    modified = [Document("unknown_quaternion_variant", changed, None), documents[1]]
+    assert _source_shape(changed) == bytes(16)
+    assert recover_flag(modified) == plaintext.decode()
+
+
+def test_quaternion_noncommutative_operand_swap_is_rejected():
+    changed = source().replace(
+        "self.B = self.X**-1 * self.A**-1 * self.X",
+        "self.B = self.X**-1 * self.X * self.A**-1",
+    )
+    assert _source_shape(changed) is None

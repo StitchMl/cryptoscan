@@ -170,3 +170,64 @@ def test_cli_rejects_bad_seed_search_budget(tmp_path):
     source.write_text("x = 1", encoding="utf-8")
     with pytest.raises(SystemExit):
         main([str(source), "--solve", "--seed-search-limit", "0"])
+
+
+def test_semantically_equivalent_intermediate_seed_and_draw_variables():
+    docs = _independent_instance(bits=64, sampling="_randbelow")
+    changed = docs[0].text.replace(
+        "generator.seed(randbelow(2**n))",
+        "entropy = randbelow(2**n)\n    generator.seed(entropy)",
+    ).replace(
+        "prime_value = generator._randbelow(2**64) | 1",
+        "sampled = generator._randbelow(2**64)\n"
+        "        prime_value = sampled | 1",
+    )
+    transformed = [Document("new_control_flow.py", changed, None), docs[1]]
+    assert recover_flag(transformed) == "LAB{new_rsa_message_2026}"
+
+
+def test_import_aliases_and_standard_integer_encoding():
+    docs = _independent_instance(bits=96, sampling="getrandbits")
+    changed = docs[0].text.replace(
+        "from math import prod", "from math import prod as multiply_values",
+    ).replace(
+        "modulus = prod(", "modulus = multiply_values(",
+    ).replace(
+        "from secrets import randbelow", "import secrets as entropy",
+    ).replace(
+        "randbelow(2**n)", "entropy.randbelow(2**n)",
+    ).replace(
+        "bytes_to_long(secret_bytes)", "int.from_bytes(secret_bytes, 'big')",
+    )
+    assert recover_flag([
+        Document("different_implementation.py", changed, None),
+        docs[1],
+    ]) == "LAB{new_rsa_message_2026}"
+
+
+def test_prime_generator_must_seed_before_its_first_candidate_draw():
+    docs = _independent_instance()
+    changed = docs[0].text.replace(
+        "generator.seed(randbelow(2**n))",
+        "",
+    ).replace(
+        "    return prime_value",
+        "    generator.seed(randbelow(2**n))\n"
+        "    return prime_value",
+    )
+    assert extract_instance([
+        Document("late_seeding.py", changed, None),
+        docs[1],
+    ]) is None
+
+
+def test_unrelated_prng_call_does_not_supply_prime():
+    docs = _independent_instance()
+    changed = docs[0].text.replace(
+        "prime_value = generator._randbelow(2**64) | 1",
+        "discarded = generator._randbelow(2**64)\n"
+        "        prime_value = 65537",
+    )
+    assert extract_instance([
+        Document("ignored_prng.py", changed, None), docs[1],
+    ]) is None

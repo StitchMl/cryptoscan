@@ -6,7 +6,9 @@ import os
 import sys
 
 from . import __version__
-from .attack_planner import Strategy, build_plan, execute_plan, RecoveryExhausted
+from .attack_planner import (
+    AttackPlan, Strategy, build_plan, execute_plan, RecoveryExhausted,
+)
 from .crypto_hypotheses import inspect_hypotheses
 from .masked_ec_signature import extract_instance as extract_masked_ec, recover_flag as recover_masked_ec_flag
 from .affine_ec_leak import extract_instance as extract_affine_ec_leak, recover_flag as recover_affine_ec_leak_flag
@@ -178,10 +180,24 @@ def _unique_streams(documents):
 def _candidate_plan(args, documents):
     mode = "remote" if args.host and args.port else "offline"
     capabilities = frozenset({"network"}) if mode == "remote" else frozenset()
-    return build_plan(
-        _attack_strategies(args), documents, mode=mode,
-        capabilities=capabilities,
-    )
+    # Each independently scoped CTF is planned in isolation. A directory
+    # containing multiple challenge folders must not borrow evidence across
+    # unrelated sources or quietly return a flag from the wrong challenge.
+    groups = {}
+    for document in documents:
+        groups.setdefault(document.scope, []).append(document)
+    plan = AttackPlan()
+    for scope, scoped_documents in sorted(groups.items()):
+        scoped = build_plan(
+            _attack_strategies(args), scoped_documents, mode=mode,
+            capabilities=capabilities, scope=scope,
+        )
+        plan.candidates.extend(scoped.candidates)
+        plan.rejected.extend(scoped.rejected)
+    plan.candidates.sort(key=lambda item: (
+        item.strategy.rank, item.scope, item.family,
+    ))
+    return plan
 
 
 def _execute_attack_plan(args, documents) -> int | None:

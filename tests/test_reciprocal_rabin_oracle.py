@@ -67,7 +67,7 @@ def inverted_quadratic(a,b,modulus):
     return tmp,alternate
 
 def chinese(x, p, y, q):
-    return x
+    return (x + p * ((y-x) * pow(p, -1, q) % q)) % (p*q)
 
 def recover(payload, public, private):
     left = inverted_quadratic(payload.{a}, public.multiplier, private.first)

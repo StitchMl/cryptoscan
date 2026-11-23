@@ -100,10 +100,30 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
         for node in nodes
     ):
         result.add("indexed_modular_reduction")
+    random_names = set()
+    random_modules = set()
+    for imported in tree.body:
+        if (isinstance(imported, ast.ImportFrom)
+                and imported.module in {"secrets", "random"}):
+            random_names.update(
+                alias.asname or alias.name for alias in imported.names
+                if alias.name in {"getrandbits", "randbits", "randbelow", "randrange"}
+            )
+        elif isinstance(imported, ast.Import):
+            random_modules.update(
+                alias.asname or alias.name for alias in imported.names
+                if alias.name in {"secrets", "random"}
+            )
     if any(
         isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in {"getrandbits", "randbits", "randbelow", "randrange"}
+        and (
+            isinstance(node.func, ast.Name) and node.func.id in random_names
+            or isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"getrandbits", "randbits", "randbelow", "randrange"}
+            and (isinstance(node.func.value, ast.Name)
+                 and node.func.value.id in random_modules
+                 or isinstance(node.func.value, ast.Call))
+        )
         for node in nodes
     ):
         result.add("sampled_random_scalars")

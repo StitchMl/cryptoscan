@@ -299,3 +299,20 @@ def test_assertion_guard_prevents_invalid_point_classification():
     assert extract_instance([
         Document("asserts_point_membership.py", source, None),
     ]) is None
+
+
+def test_small_field_point_count_can_be_derived_without_published_order():
+    from cryptoscan.ec_twist_oracle import (
+        feasible_twist, resolve_point_count,
+    )
+
+    q, a, b = 65519, 2, 17
+    public = TwistOracle(
+        q, a, b, None, "arbitrary x: ", "LAB{", "}",
+    )
+    completed = resolve_point_count(public)
+    assert completed.curve_order == _main_order(q, a, b)
+    assert feasible_twist(public)
+    assert resolve_point_count(
+        replace(public, field_prime=2**128-159),
+    ).curve_order is None

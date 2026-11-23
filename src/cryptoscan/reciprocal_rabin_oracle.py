@@ -76,8 +76,47 @@ def _calls(node, name):
     ]
 
 
+def _jacobi_call_sites(tree):
+    """Accept genuine Jacobi routines through resolved library imports.
+
+    A source may define a function called 'jacobi' that always returns 1.
+    Its name is not evidence of the disambiguation bit. Resolve either
+    gmpy2.jacobi or sympy.jacobi_symbol (including import aliases).
+    """
+    functions = set()
+    modules = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.ImportFrom):
+            if statement.module not in ("gmpy2", "sympy"):
+                continue
+            canonical = "jacobi" if statement.module == "gmpy2" else "jacobi_symbol"
+            for alias in statement.names:
+                if alias.name == canonical:
+                    functions.add(alias.asname or alias.name)
+        elif isinstance(statement, ast.Import):
+            for alias in statement.names:
+                if alias.name in ("gmpy2", "sympy"):
+                    modules[alias.asname or alias.name] = alias.name
+
+    def jacobi_calls(section):
+        for call in ast.walk(section):
+            if not isinstance(call, ast.Call) or len(call.args) != 2:
+                continue
+            if _name(call.func) in functions:
+                yield call
+            elif isinstance(call.func, ast.Attribute):
+                base = _name(call.func.value)
+                actual = modules.get(base)
+                expected = ("jacobi" if actual == "gmpy2"
+                            else "jacobi_symbol" if actual == "sympy" else None)
+                if actual and call.func.attr == expected:
+                    yield call
+    return jacobi_calls
+
+
 def _reciprocal_encryption(tree):
     """Recognize m+c*m^-1 mod n with Jacobi and ordering disambiguation."""
+    jacobi_calls = _jacobi_call_sites(tree)
     for fn in tree.body:
         if not isinstance(fn, ast.FunctionDef) or len(fn.args.args) < 2:
             continue
@@ -122,7 +161,7 @@ def _reciprocal_encryption(tree):
                 len(call.args) == 2
                 and _name(call.args[0]) == message
                 and ast.dump(call.args[1]) == ast.dump(expression.right)
-                for call in _calls(fn, "jacobi")
+                for call in jacobi_calls(fn)
             ):
                 continue
             if not any(
@@ -264,6 +303,7 @@ def _quadratic_decrypt(tree, encryption):
     prime calls and CRT in the surrounding decryptor.
     """
     solver_names = set()
+    jacobi_calls = _jacobi_call_sites(tree)
     crt_names = _crt_functions(tree)
     if not crt_names:
         return None
@@ -292,7 +332,7 @@ def _quadratic_decrypt(tree, encryption):
             for call in ast.walk(fn)
         )
         if (len(moduli) >= 2 and invokes_crt
-                and _calls(fn, "jacobi")):
+                and any(jacobi_calls(fn))):
             return fn.name
     return None
 

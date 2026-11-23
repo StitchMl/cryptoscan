@@ -18,6 +18,7 @@ from .ring_scalar_anonymity import signer_candidates as ring_signer_candidates
 from .polynomial_gcd_prefix import extract_instance as extract_polynomial_gcd_prefix, recover_flag as recover_polynomial_gcd_prefix_flag
 from .polynomial_gcd_prefix import construct_input as construct_polynomial_gcd_input
 from .weak_seeded_multiprime_rsa import extract_instance as extract_weak_seeded_rsa, recover_flag as recover_weak_seeded_rsa_flag
+from .cyclotomic_rsa import extract_instance as extract_cyclotomic_rsa, recover_flag as recover_cyclotomic_rsa_flag
 from .biased_shamir import extract_instance as extract_biased_shamir, recover_flag as recover_biased_shamir_flag
 from .cookie import main as cookie_main
 from .assistant import assistant_session
@@ -122,6 +123,8 @@ def _attack_strategies(args):
                         tuple(capabilities), rank, backend, preflight)
 
     offline = (
+        strategy("Cyclotomic related RSA finite-field factorization", "offline",
+                 extract_cyclotomic_rsa, recover_cyclotomic_rsa_flag, 4),
         strategy("Weak-seeded RSA partial CRT", "offline",
                  extract_weak_seeded_rsa,
                  lambda docs: recover_weak_seeded_rsa_flag(
@@ -309,6 +312,11 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    cyclotomic = extract_cyclotomic_rsa(documents)
+    if cyclotomic is not None:
+        print("Detected: RSA factors satisfy a cyclotomic geometric-sum "
+              "relation; quotient finite-field subgroup collapse can "
+              f"recover a factor (extension degree {cyclotomic.degree}).")
     biased_shamir = extract_biased_shamir(documents)
     if biased_shamir is not None:
         print("Detected: Shamir polynomial coefficients sampled from a "

@@ -281,3 +281,17 @@ def test_short_known_suffix_keeps_only_analysis_not_false_flag_solver(
         and item["status"] == "applicable"
         for item in report["attack_plan"]
     )
+
+
+def test_known_suffix_spanning_second_state_does_not_misread_first_divisor():
+    docs, model, polynomial, stream, ciphertext, flag = _fixture()
+    extended = replace(
+        model, known_plaintext_suffix=model.known_plaintext_suffix + b"!!",
+    )
+    public_plaintext = flag + extended.known_plaintext_suffix
+    public_ciphertext = bytes(
+        value ^ stream[i] for i, value in enumerate(public_plaintext)
+    )
+    result = analyze_transcript(stream, public_ciphertext, extended)
+    assert result.polynomial == tuple(polynomial)
+    assert result.recovered_flag == flag.decode()

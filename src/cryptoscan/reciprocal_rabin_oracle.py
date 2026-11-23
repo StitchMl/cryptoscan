@@ -327,7 +327,9 @@ def _source_profile(document):
         prime_widths = [
             call.args[0] for call in _calls(fn, "getPrime") if call.args
         ]
-        if len(prime_widths) != 1:
+        if not prime_widths or len({
+                ast.dump(value) for value in prime_widths
+        }) != 1:
             continue
         width = prime_widths[0]
         if isinstance(width, ast.Constant) and type(width.value) is int:

@@ -192,3 +192,21 @@ def test_random_decoy_only_has_no_recoverable_linear_secret():
     modified = replace(model, groups=random_groups)
     with pytest.raises(RuntimeError, match="statistically distinguishable"):
         recover_details(modified, trials=256)
+
+
+def test_unseen_shifted_linear_noise_emits_hypothesis_not_unsupported_solver():
+    from cryptoscan.crypto_hypotheses import inspect_hypotheses
+
+    code = """
+from secrets import randbelow
+def unknown_distribution(vector, key):
+    offset = randbelow(128) << 2
+    linear = sum(x*y for x,y in zip(vector, key))
+    return (linear + offset) % 1024
+"""
+    doc = Document("unseen_variant.py", code, None)
+    assert extract_instance([doc]) is None
+    assert any(
+        hypothesis.family == "Noise-subgroup leakage in linear modular samples"
+        for hypothesis in inspect_hypotheses([doc])
+    )

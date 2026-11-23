@@ -246,3 +246,18 @@ def test_source_alone_is_a_finding_but_not_a_solvable_corpus():
     assert len(relevant) == 1
     assert relevant[0].evidence["public_output_matched"] is False
     assert relevant[0].recovery_status == "validation-only"
+
+
+def test_multiprime_product_list_comprehension_matches_generator_expression():
+    docs = _independent_instance()
+    original = (
+        "unrelated_random_prime(i) for i in range(2, len(secret_bytes))"
+    )
+    changed = docs[0].text.replace(
+        original,
+        "[unrelated_random_prime(i) for i in range(2, len(secret_bytes))]",
+    )
+    assert recover_flag([
+        Document("different_product_style.py", changed, None),
+        docs[1],
+    ]) == "LAB{new_rsa_message_2026}"

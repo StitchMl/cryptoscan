@@ -35,7 +35,7 @@ def test_source_derived_polynomial_gcd_attack():
 
 
 def test_different_polynomial_exponents_and_offsets():
-    for exponent, offset in ((3, 5), (4, 2), (5, 2)):
+    for exponent, offset in ((4, 2), (5, 2), (6, 4)):
         model = extract_instance([
             Document("renamed.py", invented_source(exponent, offset), None),
         ])

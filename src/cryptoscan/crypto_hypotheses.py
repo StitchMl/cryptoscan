@@ -13,6 +13,7 @@ from typing import Sequence
 
 from .parser import Document
 from .source_units import MAX_SOURCE_LENGTH, parse_python
+from .hyperelliptic_state_leak import _sage_tree
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,12 @@ def _signatures(source: str) -> set[str]:
     features: set[str] = set()
     if re.search(r"\b(?:EllipticCurve|EccPoint|Ed448|Ed25519)\b", source):
         features.add("elliptic_curve")
+    if re.search(r"\bHyperellipticCurve\s*\(", source):
+        features.add("hyperelliptic_curve")
+    if re.search(r"\.jacobian\s*\(", source):
+        features.add("jacobian_construction")
+    if re.search(r"\bstruct\.pack\s*\(", source):
+        features.add("binary_coefficient_serialization")
     if re.search(r"\b(?:secrets\.randbelow|randrange|randint)\s*\(", source):
         features.add("random_scalar")
     if re.search(r"\b(?:shuffle|sample)\s*\(", source):
@@ -261,6 +268,14 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
 
 # Requirements describe mechanisms rather than target service names.
 HYPOTHESIS_RULES = (
+    ({"hyperelliptic_curve", "jacobian_construction",
+      "binary_coefficient_serialization", "xor_operator", "interaction"},
+     "Hyperelliptic Jacobian state exposure under chosen plaintext",
+     "A hyperelliptic Jacobian is serialized into a byte stream and "
+     "an interactive program XORs data with that stream.",
+     ("Trace chosen plaintext to the serialized divisor coefficients",
+      "Look for Mumford pairs (u,v) satisfying u divides v**2 - f",
+      "Recover hidden curve parameters from repeated state observations")),
     ({"projective_x_scalar_arithmetic", "interactive_chosen_coordinate"},
      "Unvalidated x-only scalar multiplication and quadratic twist",
      "An interactive source performs projective-coordinate inversion "
@@ -357,7 +372,10 @@ def inspect_hypotheses(documents: Sequence[Document]) -> list[AttackHypothesis]:
         features = set()
         for document in docs:
             features |= _signatures(document.text)
-            features |= _syntactic_signals(parse_python(document))
+            parsed = parse_python(document)
+            if parsed is None and "HyperellipticCurve" in document.text:
+                parsed = _sage_tree(document.text)
+            features |= _syntactic_signals(parsed)
         for required, family, scenario, checks in HYPOTHESIS_RULES:
             if required <= features:
                 unique.setdefault(family, AttackHypothesis(

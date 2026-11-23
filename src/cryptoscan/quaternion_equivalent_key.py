@@ -78,7 +78,7 @@ def _source_shape(source: str) -> bytes | None:
     kappa = kap.group(1)
     mu = re.search(
         rf"(?m)^\s*{_NAME}\s*=\s*{re.escape(kappa)}\s*\*\s*"
-        rf"{_NAME}\s*\*\s*{re.escape(kappa)}\s*$", source,
+        rf"{_NAME}\s*\*\s*{re.escape(kappa)}\s*$", equations,
     )
     if mu is None:
         return None

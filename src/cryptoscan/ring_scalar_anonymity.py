@@ -75,7 +75,7 @@ def _scalar_sampler_functions(tree, minimum_bits):
 
 
 def _reduced_scalar_arrays(function):
-    """Group signer-side modular reductions by index and order reference."""
+    """Map group-order symbols to signer response arrays sharing an index."""
     groups = {}
     for node in ast.walk(function):
         if not (isinstance(node, ast.Assign) and len(node.targets) == 1
@@ -91,7 +91,55 @@ def _reduced_scalar_arrays(function):
         groups.setdefault((ast.dump(target.slice), order), set()).add(
             target.value.id
         )
-    return {order for (_, order), arrays in groups.items() if len(arrays) >= 2}
+    result = {}
+    for (_, order), arrays in groups.items():
+        if len(arrays) >= 2:
+            result.setdefault(order, set()).update(arrays)
+    return result
+
+
+def _sampler_width(node, generators):
+    if not isinstance(node, ast.Call):
+        return None
+    if isinstance(node.func, ast.Name):
+        return generators.get(node.func.id)
+    return _random_scalar_width(node)
+
+
+def _simulated_response_arrays(function, generators):
+    """Conservative local def-use check: PRNG values flow into responses."""
+    values = {}
+    arrays = {}
+    assignments = [
+        node for node in ast.walk(function)
+        if isinstance(node, ast.Assign) and len(node.targets) == 1
+    ]
+    for _ in range(3):
+        for assignment in assignments:
+            target, value = assignment.targets[0], assignment.value
+            if isinstance(target, ast.Name):
+                width = _sampler_width(value, generators)
+                if (width is None and isinstance(value, ast.Name)):
+                    width = values.get(value.id)
+                if width is not None:
+                    values[target.id] = width
+    for assignment in assignments:
+        target, value = assignment.targets[0], assignment.value
+        if isinstance(target, ast.Name):
+            if isinstance(value, (ast.ListComp, ast.GeneratorExp)):
+                width = _sampler_width(value.elt, generators)
+                if width is not None:
+                    arrays[target.id] = width
+        elif (isinstance(target, ast.Subscript)
+              and isinstance(target.value, ast.Name)):
+            width = _sampler_width(value, generators)
+            if width is None and isinstance(value, ast.Name):
+                width = values.get(value.id)
+            if width is not None:
+                arrays[target.value.id] = max(
+                    arrays.get(target.value.id, 0), width,
+                )
+    return arrays
 
 
 def _source_profile(source):
@@ -104,22 +152,17 @@ def _source_profile(source):
     linked = {}
     for function in (node for node in ast.walk(tree)
                      if isinstance(node, ast.FunctionDef)):
-        function_orders = _reduced_scalar_arrays(function)
-        if not function_orders:
+        group_orders = _reduced_scalar_arrays(function)
+        if not group_orders:
             continue
-        widths = []
-        for call in (node for node in ast.walk(function)
-                     if isinstance(node, ast.Call)):
-            if isinstance(call.func, ast.Name):
-                if call.func.id in generators:
-                    widths.append(generators[call.func.id])
-            else:
-                bits = _random_scalar_width(call)
-                if bits is not None:
-                    widths.append(bits)
-        if widths:
-            for order_name in function_orders:
-                linked.setdefault(order_name, set()).update(widths)
+        sampled_arrays = _simulated_response_arrays(function, generators)
+        for order_name, response_arrays in group_orders.items():
+            # A signer bias is demonstrated only when the SAME response
+            # arrays contain raw random decoys and reduced true responses.
+            if all(name in sampled_arrays for name in response_arrays):
+                linked.setdefault(order_name, set()).add(
+                    min(sampled_arrays[name] for name in response_arrays)
+                )
     if len(linked) != 1:
         return None
     symbols = set(linked)

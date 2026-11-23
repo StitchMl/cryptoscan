@@ -23,6 +23,7 @@ class Strategy:
     capabilities: tuple[str, ...] = ()
     rank: int = 100
     backend: str = "python"
+    preflight: Callable[[Any], bool] | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,19 @@ def build_plan(strategies: Iterable[Strategy], documents: Sequence[Any], *,
                 strategy.name, "source preconditions not established",
             ))
             continue
+        if strategy.preflight is not None:
+            try:
+                verified = strategy.preflight(evidence)
+            except _RECOVERABLE as exc:
+                plan.rejected.append(Rejected(
+                    strategy.name, "mathematical preflight failed: " + str(exc)[:200],
+                ))
+                continue
+            if not verified:
+                plan.rejected.append(Rejected(
+                    strategy.name, "mathematical preconditions not established",
+                ))
+                continue
         plan.candidates.append(Candidate(strategy, evidence, scope=scope))
     plan.candidates.sort(key=lambda item: (
         item.strategy.rank, item.strategy.name,

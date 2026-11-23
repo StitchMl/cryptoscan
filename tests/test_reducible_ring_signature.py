@@ -421,3 +421,41 @@ def test_failed_composite_lattice_quotient_refines_without_fixed_factors(monkeyp
         module._recover_factor_components(
             Public(), None, Factor(17), 257,
         )
+
+
+def test_quotient_embedding_scales_with_modulus_and_degree(monkeypatch):
+    """Exercise the general strategy without requiring Sage in Windows CI."""
+    import importlib.util
+    import math
+    import sys
+    import types
+
+    sage = types.ModuleType("sage")
+    sage.__path__ = []
+    sage_all = types.ModuleType("sage.all")
+    for name in ("GF", "PolynomialRing", "ZZ", "crt", "matrix"):
+        setattr(sage_all, name, object())
+    monkeypatch.setitem(sys.modules, "sage", sage)
+    monkeypatch.setitem(sys.modules, "sage.all", sage_all)
+    path = (Path(__file__).resolve().parents[1] / "src" / "cryptoscan"
+            / "sage_reducible_ring_worker.py")
+    spec = importlib.util.spec_from_file_location("embedding_worker", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    degree, modulus = 72, 8383489
+    calls = []
+
+    def attempt(a, t, factor, q, embedding, shortened, deadline):
+        calls.append((shortened, embedding))
+        if shortened:
+            raise module.ComponentNotRecovered("synthetic shortened failure")
+        return "verified-synthetic-residue"
+
+    monkeypatch.setattr(module, "_recover_component", attempt)
+    factor = types.SimpleNamespace(degree=lambda: degree)
+    assert module._candidate_component(None, None, factor, modulus) == (
+        "verified-synthetic-residue"
+    )
+    balanced = max(1, math.isqrt(modulus) // math.isqrt(degree))
+    assert calls == [(True, balanced), (False, balanced)]

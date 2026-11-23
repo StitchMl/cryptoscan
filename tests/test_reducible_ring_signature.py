@@ -183,7 +183,7 @@ def test_tcp_protocol_is_source_driven(monkeypatch):
 
         def ask(self, request):
             assert request["modulus"] == instance.modulus
-            return {"secret": secret, "error": error}
+            return {"secret": secret, "noise": error}
 
         def close(self):
             pass
@@ -216,6 +216,19 @@ def test_tcp_protocol_is_source_driven(monkeypatch):
     thread.join(timeout=2)
     assert not problems
     assert recovered == "DEMO{synthetic_only}"
+
+
+def test_sage_worker_error_field_is_reserved_for_operational_failures():
+    """The recovered noise vector must never be mistaken for a worker error."""
+    from pathlib import Path
+
+    base = Path(__file__).resolve().parents[1] / "src" / "cryptoscan"
+    worker = (base / "sage_reducible_ring_worker.py").read_text(encoding="utf-8")
+    adapter = (base / "reducible_ring_signature.py").read_text(encoding="utf-8")
+    assert '"noise": error_coefficients' in worker
+    assert '"error": error_coefficients' not in worker
+    assert 'private["secret"], private["noise"]' in adapter
+
 
 
 def test_worker_has_no_source_execution_and_is_python_parseable():

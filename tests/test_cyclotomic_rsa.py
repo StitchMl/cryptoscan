@@ -176,3 +176,42 @@ def test_cli_plan_and_end_to_end_solver(tmp_path, capsys):
     )
     assert main([str(tmp_path), "--solve"]) == 0
     assert "FLAG: TEST{related_prime}" in capsys.readouterr().out
+
+
+def test_geometric_ratio_instead_of_sum_is_same_relation():
+    docs, _ = new_corpus(bits=32, degree=3)
+    changed = docs[0].text.replace(
+        "partner = sum([seed**j for j in range(depth)])",
+        "partner = (seed**depth - 1) // (seed - 1)",
+    )
+    assert recover_flag([
+        Document("different_prime_formula.py", changed, None), docs[1],
+    ]) == "TEST{related_prime}"
+
+
+def test_aliased_prime_generator_and_primality_check():
+    docs, _ = new_corpus(bits=32)
+    changed = docs[0].text.replace(
+        "from Crypto.Util.number import getPrime, isPrime, bytes_to_long",
+        "from Crypto.Util.number import getPrime as sample_prime, "
+        "isPrime as primality_check, bytes_to_long",
+    ).replace(
+        "seed = getPrime(k)", "seed = sample_prime(k)",
+    ).replace(
+        "if isPrime(partner):", "if primality_check(partner):",
+    )
+    assert recover_flag([
+        Document("unseen_library_aliases.py", changed, None), docs[1],
+    ]) == "TEST{related_prime}"
+
+
+def test_untrusted_primality_name_is_not_mathematical_evidence():
+    docs, _ = new_corpus(bits=32)
+    changed = docs[0].text.replace(
+        "from Crypto.Util.number import getPrime, isPrime, bytes_to_long",
+        "from Crypto.Util.number import getPrime, bytes_to_long",
+    )
+    changed = "def isPrime(x):\n    return True\n" + changed
+    assert extract_instance([
+        Document("untrusted_isprime.py", changed, None), docs[1],
+    ]) is None

@@ -6,6 +6,7 @@ import os
 import sys
 
 from . import __version__
+from .attack_planner import Strategy, build_plan, execute_plan, RecoveryExhausted
 from .crypto_hypotheses import inspect_hypotheses
 from .masked_ec_signature import extract_instance as extract_masked_ec, recover_flag as recover_masked_ec_flag
 from .affine_ec_leak import extract_instance as extract_affine_ec_leak, recover_flag as recover_affine_ec_leak_flag
@@ -56,6 +57,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--fermat-steps", type=int, default=100_000, help="maximum Fermat iterations per RSA modulus")
     parser.add_argument("--fail-on-findings", action="store_true", help="return exit status 1 when findings exist")
     parser.add_argument("--solve", action="store_true", help="run a source-verified supported CTF solver (opt-in network)")
+    parser.add_argument("--plan-attacks", action="store_true", help="show applicable attack families and required capabilities without running attacks")
     parser.add_argument("--host", help="authorized CTF service hostname for --solve")
     parser.add_argument("--port", type=int, help="authorized CTF service TCP port for --solve")
     parser.add_argument("--timeout", type=float, default=30.0, help="network socket timeout for --solve")
@@ -87,103 +89,120 @@ def _execute_recovery(label, solver, *parameters, **options) -> int:
     return 0
 
 
-def _solve_remote(args, documents) -> int | None:
-    if extract_polynomial_gcd_prefix(documents) is not None:
-        return _execute_recovery(
-            "Polynomial GCD prefix oracle", recover_polynomial_gcd_prefix_flag,
-            documents, args.host, args.port, timeout=args.timeout,
-        )
-    if extract_reducible_glp(documents) is not None:
-        return _execute_recovery(
-            "Reducible cyclic-ring signature", recover_reducible_glp_flag,
-            documents, args.host, args.port, timeout=args.timeout,
-        )
-    if extract_groth16_tickets(documents) is not None:
-        return _execute_recovery(
-            "Groth16 proof-identity replay", recover_groth16_tickets_flag,
-            documents, args.host, args.port, timeout=args.timeout,
-        )
-    if extract_pairing_confirmation(documents) is not None:
-        return _execute_recovery(
-            "Pairing confirmation forgery", recover_pairing_confirmation_flag,
-            documents, args.host, args.port, timeout=args.timeout,
-        )
-    if extract_truncated_rsa(documents) is not None:
-        return _execute_recovery(
-            "Truncated-share RSA", recover_truncated_rsa_flag,
-            documents, args.host, args.port, timeout=args.timeout,
-        )
-    if extract_unramified(documents) is not None:
-        return _execute_recovery(
-            "Unramified ring evaluation", recover_unramified_flag,
-            documents, args.host, args.port, timeout=args.timeout,
-        )
-    if extract_linear_spn(documents) is not None:
-        return _execute_recovery(
-            "Chosen-plaintext linear SPN", recover_linear_spn_flag, documents,
-            args.host, args.port, timeout=args.timeout,
-        )
-    if extract_bounded_ot(documents) is not None:
-        return _execute_recovery(
-            "Bounded EC-ElGamal OT", recover_bounded_ot_flag, documents,
-            args.host, args.port, timeout=args.timeout,
-        )
-    if extract_or_schnorr(documents) is not None:
-        return _execute_recovery(
-            "OR-Schnorr protocol", recover_or_schnorr_flag, documents,
-            args.host, args.port, timeout=args.timeout,
-        )
-    supported = (
-        (extract_batch_fiat_shamir, recover_batch_fs_flag, "Fiat-Shamir transcript-collision"),
-        (extract_fiat_shamir_graph, recover_fs_graph_flag, "Fiat-Shamir grinding"),
-        (supports_gcm_wire_profile, recover_gcm_hidden_flag, "GCM hidden-state"),
-        (supported_fischlin_source, recover_fischlin_flag, "Fischlin"),
-        (supported_dghv_source, recover_dghv_flag, "DGHV"),
+def _attack_strategies(args):
+    """Register attack families by verified preconditions, not challenge IDs.
+
+    Construct on demand so test overrides and third-party implementations
+    can replace a recognizer or recovery function without stale references.
+    """
+    def strategy(name, mode, recognize, recover, rank, *,
+                 capabilities=(), backend="python"):
+        return Strategy(name, mode, recognize, recover,
+                        tuple(capabilities), rank, backend)
+
+    offline = (
+        strategy("Ring signature scalar distribution", "offline",
+                 extract_ring_scalar_leak, recover_ring_scalar_leak_flag, 10),
+        strategy("Equivalent quaternion conjugator", "offline",
+                 extract_quaternion_key, recover_quaternion_flag, 20),
+        strategy("Affine EC public-combination discrete log", "offline",
+                 extract_affine_ec_leak, recover_affine_ec_leak_flag, 30,
+                 backend="sage"),
+        strategy("Masked EC signature inlier", "offline",
+                 extract_masked_ec, recover_masked_ec_flag, 40),
+        strategy("LFSR correlation", "offline",
+                 lambda docs: _unique_streams(docs),
+                 lambda docs: recover_stream_cipher(_unique_streams(docs)[0]),
+                 50),
+        strategy("ECDSA-LCG", "offline",
+                 extract_eclcg_instance, recover_eclcg_flag, 60),
+        strategy("NTRU lattice", "offline",
+                 ntru_instances,
+                 lambda docs: recover_ntru_flag(
+                     docs, bkz=args.bkz_block, backend=args.lattice_backend,
+                     initial_degree=args.initial_fold,
+                     timeout_seconds=args.lattice_timeout,
+                 ), 70),
     )
-    for matches, solver, label in supported:
-        if matches(documents):
-            return _execute_recovery(
-                label, solver, documents, args.host, args.port, timeout=args.timeout,
-            )
-    return None
+    def remote(name, recognize, recover, rank, *, backend="python"):
+        return strategy(
+            name, "remote", recognize,
+            lambda docs: recover(
+                docs, args.host, args.port, timeout=args.timeout,
+            ), rank, capabilities=("network",), backend=backend,
+        )
+    interactive = (
+        remote("Polynomial GCD prefix oracle",
+               extract_polynomial_gcd_prefix,
+               recover_polynomial_gcd_prefix_flag, 10),
+        remote("Reducible cyclic-ring signature",
+               extract_reducible_glp, recover_reducible_glp_flag, 20,
+               backend="sage"),
+        remote("Groth16 proof-identity replay",
+               extract_groth16_tickets, recover_groth16_tickets_flag, 30),
+        remote("Pairing confirmation forgery",
+               extract_pairing_confirmation, recover_pairing_confirmation_flag, 40,
+               backend="sage"),
+        remote("Truncated-share RSA",
+               extract_truncated_rsa, recover_truncated_rsa_flag, 50),
+        remote("Unramified ring evaluation",
+               extract_unramified, recover_unramified_flag, 60,
+               backend="sage"),
+        remote("Chosen-plaintext linear SPN",
+               extract_linear_spn, recover_linear_spn_flag, 70),
+        remote("Bounded EC-ElGamal OT",
+               extract_bounded_ot, recover_bounded_ot_flag, 80),
+        remote("OR-Schnorr protocol",
+               extract_or_schnorr, recover_or_schnorr_flag, 90),
+        remote("Fiat-Shamir transcript-collision",
+               extract_batch_fiat_shamir, recover_batch_fs_flag, 100),
+        remote("Fiat-Shamir grinding",
+               extract_fiat_shamir_graph, recover_fs_graph_flag, 110),
+        remote("GCM hidden-state",
+               supports_gcm_wire_profile, recover_gcm_hidden_flag, 120),
+        remote("Fischlin",
+               supported_fischlin_source, recover_fischlin_flag, 130),
+        remote("DGHV",
+               supported_dghv_source, recover_dghv_flag, 140),
+    )
+    return offline + interactive
+
+
+def _unique_streams(documents):
+    instances = recognize_stream_cipher(documents)
+    if len(instances) > 1:
+        raise ValueError("multiple stream cipher instances; choose one corpus")
+    return instances
+
+
+def _candidate_plan(args, documents):
+    mode = "remote" if args.host and args.port else "offline"
+    capabilities = frozenset({"network"}) if mode == "remote" else frozenset()
+    return build_plan(
+        _attack_strategies(args), documents, mode=mode,
+        capabilities=capabilities,
+    )
+
+
+def _execute_attack_plan(args, documents) -> int | None:
+    plan = _candidate_plan(args, documents)
+    if not plan.candidates:
+        return None
+    try:
+        family, plaintext = execute_plan(plan, documents)
+    except RecoveryExhausted as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"FLAG: {plaintext}")
+    return 0
+
+
+def _solve_remote(args, documents) -> int | None:
+    return _execute_attack_plan(args, documents)
 
 
 def _solve_offline(args, documents) -> int | None:
-    if extract_ring_scalar_leak(documents) is not None:
-        return _execute_recovery(
-            "Ring signature scalar distribution", recover_ring_scalar_leak_flag,
-            documents,
-        )
-    if extract_quaternion_key(documents) is not None:
-        return _execute_recovery(
-            "Equivalent quaternion conjugator", recover_quaternion_flag,
-            documents,
-        )
-    if extract_affine_ec_leak(documents) is not None:
-        return _execute_recovery(
-            "Affine EC public-combination discrete log",
-            recover_affine_ec_leak_flag, documents,
-        )
-    if extract_masked_ec(documents) is not None:
-        return _execute_recovery(
-            "Masked EC signature inlier", recover_masked_ec_flag, documents,
-        )
-    streams = recognize_stream_cipher(documents)
-    if len(streams) > 1:
-        print("Multiple stream-cipher instances detected; select a specific source/output pair.",
-              file=sys.stderr)
-        return 2
-    if streams:
-        return _execute_recovery("LFSR correlation", recover_stream_cipher, streams[0])
-    if extract_eclcg_instance(documents) is not None:
-        return _execute_recovery("ECDSA-LCG", recover_eclcg_flag, documents)
-    if ntru_instances(documents):
-        return _execute_recovery(
-            "NTRU lattice", recover_ntru_flag, documents,
-            bkz=args.bkz_block, backend=args.lattice_backend,
-            initial_degree=args.initial_fold, timeout_seconds=args.lattice_timeout,
-        )
-    return None
+    return _execute_attack_plan(args, documents)
 
 
 def _solve_documents(args, documents) -> int:
@@ -204,8 +223,10 @@ def _validate_arguments(args) -> None:
         _parser().error("--assist and --no-assist cannot be combined")
     if args.solve and (args.format == "json" or args.assist or args.no_assist):
         _parser().error("--solve cannot be combined with --format json, --assist, or --no-assist")
-    if args.solve and bool(args.host) != bool(args.port):
+    if (args.solve or args.plan_attacks) and bool(args.host) != bool(args.port):
         _parser().error("--host and --port must be supplied together")
+    if args.solve and args.plan_attacks:
+        _parser().error("--solve and --plan-attacks cannot be combined")
     if args.assist and args.format == "json":
         _parser().error("--assist cannot be combined with --format json")
 
@@ -316,6 +337,20 @@ def main(argv: list[str] | None = None) -> int:
     findings = scan(documents, args.fermat_steps)
     _print_report(args, findings)
     _report_supported_protocols(args, documents)
+    if args.plan_attacks:
+        plan = _candidate_plan(args, documents)
+        if args.format == "json":
+            print(json.dumps({"attack_plan": plan.describe()}, indent=2))
+        else:
+            print("Applicable attack families:")
+            for candidate in plan.candidates:
+                print(f"  - {candidate.family} ({candidate.strategy.backend})")
+            if not plan.candidates:
+                print("  none with verified source preconditions")
+            if args.verbose:
+                for rejected in plan.rejected:
+                    print(f"  skipped {rejected.family}: {rejected.reason}")
+        return 0
     if args.format == "text" and not findings:
         hypotheses = inspect_hypotheses(documents)
         if hypotheses:

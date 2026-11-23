@@ -21,6 +21,7 @@ from .weak_seeded_multiprime_rsa import extract_instance as extract_weak_seeded_
 from .cyclotomic_rsa import extract_instance as extract_cyclotomic_rsa, recover_flag as recover_cyclotomic_rsa_flag
 from .modular_noise_mixture import extract_instance as extract_modular_noise, recover_flag as recover_modular_noise_flag
 from .ec_twist_oracle import extract_instance as extract_ec_twist, recover_flag as recover_ec_twist_flag
+from .ec_twist_oracle import feasible_twist as feasible_ec_twist
 from .biased_shamir import extract_instance as extract_biased_shamir, recover_flag as recover_biased_shamir_flag
 from .cookie import main as cookie_main
 from .assistant import assistant_session
@@ -169,7 +170,8 @@ def _attack_strategies(args):
         )
     interactive = (
         remote("Chosen-coordinate EC quadratic-twist subgroup recovery",
-               extract_ec_twist, recover_ec_twist_flag, 3),
+               extract_ec_twist, recover_ec_twist_flag, 3,
+               preflight=feasible_ec_twist),
         remote("Biased Shamir coefficient inference + CRT",
                extract_biased_shamir, recover_biased_shamir_flag, 5),
         remote("Polynomial GCD prefix oracle",

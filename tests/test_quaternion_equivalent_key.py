@@ -250,3 +250,33 @@ def test_quaternion_duplicate_public_records_are_ambiguous():
     first = documents[1].text.splitlines()[0]
     duplicate = first + "\n" + documents[1].text
     assert _parse_output(duplicate) is None
+
+
+def test_generalized_crt_solves_noninvertible_modular_equations():
+    from cryptoscan.quaternion_equivalent_key import _solve_modular_scalar_system
+    # No individual coefficient is a unit modulo 15, but combined
+    # constraints uniquely determine the scalar.
+    residue, period = _solve_modular_scalar_system(
+        [3, 5], [6, 10], 15,
+    )
+    assert period == 15
+    assert residue == 2
+
+
+def test_generalized_crt_detects_inconsistent_equations():
+    from cryptoscan.quaternion_equivalent_key import _solve_modular_scalar_system
+    with pytest.raises(RuntimeError, match="inconsistent"):
+        _solve_modular_scalar_system([6], [5], 15)
+    with pytest.raises(RuntimeError, match="incompatible"):
+        _solve_modular_scalar_system([2, 2], [0, 2], 12)
+
+
+def test_generalized_crt_retains_partial_solution_period():
+    from cryptoscan.quaternion_equivalent_key import _solve_modular_scalar_system
+    residue, period = _solve_modular_scalar_system(
+        [6, 0], [6, 0], 18,
+    )
+    assert period == 3
+    assert residue == 1
+    assert all((a * residue - b) % 18 == 0
+               for a, b in zip([6, 0], [6, 0]))

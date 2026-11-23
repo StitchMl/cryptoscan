@@ -138,3 +138,32 @@ def test_real_sage_affine_recovery_when_sage_is_available():
         "prime": 97, "a": 2, "b": 3, "rows": rows,
     })
     assert (result["scalar"] - secret) % int(base.order()) == 0
+
+
+def test_affine_ec_commutative_term_permutation_preserves_detection():
+    """Swapping additive EC summands cannot alter the leakage equation."""
+    from cryptoscan.affine_ec_leak import _source_profile
+
+    original = invented_source()
+    permuted = original.replace(
+        "alpha * A + beta * B",
+        "beta * B + alpha * A",
+    )
+    assert _source_profile(original) == _source_profile(permuted)
+    transformed = [
+        Document("new_algebraic_source", permuted, None),
+        Document("new_transcript", invented_output(), None),
+    ]
+    assert extract_instance(transformed) is not None
+
+
+def test_affine_ec_wrong_coefficient_pairing_is_not_accepted():
+    original = invented_source()
+    wrong = original.replace(
+        "alpha * A + beta * B",
+        "beta * A + alpha * B",
+    )
+    assert extract_instance([
+        Document("bad_algebraic_source", wrong, None),
+        Document("new_transcript", invented_output(), None),
+    ]) is None

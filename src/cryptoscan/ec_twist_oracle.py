@@ -220,6 +220,25 @@ def _source_profile(document):
             and any(isinstance(n, ast.Call) and _name(n.func) == "input"
                     for n in ast.walk(stmt.value))
         }
+        # Fail closed when an input-dependent guard can reject the
+        # coordinate before multiplication. A positive finding requires
+        # evidence of unvalidated input, not merely an EC implementation.
+        guarded = any(
+            isinstance(stmt, ast.If)
+            and any(isinstance(n, ast.Name) and n.id in inputs
+                    for n in ast.walk(stmt.test))
+            and any(isinstance(n, (ast.Continue, ast.Break, ast.Raise,
+                                   ast.Return))
+                    for n in stmt.body)
+            for stmt in ast.walk(loop)
+        ) or any(
+            isinstance(stmt, ast.Assert)
+            and any(isinstance(n, ast.Name) and n.id in inputs
+                    for n in ast.walk(stmt.test))
+            for stmt in ast.walk(loop)
+        )
+        if guarded:
+            continue
         if any(isinstance(n, ast.Call) and _name(n.func) == wrapper
                and n.args and _name(n.args[0]) in inputs
                for n in ast.walk(loop)):

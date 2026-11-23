@@ -331,25 +331,65 @@ def _inverse(x, n):
                 (pow(norm, -1, n), 0, 0, 0), n)
 
 
+def _solve_modular_scalar_system(coefficients, targets, modulus):
+    """Solve a_i*t = b_i mod n even if no a_i is invertible.
+
+    Each equation is reduced by gcd(a_i, n), and the resulting
+    potentially noncoprime congruences are merged by generalized CRT.
+    No factorization of the modulus or challenge data is needed.
+    """
+    residue, period = 0, 1
+    for coefficient, target in zip(coefficients, targets, strict=True):
+        a, b = int(coefficient) % modulus, int(target) % modulus
+        gcd_value = math.gcd(a, modulus)
+        if b % gcd_value:
+            raise RuntimeError("inconsistent modular scalar equation")
+        reduced_modulus = modulus // gcd_value
+        if reduced_modulus == 1:
+            continue
+        target_residue = (
+            (b // gcd_value)
+            * pow(a // gcd_value, -1, reduced_modulus)
+        ) % reduced_modulus
+        overlap = math.gcd(period, reduced_modulus)
+        if (target_residue - residue) % overlap:
+            raise RuntimeError("incompatible modular scalar congruences")
+        new_factor = reduced_modulus // overlap
+        offset = 0
+        if new_factor > 1:
+            offset = (
+                (target_residue - residue) // overlap
+                * pow(period // overlap, -1, new_factor)
+            ) % new_factor
+        residue = (residue + period * offset) % (period * new_factor)
+        period *= new_factor
+    if any(
+        (int(coefficient) * residue - int(target)) % modulus
+        for coefficient, target in zip(coefficients, targets, strict=True)
+    ):
+        raise RuntimeError("combined modular scalar solution failed verification")
+    return residue, period
+
+
 def _equivalent_conjugator(alpha, beta, gamma, n):
     """Solve t*(beta-alpha^-1)=alpha^-1*gamma-gamma*beta."""
     inverse_alpha = _inverse(alpha, n)
     left = _sub(beta, inverse_alpha, n)
     right = _sub(_mul(inverse_alpha, gamma, n),
                  _mul(gamma, beta, n), n)
-    for coefficient, target in zip(left, right, strict=True):
-        if math.gcd(coefficient, n) != 1:
-            continue
-        t = target * pow(coefficient, -1, n) % n
-        if any((t*u-v) % n for u, v in zip(left, right, strict=True)):
-            continue
-        conjugator = _add(gamma, (t, 0, 0, 0), n)
-        if (_mul(conjugator, beta, n)
+    t, period = _solve_modular_scalar_system(left, right, n)
+    # A non-unit coefficient may leave several equivalent scalar lifts.
+    # Try a bounded number, checking both conjugation identities and norm.
+    for lift in range(32):
+        candidate_t = (t + lift * period) % n
+        conjugator = _add(gamma, (candidate_t, 0, 0, 0), n)
+        if (math.gcd(sum(value * value for value in conjugator), n) == 1
+                and _mul(conjugator, beta, n)
                 == _mul(inverse_alpha, conjugator, n)
                 and _mul(conjugator, gamma, n)
                 == _mul(gamma, conjugator, n)):
             return conjugator
-    raise RuntimeError("no verified unit-pivot equivalent quaternion conjugator")
+    raise RuntimeError("no verified invertible equivalent quaternion conjugator")
 
 
 def recover_flag(documents: Sequence[Document]) -> str:

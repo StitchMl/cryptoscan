@@ -207,3 +207,39 @@ def test_investigate_requires_explicit_authorized_endpoint(tmp_path):
     path.write_text(docs[0].text, encoding="utf-8")
     with pytest.raises(SystemExit):
         main([str(path), "--investigate"])
+
+
+def test_64bit_field_genus_seven_factor_recovery_is_parameterized():
+    """Stress the factor algorithm on a fresh 64-bit finite field."""
+    from cryptoscan.hyperelliptic_state_leak import HyperellipticStreamLeak
+
+    prime = 17585255163044402023
+    genus = 7
+    polynomial, observations = _valid_observations(
+        prime, genus, seed=65027,
+    )
+    suffix = (
+        b"Independent chosen-plaintext verification stream "
+        b"with extra known bytes"
+    )[:56].ljust(56, b"!")
+    model = HyperellipticStreamLeak(
+        prime=prime, polynomial_degree_bound=2*genus+1,
+        genus=genus, coefficients_per_state=2*genus,
+        coefficient_bytes=8, byte_order="little",
+        coefficient_encoding="Q", known_plaintext_suffix=suffix,
+        chosen_plaintext=True,
+        scalar_multiplier_reused_for_flag=None,
+    )
+    states = [
+        struct.pack("<" + "Q"*(2*genus), *u[:-1], *v)
+        for u, v in observations
+    ]
+    plaintext = b"LAB{" + b"x"*51 + b"}"
+    assert len(plaintext) == genus*model.coefficient_bytes
+    output = bytes(
+        a ^ b for a,b in zip(plaintext+suffix, states[0])
+    )
+    result = analyze_transcript(b"".join(states), output, model)
+    assert result.polynomial == tuple(polynomial)
+    assert result.recovered_flag == plaintext.decode()
+    assert result.candidates == 1

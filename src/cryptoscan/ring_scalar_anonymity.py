@@ -27,36 +27,81 @@ class RingScalarLeak:
     key_slice: tuple[int, int]
 
 
+def _scalar_sampler_functions(tree, minimum_bits):
+    """Statically identify helper functions that return wide random scalars."""
+    identified = set()
+    for function in (node for node in ast.walk(tree)
+                     if isinstance(node, ast.FunctionDef)):
+        calls = [node for node in ast.walk(function)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute)
+                 and node.func.attr == "getrandbits"
+                 and len(node.args) == 1
+                 and isinstance(node.args[0], ast.Constant)
+                 and type(node.args[0].value) is int
+                 and node.args[0].value >= minimum_bits]
+        if calls and any(isinstance(node, ast.Return)
+                         for node in ast.walk(function)):
+            identified.add(function.name)
+    return identified
+
+
+def _reduced_scalar_arrays(function):
+    """Group signer-side modular reductions by index and order reference."""
+    groups = {}
+    for node in ast.walk(function):
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Subscript)
+                and isinstance(node.targets[0].value, ast.Name)
+                and isinstance(node.value, ast.BinOp)
+                and isinstance(node.value.op, ast.Mod)
+                and isinstance(node.value.right, (ast.Name, ast.Attribute))):
+            continue
+        target = node.targets[0]
+        order_node = node.value.right
+        order = order_node.id if isinstance(order_node, ast.Name) else order_node.attr
+        groups.setdefault((ast.dump(target.slice), order), set()).add(
+            target.value.id
+        )
+    return {order for (_, order), arrays in groups.items() if len(arrays) >= 2}
+
+
 def _source_profile(source):
     if len(source) > 1_000_000:
         return None
     tree = parse_python(Document("candidate.py", source, None))
     if tree is None:
         return None
-    bit_widths, reduced = set(), {}
-    for node in ast.walk(tree):
-        if (isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "getrandbits" and len(node.args) == 1
-                and isinstance(node.args[0], ast.Constant)
-                and type(node.args[0].value) is int):
-            bit_widths.add(node.args[0].value)
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target, value = node.targets[0], node.value
-        if not (isinstance(target, ast.Subscript)
-                and isinstance(target.value, ast.Name)
-                and isinstance(value, ast.BinOp)
-                and isinstance(value.op, ast.Mod)
-                and isinstance(value.right, ast.Attribute)):
-            continue
-        reduced.setdefault((ast.unparse(target.slice), value.right.attr), set()
-                           ).add(target.value.id)
-    symbols = {order for (_, order), arrays in reduced.items()
-               if len(arrays) >= 2}
-    if (not any(bits >= 128 for bits in bit_widths)
-            or len(symbols) != 1):
+    bit_widths = {
+        node.args[0].value for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "getrandbits" and len(node.args) == 1
+        and isinstance(node.args[0], ast.Constant)
+        and type(node.args[0].value) is int
+        and 128 <= node.args[0].value <= 1024
+    }
+    if not bit_widths:
         return None
+    generators = _scalar_sampler_functions(tree, 128)
+    linked = set()
+    for function in (node for node in ast.walk(tree)
+                     if isinstance(node, ast.FunctionDef)):
+        function_orders = _reduced_scalar_arrays(function)
+        if not function_orders:
+            continue
+        calls = [node for node in ast.walk(function)
+                 if isinstance(node, ast.Call)]
+        if any(
+            isinstance(call.func, ast.Name) and call.func.id in generators
+            or (isinstance(call.func, ast.Attribute)
+                and call.func.attr == "getrandbits")
+            for call in calls
+        ):
+            linked.update(function_orders)
+    if len(linked) != 1:
+        return None
+    symbols = linked
     if not any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)

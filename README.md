@@ -266,10 +266,30 @@ cryptoscan server.py --solve --host HOST --port PORT --timeout 60
 ```
 
 Network access is always opt-in. A source-only scan can report the
-design flaw without sending requests. The executable attack depends
-on observing independent nontrivial re-encryption differences, so
-some valid reciprocal-Rabin implementations will not be exploitable
+potential design flaw without sending requests. The executable attack
+depends on observing independent nontrivial re-encryption differences,
+so some valid reciprocal-Rabin implementations will not be exploitable
 by this solver.
+
+**Generalization and validation boundary:** the scanner now verifies
+the quotient-ring root extraction identity, sources the Jacobi symbol
+from a recognized cryptographic library (including aliases), and
+distinguishes true two-residue CRT recombination from an unrelated
+modulo-product calculation. Explicit root-verification guards suppress
+the executable finding. Its positive tests use an independently
+implemented *working* reciprocal-Rabin source and a separate
+mathematical oracle, not fake Jacobi functions or placeholder roots.
+Adversarial negative cases cover fake Jacobi functions, unrelated
+modular inversions, bogus CRT and rejected roots.
+
+Other quadratic-root algorithms and protocol shapes (JSON transports,
+variable numbers of disambiguation bits, different message padding)
+are **not automatically supported** by the exact solver. A generic
+CRT component-consistency hypothesis may still be emitted for such
+sources, without claiming vulnerability or execution. The existing
+tests exercise small and medium prime sizes; performance at arbitrary
+cryptographic sizes and availability of a usable fault oracle must be
+verified separately.
 
 ## Readable output and colors
 

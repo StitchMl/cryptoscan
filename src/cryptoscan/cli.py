@@ -17,6 +17,7 @@ from .ring_scalar_anonymity import extract_instance as extract_ring_scalar_leak,
 from .ring_scalar_anonymity import signer_candidates as ring_signer_candidates
 from .polynomial_gcd_prefix import extract_instance as extract_polynomial_gcd_prefix, recover_flag as recover_polynomial_gcd_prefix_flag
 from .polynomial_gcd_prefix import construct_input as construct_polynomial_gcd_input
+from .weak_seeded_multiprime_rsa import extract_instance as extract_weak_seeded_rsa, recover_flag as recover_weak_seeded_rsa_flag
 from .cookie import main as cookie_main
 from .assistant import assistant_session
 from .diagnostics import diagnose_runtime
@@ -71,6 +72,8 @@ def _parser() -> argparse.ArgumentParser:
                         help="maximum offline lattice worker duration in seconds")
     parser.add_argument("--lattice-backend", choices=("auto", "fplll", "fpylll", "flint", "sympy"),
                         default="auto", help="lattice reduction backend for offline solving")
+    parser.add_argument("--seed-search-limit", type=int, default=4096,
+                        help="maximum deterministic PRNG seeds for weak-seeded RSA recovery")
     parser.add_argument("--initial-fold", type=int, default=64,
                         help="initial NTRU folding degree, must divide n by a power of two")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -118,6 +121,11 @@ def _attack_strategies(args):
                         tuple(capabilities), rank, backend, preflight)
 
     offline = (
+        strategy("Weak-seeded RSA partial CRT", "offline",
+                 extract_weak_seeded_rsa,
+                 lambda docs: recover_weak_seeded_rsa_flag(
+                     docs, max_seeds=args.seed_search_limit,
+                 ), 5),
         strategy("Ring signature scalar distribution", "offline",
                  extract_ring_scalar_leak, recover_ring_scalar_leak_flag, 10,
                  preflight=_ring_range_preflight),
@@ -252,6 +260,8 @@ def _solve_documents(args, documents) -> int:
 
 
 def _validate_arguments(args) -> None:
+    if not 1 <= args.seed_search_limit <= (1 << 20):
+        _parser().error("--seed-search-limit must be between 1 and 1048576")
     if args.fermat_steps < 0:
         _parser().error("--fermat-steps must be non-negative")
     if args.assist and args.no_assist:
@@ -296,6 +306,13 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    weak_seeded_rsa = extract_weak_seeded_rsa(documents)
+    if weak_seeded_rsa is not None:
+        print("Detected: deterministic PRNG seeded from a bounded entropy "
+              "source for RSA prime generation; partial factor enumeration "
+              "and CRT plaintext recovery available "
+              f"(first seed {weak_seeded_rsa.first_seed_bits} bits, "
+              f"prime candidates {weak_seeded_rsa.prime_bits} bits).")
     ring_scalar = extract_ring_scalar_leak(documents)
     if ring_scalar is not None:
         print("Detected: ring signature signer anonymity leak from "

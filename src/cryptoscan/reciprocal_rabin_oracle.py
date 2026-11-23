@@ -177,27 +177,51 @@ def _reciprocal_encryption(tree):
 
 
 def _crt_functions(tree):
-    """Identify a four-argument coprime CRT combiner algebraically.
+    """Identify algebraic CRT from residue and modulus dataflow.
 
-    Source may call it crt(), recombine(), merge_residues() or anything
-    else. A modulo-product-of-two-moduli in a four-argument function
-    is the local sufficient evidence for this attack family.
+    A mere 'something % (p*q)' is not sufficient evidence. Both
+    residues and both moduli must contribute, and the function must
+    use extended GCD or a modular inverse to combine congruences.
+    This recognizes standard arithmetic variants without using names.
     """
     result = set()
     for fn in tree.body:
         if not isinstance(fn, ast.FunctionDef) or len(fn.args.args) != 4:
             continue
         args = {arg.arg for arg in fn.args.args}
-        if any(
-            isinstance(node, ast.BinOp)
-            and isinstance(node.op, ast.Mod)
-            and isinstance(node.right, ast.BinOp)
-            and isinstance(node.right.op, ast.Mult)
-            and _name(node.right.left) in args
-            and _name(node.right.right) in args
-            for node in ast.walk(fn)
-        ):
-            result.add(fn.name)
+        for node in ast.walk(fn):
+            if not (
+                isinstance(node, ast.BinOp)
+                and isinstance(node.op, ast.Mod)
+                and isinstance(node.right, ast.BinOp)
+                and isinstance(node.right.op, ast.Mult)
+                and (left_mod := _name(node.right.left)) in args
+                and (right_mod := _name(node.right.right)) in args
+                and left_mod != right_mod
+            ):
+                continue
+            residues = args - {left_mod, right_mod}
+            numerator_names = {
+                child.id for child in ast.walk(node.left)
+                if isinstance(child, ast.Name)
+            }
+            if not residues.issubset(numerator_names):
+                continue
+            inverse = any(
+                (isinstance(call, ast.Call)
+                 and isinstance(call.func, ast.Attribute)
+                 and call.func.attr == "gcdext")
+                or (isinstance(call, ast.Call)
+                    and _name(call.func) == "pow"
+                    and len(call.args) == 3
+                    and isinstance(call.args[1], ast.UnaryOp)
+                    and isinstance(call.args[1].op, ast.USub)
+                    and isinstance(call.args[1].operand, ast.Constant)
+                    and call.args[1].operand.value == 1)
+                for call in ast.walk(fn)
+            )
+            if inverse:
+                result.add(fn.name)
     return result
 
 

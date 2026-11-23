@@ -418,3 +418,27 @@ def test_quadratic_solver_must_use_both_polynomial_coefficients():
     assert extract_instance([
         Document("not_a_quadratic_quotient.py", source, None)
     ]) is None
+
+
+def test_explicit_root_validation_disables_faulty_crt_attack():
+    source = _fresh_source()
+    source = source.replace(
+        "    alternate = (a-tmp) % modulus",
+        "    assert (tmp*tmp-a*tmp+b) % modulus == 0\n"
+        "    alternate = (a-tmp) % modulus",
+    )
+    assert extract_instance([
+        Document("verified_quadratic_root.py", source, None)
+    ]) is None
+
+
+def test_root_rejection_branch_is_not_an_unchecked_fault_oracle():
+    source = _fresh_source().replace(
+        "    alternate = (a-tmp) % modulus",
+        "    if (tmp*tmp-a*tmp+b) % modulus != 0:\n"
+        "        raise ValueError('invalid quadratic root')\n"
+        "    alternate = (a-tmp) % modulus",
+    )
+    assert extract_instance([
+        Document("root_rejected_before_crt.py", source, None)
+    ]) is None

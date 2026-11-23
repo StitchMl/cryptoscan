@@ -221,11 +221,18 @@ def _source_profile(document):
     if len(field_rings) != 1:
         return None
     ring, prime = next(iter(field_rings.items()))
+    generators = {
+        match.group(2): match.group(3)
+        for match in _SAGE_RING.finditer(document.text)
+    }
     poly = []
     for name, expr in assignments.items():
-        degree = _poly_degree(expr, "x", assignments)
-        if degree is not None:
-            poly.append((name, degree))
+        for ring_name, variable in generators.items():
+            if ring_name not in field_rings:
+                continue
+            degree = _poly_degree(expr, variable, assignments)
+            if degree is not None:
+                poly.append((name, degree))
     if len(poly) != 1:
         return None
     polynomial, degree = poly[0]
@@ -430,7 +437,7 @@ def curve_from_divisors(observations, model: HyperellipticStreamLeak):
                 ]
         rank += 1
     if any(
-        any(row[:unknowns]) is False and row[unknowns] % p
+        not any(row[:unknowns]) and row[unknowns] % p
         for row in equations[rank:]
     ):
         raise RuntimeError("inconsistent divisors cannot share one curve")

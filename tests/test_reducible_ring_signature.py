@@ -401,7 +401,7 @@ def test_failed_composite_lattice_quotient_refines_without_fixed_factors(monkeyp
 
     def recover(a, t, factor, modulus, deadline):
         calls.append(factor.degree())
-        if factor is combined:
+        if factor is combined or factor.degree() == 17:
             raise module.ComponentNotRecovered("synthetic packed-quotient failure")
         return f"residue-{factor.degree()}"
 

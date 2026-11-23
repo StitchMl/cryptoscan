@@ -221,3 +221,36 @@ def test_scanner_and_analysis_only_planner(tmp_path, capsys):
     assert main([str(path), "--solve", "--host",
                  "example.invalid", "--port", "39003"]) == 2
     assert "FLAG:" not in capsys.readouterr().out
+
+
+def test_hyperelliptic_hypothesis_on_unseen_unresolved_sage_source():
+    from cryptoscan.crypto_hypotheses import inspect_hypotheses
+
+    source = fresh_source().replace(
+        "self.buffer = struct.pack('<'+'H'*len(coefficients), *coefficients)",
+        "self.buffer = struct.pack('<'+'H'*len(coefficients), *coefficients)",
+    ).replace(
+        "self.state = self.factor * self.state",
+        "self.state = nonlinear_transform(self.state, self.factor)",
+    )
+    doc = Document("different_state_transition.sage", source, None)
+    assert extract_instance([doc]) is None
+    hypotheses = inspect_hypotheses([doc])
+    assert any(
+        item.family ==
+        "Hyperelliptic Jacobian state exposure under chosen plaintext"
+        for item in hypotheses
+    )
+
+
+def test_analysis_plan_never_runs_an_analysis_only_executor(tmp_path, capsys):
+    from cryptoscan.cli import main
+
+    source = tmp_path / "unseen.sage"
+    source.write_text(fresh_source(), encoding="utf-8")
+    assert main([str(source), "--plan-attacks"]) == 0
+    output = capsys.readouterr().out
+    assert "Hyperelliptic Mumford-state curve reconstruction" in output
+    assert "analysis only" in output
+    assert main([str(source), "--solve"]) == 2
+    assert "FLAG:" not in capsys.readouterr().out

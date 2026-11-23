@@ -14,7 +14,7 @@ import ast
 import math
 import re
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Sequence
 
 from .parser import Document
@@ -357,6 +357,28 @@ def _bsgs(curve, base, target, order, *, step_limit=500_000):
     raise RuntimeError("no subgroup discrete logarithm matches target")
 
 
+def resolve_point_count(model, *, max_field=200_000):
+    """Compute an unpublished curve order for small prime fields.
+
+    For larger fields, a separately published order or a dedicated
+    point-counting backend remains necessary. No challenge parameter
+    is assumed and no untrusted source is evaluated.
+    """
+    from sympy import isprime
+    if model.curve_order is not None:
+        return model
+    p = model.field_prime
+    if not 3 < p <= max_field or not isprime(p):
+        return model
+    a, b = model.curve_a, model.curve_b
+    trace_sum = 0
+    for x in range(p):
+        rhs = (x*x*x + a*x + b) % p
+        if rhs:
+            trace_sum += 1 if pow(rhs, (p-1)//2, p) == 1 else -1
+    return replace(model, curve_order=p+1+trace_sum)
+
+
 def feasible_twist(model, *, max_bsgs_steps=500_000):
     """Prove that source parameters admit a bounded twist subgroup attack.
 
@@ -364,6 +386,7 @@ def feasible_twist(model, *, max_bsgs_steps=500_000):
     plaintext. Source-only detection remains available without an order.
     """
     from sympy import factorint, isprime
+    model = resolve_point_count(model)
     q = model.field_prime
     if model.curve_order is None or not isprime(q):
         return False
@@ -417,6 +440,7 @@ def twist_generator(model, factors):
 
 def recover_residue(model, oracle_x, *, max_bsgs_steps=500_000):
     from sympy import factorint, isprime, sqrt_mod
+    model = resolve_point_count(model)
     q = model.field_prime
     if not isprime(q):
         raise RuntimeError("the source field modulus is not prime")
@@ -478,6 +502,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int,
     model = extract_instance(documents)
     if model is None:
         raise ValueError("no source-proven arbitrary-x scalar oracle")
+    model = resolve_point_count(model)
     q = model.field_prime
     if not isprime(q) or model.curve_order is None:
         raise RuntimeError("twist attack requires a prime field and curve order")

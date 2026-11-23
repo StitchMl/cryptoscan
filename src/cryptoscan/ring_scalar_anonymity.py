@@ -27,21 +27,47 @@ class RingScalarLeak:
     key_slice: tuple[int, int]
 
 
+def _random_scalar_width(call):
+    """Infer an upper-bound bit width without executing random APIs."""
+    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
+        return None
+    name = call.func.attr
+    if len(call.args) != 1:
+        return None
+    argument = call.args[0]
+    if name in ("getrandbits", "randbits"):
+        if isinstance(argument, ast.Constant) and type(argument.value) is int:
+            return argument.value if 1 <= argument.value <= 1024 else None
+    if name in ("randbelow", "randrange"):
+        if (isinstance(argument, ast.BinOp)
+                and isinstance(argument.op, ast.LShift)
+                and isinstance(argument.left, ast.Constant)
+                and argument.left.value == 1
+                and isinstance(argument.right, ast.Constant)
+                and type(argument.right.value) is int
+                and 1 <= argument.right.value <= 1024):
+            return argument.right.value
+        if (isinstance(argument, ast.BinOp)
+                and isinstance(argument.op, ast.Pow)
+                and isinstance(argument.left, ast.Constant)
+                and argument.left.value == 2
+                and isinstance(argument.right, ast.Constant)
+                and type(argument.right.value) is int
+                and 1 <= argument.right.value <= 1024):
+            return argument.right.value
+    return None
+
+
 def _scalar_sampler_functions(tree, minimum_bits):
-    """Statically identify helper functions that return wide random scalars."""
+    """Statically identify helper functions returning wide random scalars."""
     identified = set()
     for function in (node for node in ast.walk(tree)
                      if isinstance(node, ast.FunctionDef)):
-        calls = [node for node in ast.walk(function)
-                 if isinstance(node, ast.Call)
-                 and isinstance(node.func, ast.Attribute)
-                 and node.func.attr == "getrandbits"
-                 and len(node.args) == 1
-                 and isinstance(node.args[0], ast.Constant)
-                 and type(node.args[0].value) is int
-                 and node.args[0].value >= minimum_bits]
-        if calls and any(isinstance(node, ast.Return)
-                         for node in ast.walk(function)):
+        if (any(
+            (_random_scalar_width(node) or 0) >= minimum_bits
+            for node in ast.walk(function)
+        ) and any(isinstance(node, ast.Return)
+                  for node in ast.walk(function))):
             identified.add(function.name)
     return identified
 
@@ -73,13 +99,9 @@ def _source_profile(source):
     if tree is None:
         return None
     bit_widths = {
-        node.args[0].value for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "getrandbits" and len(node.args) == 1
-        and isinstance(node.args[0], ast.Constant)
-        and type(node.args[0].value) is int
-        and 128 <= node.args[0].value <= 1024
+        bits for node in ast.walk(tree)
+        if (bits := _random_scalar_width(node)) is not None
+        and 128 <= bits <= 1024
     }
     if not bit_widths:
         return None
@@ -95,7 +117,7 @@ def _source_profile(source):
         if any(
             isinstance(call.func, ast.Name) and call.func.id in generators
             or (isinstance(call.func, ast.Attribute)
-                and call.func.attr == "getrandbits")
+                and _random_scalar_width(call) is not None)
             for call in calls
         ):
             linked.update(function_orders)

@@ -329,3 +329,31 @@ def test_share_output_must_derive_from_detected_sampler():
         "print(\"observations =\", unrelated[:-1])",
     )
     assert extract_instance([Document("unrelated_print.py", source, None)]) is None
+
+
+def test_aliased_inclusive_sampler_retains_correct_excluded_count():
+    source = new_source().replace(
+        "from Crypto.Util.number import getRandomRange, isPrime",
+        "from random import randint as bounded\n"
+        "from Crypto.Util.number import isPrime",
+    ).replace(
+        "getRandomRange(0, self.modulus - 1)",
+        "bounded(0, self.modulus - 2)",
+    )
+    profile = extract_instance([Document("different_api.py", source, None)])
+    assert profile is not None
+    assert profile.excluded_high == 1
+
+
+def test_aliased_exclusive_sampler_retains_correct_excluded_count():
+    source = new_source().replace(
+        "from Crypto.Util.number import getRandomRange, isPrime",
+        "from secrets import randbelow as sample\n"
+        "from Crypto.Util.number import isPrime",
+    ).replace(
+        "getRandomRange(0, self.modulus - 1)",
+        "sample(self.modulus - 1)",
+    )
+    profile = extract_instance([Document("different_api.py", source, None)])
+    assert profile is not None
+    assert profile.excluded_high == 1

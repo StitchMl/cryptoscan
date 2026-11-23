@@ -210,3 +210,21 @@ def unknown_distribution(vector, key):
         hypothesis.family == "Noise-subgroup leakage in linear modular samples"
         for hypothesis in inspect_hypotheses([doc])
     )
+
+
+def test_secret_regenerated_inside_each_bit_loop_is_not_a_global_key():
+    docs, _ = independent_corpus()
+    source = docs[0].text.replace(
+        "    secret = key_material()\n    for bit in message_bits():",
+        "    for bit in message_bits():\n        secret = key_material()",
+    )
+    assert _source_profile(source) is None
+
+
+def test_error_accumulator_must_not_change_after_final_shift():
+    docs, _ = independent_corpus()
+    source = docs[0].text.replace(
+        "        z <<= 1\n    return z",
+        "        z <<= 1\n    z += 1\n    return z",
+    )
+    assert _source_profile(source) is None

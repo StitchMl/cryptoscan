@@ -30,12 +30,16 @@ class JacobianRecovery:
     recovered_flag: str | None
     candidates: int
     explanation: str
+    public_ciphertext_hex: str = ""
+    chosen_keystream_hex: str = ""
 
     def report(self):
         return {
             "curve_polynomial": [str(x) for x in self.polynomial],
             "independent_mumford_states": self.states,
             "public_ciphertext_bytes": self.ciphertext_bytes,
+            "public_ciphertext_hex": self.public_ciphertext_hex,
+            "chosen_keystream_hex": self.chosen_keystream_hex,
             "recovered_flag": self.recovered_flag,
             "candidate_count": self.candidates,
             "status": "flag-recovered" if self.recovered_flag else "partial",
@@ -184,6 +188,7 @@ def analyze_transcript(chosen_stream, public_ciphertext, model, *,
             explanation + "; " + str(len(possibilities)) +
             " verified flag candidates (requires uniqueness)"
         ),
+        public_ciphertext.hex(), chosen_stream.hex(),
     )
 
 

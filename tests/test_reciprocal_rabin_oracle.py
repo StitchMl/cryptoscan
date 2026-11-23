@@ -50,7 +50,11 @@ def draw_prime(width):
 
 def key_pair(width):
     first, second = draw_prime(width), draw_prime(width)
-    return Key(first*second, 12), Private(first,second)
+    n = first*second
+    multiplier = 2
+    while jacobi(multiplier, first) != -1 or jacobi(multiplier, second) != -1:
+        multiplier += 1
+    return Key(n, multiplier), Private(first,second)
 
 from sympy import jacobi_symbol as jacobi
 
@@ -86,15 +90,20 @@ def chinese(x, p, y, q):
 def recover(payload, public, private):
     left = inverted_quadratic(payload.{a}, public.multiplier, private.first)
     right = inverted_quadratic(payload.{a}, public.multiplier, private.second)
-    both = chinese(left[0], private.first, right[0],private.second)
-    if jacobi(both,public.mod) == payload.{b}:
-        return both
-    return both
+    options = []
+    for x in left:
+        for y in right:
+            both = chinese(x, private.first, y, private.second)
+            if jacobi(both,public.mod) == payload.{b}:
+                options.append(both)
+    assert len(options) == 2
+    options.sort()
+    return options[payload.{c}]
 
 factor_bits = {bits}
 pub,secret = key_pair(factor_bits)
 print("secret document:")
-print(Sealed(100,1,1))
+print(stamp(123456789,pub))
 while True:
     try:
         v1,v2,v3 = map(int,input("please give three integers: ").split(","))

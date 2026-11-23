@@ -184,10 +184,28 @@ def construct_input(instance: PolynomialGCDPrefix) -> tuple[int, int]:
     if linear is None:
         raise RuntimeError("no linear subresultant for modular root recovery")
     a, b = int(linear.nth(1)), int(linear.nth(0))
-    if math.gcd(a, modulus) != 1:
-        raise RuntimeError("linear subresultant coefficient is not a unit")
-    candidate = (-b * pow(a, -1, modulus)) % modulus
-    measured = math.gcd(int(first.eval(candidate)), int(second.eval(candidate)))
+    divisor = math.gcd(a, modulus)
+    if b % divisor:
+        raise RuntimeError("linear subresultant congruence has no solution")
+    reduced_modulus = modulus // divisor
+    if reduced_modulus <= 256:
+        raise RuntimeError("subresultant congruence has insufficient modulus")
+    # A nonunit linear coefficient may still give a useful common root
+    # modulo R / gcd(a, R). No integer factorization is needed.
+    root = (
+        -(b // divisor) * pow(a // divisor, -1, reduced_modulus)
+    ) % reduced_modulus
+    candidates = (
+        root + lift * reduced_modulus for lift in range(min(divisor, 16))
+    )
+    verified = [
+        (
+            math.gcd(int(first.eval(candidate)), int(second.eval(candidate))),
+            candidate,
+        )
+        for candidate in candidates
+    ]
+    measured, candidate = max(verified)
     if measured < 256:
         raise RuntimeError("subresultant candidate failed the gcd certificate")
     return candidate, measured

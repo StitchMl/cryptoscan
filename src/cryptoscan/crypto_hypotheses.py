@@ -234,11 +234,40 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
         for node in nodes
     ):
         result.add("power_two_modulus")
+    if any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "pow" and len(node.args) == 3
+        and isinstance(node.args[1], ast.UnaryOp)
+        and isinstance(node.args[1].op, ast.USub)
+        and isinstance(node.args[1].operand, ast.Constant)
+        and node.args[1].operand.value == 1
+        and isinstance(node.args[0], ast.Subscript)
+        for node in nodes
+    ) and any(
+        isinstance(node, ast.BinOp) and isinstance(node.op, ast.RShift)
+        for node in nodes
+    ):
+        result.add("projective_x_scalar_arithmetic")
+    if any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "input"
+        for node in nodes
+    ) and any(
+        isinstance(node, ast.While) for node in nodes
+    ):
+        result.add("interactive_chosen_coordinate")
     return result
 
 
 # Requirements describe mechanisms rather than target service names.
 HYPOTHESIS_RULES = (
+    ({"projective_x_scalar_arithmetic", "interactive_chosen_coordinate"},
+     "Unvalidated x-only scalar multiplication and quadratic twist",
+     "An interactive source performs projective-coordinate inversion "
+     "and bitwise scalar processing.",
+     ("Trace the client-controlled coordinate to the scalar multiplier",
+      "Check on-curve validation and subgroup-order enforcement",
+      "Compute the quadratic-twist order and inspect its factorization")),
     ({"shifted_noise_support", "linear_observation", "power_two_modulus"},
      "Noise-subgroup leakage in linear modular samples",
      "A linear observation is reduced modulo a power of two while "

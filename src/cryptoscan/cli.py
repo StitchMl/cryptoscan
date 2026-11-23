@@ -176,7 +176,12 @@ def _attack_strategies(args):
     interactive = (
         remote("Jacobian Mumford known-plaintext divisor recovery",
                extract_hyperelliptic_leak, recover_hyperelliptic_flag, 2,
-               preflight=lambda model: model.known_plaintext_suffix is not None),
+               preflight=lambda model: (
+                   model.known_plaintext_suffix is not None
+                   and len(model.known_plaintext_suffix) >= (
+                       model.genus * model.coefficient_bytes
+                   )
+               )),
         remote("Chosen-coordinate EC quadratic-twist subgroup recovery",
                extract_ec_twist, recover_ec_twist_flag, 3,
                preflight=feasible_ec_twist),

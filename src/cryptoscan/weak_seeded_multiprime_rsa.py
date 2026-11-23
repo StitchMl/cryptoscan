@@ -329,7 +329,7 @@ def _source_profile(source):
                 and isinstance(node.targets[0], ast.Name)
                 and isinstance(node.value, ast.Call)
                 and len(node.value.args) == 1
-                and isinstance(node.value.args[0], ast.GeneratorExp)):
+                and isinstance(node.value.args[0], (ast.GeneratorExp, ast.ListComp))):
             continue
         modulus = node.targets[0].id
         origin, product = _origin(node.value.func, modules, imports)

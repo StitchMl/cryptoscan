@@ -132,6 +132,41 @@ consistency and a plausible decoded text token, but ambiguous cases
 can require more observations or independent validation. It must not
 claim that this attack applies to ordinary full-support LWE errors.
 
+## Chosen-coordinate elliptic-curve quadratic-twist attacks
+
+An x-only elliptic-curve scalar multiplier can often operate on two
+groups: its intended short-Weierstrass curve and its **quadratic twist**.
+A program that accepts arbitrary `x` inputs, constructs `(x, 1)`
+as a projective point, and uses a secret scalar **without checking curve
+membership** can therefore reveal that scalar modulo factors of the
+twist's order. A prime-order *main curve* does not protect against
+a weakly factored twist.
+
+CryptoScan's source analyzer identifies untrusted x-coordinate flow
+into the projective ladder, the public field and Weierstrass
+coefficients, optional published curve order, and input checks.
+The generic mathematical core selects a twist point of verified
+order, derives its associated x-coordinate, collects one
+authorized oracle response, and applies bounded subgroup discrete
+logarithms, Pohlig–Hellman and CRT. Every recovered scalar residue
+is validated against the oracle point, and both possible signs
+are retained because x-only responses identify P and -P.
+
+```powershell
+cryptoscan twist_source.py
+cryptoscan twist_source.py --plan-attacks --format json --host HOST --port PORT
+cryptoscan twist_source.py --solve --host HOST --port PORT --timeout 60
+```
+
+The scanner flags source-only weaknesses. The planner additionally
+requires a prime field, known main-curve order, a feasible twist
+factorization, and a verified full-order twist point. This avoids
+claiming the attack is executable when group-order data is missing.
+For a secret longer than the twist order, the recovered scalar is
+**only a residue**, not necessarily the original secret; decoding
+must be unique under explicit source-derived encoding constraints.
+Unknown or ambiguous cases fail rather than fabricating a flag.
+
 ## Readable output and colors
 
 By default the terminal report is a short, color-coded finding summary

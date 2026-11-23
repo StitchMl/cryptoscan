@@ -37,6 +37,10 @@ from .hamiltonicity_workflow import extract_instance as extract_fiat_shamir_grap
 from .fiat_shamir_batch import extract_instance as extract_batch_fiat_shamir
 from .aead_diagnostics import unused_validation_flags
 from .stream_combiner_workflow import recognize_stream_cipher
+from .weak_seeded_multiprime_rsa import (
+    extract_instance as extract_weak_seeded_rsa,
+    _source_profile as weak_seeded_rsa_profile,
+)
 from .parser import (
     Document,
     flatten_objects,
@@ -1801,4 +1805,52 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
             ))
         _source_pattern_findings(doc, rules, findings)
         _cbc_source_finding(doc, findings)
+    weak_model = extract_weak_seeded_rsa(documents)
+    if weak_model is not None:
+        source = next(
+            (doc.path for doc in documents
+             if weak_seeded_rsa_profile(doc.text) is not None),
+            "<source>",
+        )
+        findings.append(Finding(
+            "RSA-WEAK-SEEDED-PRIME-GENERATOR",
+            "Deterministic RSA primes generated from limited-entropy seeds",
+            "high", "high", source,
+            {
+                "source_verified": True,
+                "first_seed_entropy_bits": weak_model.first_seed_bits,
+                "prime_candidate_bits": weak_model.prime_bits,
+                "rsa_exponent": weak_model.exponent,
+                "plaintext_upper_bound_bits": 8 * weak_model.message_bytes,
+                "modulus_bits": weak_model.modulus.bit_length(),
+            },
+            [
+                "An RSA factor originates from a predictable PRNG initialized "
+                "with an enumerable seed.",
+                "Candidate primes are checked by exact divisibility of N.",
+                "The product of recovered factors must exceed the source-proven "
+                "plaintext bound before partial CRT recovery is unique.",
+            ],
+            "Enumerate bounded PRNG seeds; regenerate possible primes and "
+            "verify exact factors of N. Decrypt modulo each known factor and "
+            "reconstruct the bounded plaintext with CRT, then re-encrypt to "
+            "verify the result.",
+            {
+                "kind": "rsa_weak_seed_partial_crt",
+                "offline": True,
+                "seed_enumeration_bounded": True,
+                "requires": ["source", "public modulus", "ciphertext"],
+            },
+            "Use a cryptographic prime generator with fresh high-entropy "
+            "randomness for every prime. Never derive large primes from a "
+            "deterministic PRNG seeded by a small secret.",
+            [
+                "Identify the PRNG, its seed entropy and its prime sampling loop.",
+                "Regenerate candidate primes for feasible seeds and check N % p == 0.",
+                "Recover enough pairwise-coprime factors that their product "
+                "exceeds the maximum plaintext integer.",
+                "Compute RSA residues with each factor, combine by CRT and "
+                "verify partial re-encryption.",
+            ],
+        ))
     return findings

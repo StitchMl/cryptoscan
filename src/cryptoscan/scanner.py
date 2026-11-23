@@ -40,6 +40,7 @@ from .stream_combiner_workflow import recognize_stream_cipher
 from .biased_shamir import _source_profile as biased_shamir_profile
 from .cyclotomic_rsa import _source_profile as cyclotomic_rsa_profile, extract_instance as extract_cyclotomic_rsa
 from .modular_noise_mixture import _source_profile as modular_noise_profile, extract_instance as extract_modular_noise
+from .ec_twist_oracle import _source_profile as ec_twist_profile
 from .weak_seeded_multiprime_rsa import (
     extract_instance as extract_weak_seeded_rsa,
     _source_profile as weak_seeded_rsa_profile,
@@ -2011,6 +2012,56 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "Solve a subset of coherent blocks for the secret residues.",
                 "Validate on independent observations and classify the "
                 "true/fake mixture, accounting for accidental decoy matches.",
+            ],
+        ))
+    for document in documents:
+        twist = ec_twist_profile(document)
+        if twist is None:
+            continue
+        findings.append(Finding(
+            "EC-UNVALIDATED-X-QUADRATIC-TWIST",
+            "Chosen x-coordinates permit quadratic-twist small-subgroup leakage",
+            "high", "high", document.path,
+            {
+                "source_verified": True,
+                "prime_field_bits": twist.field_prime.bit_length(),
+                "published_main_curve_order": twist.curve_order is not None,
+                "twist_order": (
+                    2*(twist.field_prime+1)-twist.curve_order
+                    if twist.curve_order is not None else None
+                ),
+                "x_only_arithmetic": True,
+                "user_supplied_coordinate": True,
+            },
+            [
+                "A user-provided coordinate is passed to an x-only "
+                "elliptic-curve scalar multiplier without membership validation.",
+                "Its differential addition law also operates on the "
+                "quadratic twist, whose subgroup order differs from "
+                "the advertised main curve order.",
+                "Twist subgroup factors may expose modular residues "
+                "of a reused private scalar.",
+            ],
+            "Construct a quadratic twist, factor its order when available, "
+            "choose a twist point and query the x-only oracle. Recover "
+            "the scalar residue via bounded subgroup discrete logarithms "
+            "and CRT, explicitly retaining the x-coordinate sign ambiguity.",
+            {
+                "kind": "ec_chosen_coordinate_twist_subgroup",
+                "remote": True,
+                "source_verified": True,
+                "requires": ["authorized host", "port", "twist order"],
+            },
+            "Reject invalid and twist points before multiplying by a "
+            "private scalar, or use a validated prime-order subgroup "
+            "with cofactor-safe operations and explicit input checks.",
+            [
+                "Trace untrusted coordinates into the scalar multiplier.",
+                "Determine the main and quadratic-twist group orders.",
+                "Analyze the twist's factorization and subgroup sizes.",
+                "Use discrete logarithms and CRT to infer scalar residues.",
+                "Validate that the recovered residue uniquely identifies "
+                "the original secret before claiming a plaintext.",
             ],
         ))
     return findings

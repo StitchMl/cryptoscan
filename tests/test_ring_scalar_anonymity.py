@@ -227,3 +227,23 @@ def test_equivalent_wide_random_scalar_samplers_are_detected():
         ]
         assert extract_instance(transformed) is not None
         assert recover_flag(transformed) == "TEST{generalized_ring_signature}"
+
+
+def test_unrelated_wider_generator_cannot_mask_uniform_signer_sampling():
+    docs = documents()
+    changed = source().replace("getrandbits(256)", "getrandbits(252)")
+    changed += "\ndef unrelated_sampler():\n    return random.getrandbits(512)\n"
+    assert extract_instance([
+        Document("source_sample_width", changed, None), *docs[1:],
+    ]) is None
+
+
+def test_generator_must_return_random_scalar_not_ignore_it():
+    docs = documents()
+    changed = source().replace(
+        "return random.SystemRandom().getrandbits(256)",
+        "random.SystemRandom().getrandbits(256)\n    return 17",
+    )
+    assert extract_instance([
+        Document("ignored_random_sample", changed, None), *docs[1:],
+    ]) is None

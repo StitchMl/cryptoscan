@@ -237,16 +237,19 @@ def _protocol_profile(tree, encrypt, decrypt):
             for node in ast.walk(loop)
         ):
             continue
-        banners = []
-        for node in tree.body:
-            if isinstance(node, ast.If) and isinstance(node.test, ast.Compare):
-                banners.extend([
-                    call.args[0].value for call in ast.walk(node)
-                    if isinstance(call, ast.Call) and _name(call.func) == "print"
-                    and len(call.args) == 1
-                    and isinstance(call.args[0], ast.Constant)
-                    and isinstance(call.args[0].value, str)
-                ])
+        # Some services put their banner directly at module scope;
+        # others guard startup under if __name__ == "__main__".
+        # The relevant invariant is that the banner is printed outside
+        # the interactive oracle loop.
+        loop_nodes = {id(node) for node in ast.walk(loop)}
+        banners = [
+            call.args[0].value for call in ast.walk(tree)
+            if id(call) not in loop_nodes
+            and isinstance(call, ast.Call) and _name(call.func) == "print"
+            and len(call.args) == 1
+            and isinstance(call.args[0], ast.Constant)
+            and isinstance(call.args[0].value, str)
+        ]
         banners = [s for s in banners if s not in prints]
         if len(banners) != 1:
             continue

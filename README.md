@@ -1,6 +1,36 @@
 # cryptoscan
 
 
+## Weak-seeded RSA and partial CRT recovery
+
+CryptoScan recognizes RSA prime generation built from a deterministic
+pseudorandom generator initialized with a bounded-entropy seed. The
+source-derived model includes the seed-width progression, prime sampling
+method, public exponent and an explicit plaintext-size upper bound.
+Known candidate primes are regenerated and tested by exact divisibility
+of the public modulus; no factor or seed from a named CTF is embedded.
+
+**Full factorization is not necessary.** For recovered factors p_i,
+the solver reconstructs the message residue modulo each p_i and combines
+those values with CRT. If their product M exceeds the source-proven
+message upper bound, the entire plaintext is uniquely determined.
+The result must pass partial RSA re-encryption and CTF text validation.
+
+Supported PRNG sampling variants include getrandbits, _randbelow and
+randrange, plus intermediate seed/prime assignments and alternative
+product-comprehension structures. The source weakness is reported even
+without a ciphertext, but solving remains gated on matching public data.
+
+Use `cryptoscan . --plan-attacks --format json` to inspect the candidate
+family, or `cryptoscan . --solve --seed-search-limit 16384` to explicitly
+increase the bounded search budget. The default is 4096 seeds.
+
+### Scope
+
+The attack only applies when limited entropy makes some factor seeds
+enumerable and when enough recovered factors exceed a known message
+bound. Other RSA constructions cannot be assumed vulnerable.
+
 ## Readable output and colors
 
 By default the terminal report is a short, color-coded finding summary

@@ -20,6 +20,7 @@ from .polynomial_gcd_prefix import construct_input as construct_polynomial_gcd_i
 from .weak_seeded_multiprime_rsa import extract_instance as extract_weak_seeded_rsa, recover_flag as recover_weak_seeded_rsa_flag
 from .cyclotomic_rsa import extract_instance as extract_cyclotomic_rsa, recover_flag as recover_cyclotomic_rsa_flag
 from .modular_noise_mixture import extract_instance as extract_modular_noise, recover_flag as recover_modular_noise_flag
+from .hyperelliptic_state_leak import extract_instance as extract_hyperelliptic_leak
 from .ec_twist_oracle import extract_instance as extract_ec_twist, recover_flag as recover_ec_twist_flag
 from .ec_twist_oracle import feasible_twist as feasible_ec_twist
 from .biased_shamir import extract_instance as extract_biased_shamir, recover_flag as recover_biased_shamir_flag
@@ -211,6 +212,25 @@ def _attack_strategies(args):
     return offline + interactive
 
 
+def _analysis_strategies():
+    """Source-derived mathematical investigations without a flag solver.
+
+    Investigations have no executor and can only appear in --plan-attacks:
+    they are never passed to execute_plan or activated by --solve.
+    """
+    return (
+        Strategy(
+            "Hyperelliptic Mumford-state curve reconstruction",
+            "analysis",
+            extract_hyperelliptic_leak,
+            lambda docs: (_ for _ in ()).throw(
+                RuntimeError("analysis-only; flag solver not implemented"),
+            ),
+            rank=10,
+        ),
+    )
+
+
 def _unique_streams(documents):
     instances = recognize_stream_cipher(documents)
     if len(instances) > 1:
@@ -235,6 +255,12 @@ def _candidate_plan(args, documents):
         )
         plan.candidates.extend(scoped.candidates)
         plan.rejected.extend(scoped.rejected)
+        if args.plan_attacks:
+            analysis = build_plan(
+                _analysis_strategies(), scoped_documents,
+                mode="analysis", scope=scope,
+            )
+            plan.investigations.extend(analysis.candidates)
     plan.candidates.sort(key=lambda item: (
         item.strategy.rank, item.scope, item.family,
     ))
@@ -441,7 +467,9 @@ def main(argv: list[str] | None = None) -> int:
         print("Applicable attack families:")
         for candidate in plan.candidates:
             print(f"  - {candidate.family} ({candidate.strategy.backend})")
-        if not plan.candidates:
+        for candidate in plan.investigations:
+            print(f"  - {candidate.family} [analysis only; no flag solver]")
+        if not plan.candidates and not plan.investigations:
             print("  none with verified source preconditions")
         if args.verbose:
             for rejected in plan.rejected:

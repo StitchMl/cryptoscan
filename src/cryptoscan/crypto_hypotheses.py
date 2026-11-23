@@ -129,6 +129,14 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
         for node in nodes
     ):
         result.add("sum_of_scaled_terms")
+    if (any(isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"sha256", "sha512", "blake2b"}
+            for node in nodes)
+            and any(isinstance(node, ast.Attribute)
+                    and node.attr in {"MODE_CBC", "MODE_CTR", "MODE_GCM"}
+                    for node in nodes)):
+        result.add("hash_key_material")
     return result
 
 
@@ -144,7 +152,7 @@ HYPOTHESIS_RULES = (
      "Arrays of responses include modular reductions and a separate random sampler.",
      ("Trace sampled scalars into each signer response array",
       "Compare the true and decoy distributions and check statistical significance")),
-    ({"inverse_conjugation", "key_derivation"},
+    ({"inverse_conjugation", "hash_key_material"},
      "Conjugation equivalent-key recovery",
      "An algebraic inverse conjugation and symmetric-key derivation occur together.",
      ("Build the noncommutative equation graph and locate commuting public powers",

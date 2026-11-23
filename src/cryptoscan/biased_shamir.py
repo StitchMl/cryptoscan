@@ -79,14 +79,14 @@ def _bound_difference(node):
 
 
 def _sampler_imports(tree):
-    """Bind a sampling API to trusted standard/Crypto modules."""
+    """Resolve sampler API aliases while preserving inclusive/exclusive bounds."""
     known = {
         "getRandomRange": "Crypto.Util.number",
         "randbelow": "secrets",
         "randrange": "random",
         "randint": "random",
     }
-    names, modules = set(), set()
+    names, modules = {}, {}
     for statement in tree.body:
         if isinstance(statement, ast.ImportFrom):
             if statement.module not in set(known.values()):
@@ -94,15 +94,15 @@ def _sampler_imports(tree):
             for alias in statement.names:
                 if alias.name == "*":
                     names.update(
-                        name for name, module in known.items()
-                        if module == statement.module
+                        {name: name for name, module in known.items()
+                         if module == statement.module}
                     )
                 elif known.get(alias.name) == statement.module:
-                    names.add(alias.asname or alias.name)
+                    names[alias.asname or alias.name] = alias.name
         elif isinstance(statement, ast.Import):
             for alias in statement.names:
                 if alias.name in set(known.values()):
-                    modules.add(alias.asname or alias.name)
+                    modules[alias.asname or alias.name] = alias.name
     return names, modules
 
 
@@ -112,19 +112,21 @@ def _sampler_bound(node, permitted):
     names, modules = permitted
     func = node.func
     if isinstance(func, ast.Name):
-        if func.id not in names:
-            return None
-        method = func.id
-        # Renamed imports retain API semantics; infer from arity.
+        method = names.get(func.id)
     elif (isinstance(func, ast.Attribute)
-            and isinstance(func.value, ast.Name)
-            and func.value.id in modules):
-        method = func.attr
+            and isinstance(func.value, ast.Name)):
+        module = modules.get(func.value.id)
+        permitted_methods = {
+            "Crypto.Util.number": ("getRandomRange",),
+            "random": ("randrange", "randint"),
+            "secrets": ("randbelow",),
+        }
+        method = func.attr if func.attr in permitted_methods.get(module, ()) else None
     else:
         return None
-    if method in ("getRandomRange", "randint") or (
-            method in ("randrange",) and len(node.args) == 2
-    ) or (method in names and len(node.args) == 2):
+    if method is None:
+        return None
+    if method in ("getRandomRange", "randint"):
         if len(node.args) != 2:
             return None
         low, high = node.args
@@ -133,12 +135,16 @@ def _sampler_bound(node, permitted):
         bound = _bound_difference(high)
         if bound and method == "randint":
             member, name, difference = bound
-            if difference <= 1:
-                return None
-            return member, name, difference - 1
+            return (member, name, difference - 1) if difference >= 2 else None
         return bound
-    if method in ("randbelow", "randrange") or (
-            method in names and len(node.args) == 1):
+    if method == "randrange":
+        if len(node.args) == 1:
+            return _bound_difference(node.args[0])
+        if (len(node.args) == 2 and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == 0):
+            return _bound_difference(node.args[1])
+        return None
+    if method == "randbelow":
         return _bound_difference(node.args[0]) if len(node.args) == 1 else None
     return None
 

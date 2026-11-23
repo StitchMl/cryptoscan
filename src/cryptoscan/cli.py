@@ -10,6 +10,7 @@ from .crypto_hypotheses import inspect_hypotheses
 from .masked_ec_signature import extract_instance as extract_masked_ec, recover_flag as recover_masked_ec_flag
 from .affine_ec_leak import extract_instance as extract_affine_ec_leak, recover_flag as recover_affine_ec_leak_flag
 from .quaternion_equivalent_key import extract_instance as extract_quaternion_key, recover_flag as recover_quaternion_flag
+from .polynomial_gcd_prefix import extract_instance as extract_polynomial_gcd_prefix, recover_flag as recover_polynomial_gcd_prefix_flag
 from .cookie import main as cookie_main
 from .assistant import assistant_session
 from .diagnostics import diagnose_runtime
@@ -86,6 +87,11 @@ def _execute_recovery(label, solver, *parameters, **options) -> int:
 
 
 def _solve_remote(args, documents) -> int | None:
+    if extract_polynomial_gcd_prefix(documents) is not None:
+        return _execute_recovery(
+            "Polynomial GCD prefix oracle", recover_polynomial_gcd_prefix_flag,
+            documents, args.host, args.port, timeout=args.timeout,
+        )
     if extract_reducible_glp(documents) is not None:
         return _execute_recovery(
             "Reducible cyclic-ring signature", recover_reducible_glp_flag,
@@ -228,6 +234,13 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    gcd_prefix = extract_polynomial_gcd_prefix(documents)
+    if gcd_prefix is not None:
+        print("Detected: attacker-controlled polynomial GCD determines "
+              "secret output length; resultant and linear-subresultant "
+              "modular-root recovery available "
+              f"(degrees {gcd_prefix.first.degree()} and "
+              f"{gcd_prefix.second.degree()}).")
     quaternion = extract_quaternion_key(documents)
     if quaternion is not None:
         print("Detected: equivalent quaternion conjugation key from "

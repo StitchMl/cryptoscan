@@ -167,3 +167,28 @@ def test_affine_ec_wrong_coefficient_pairing_is_not_accepted():
         Document("bad_algebraic_source", wrong, None),
         Document("new_transcript", invented_output(), None),
     ]) is None
+
+
+def test_affine_ec_ast_normalizes_parenthesized_point_sums():
+    """The same group relation can be formatted with nested parentheses."""
+    source = invented_source().replace(
+        "alpha * A + beta * B",
+        "(alpha * A) + (beta * B)",
+    )
+    model = extract_instance([
+        Document("unseen_ec_source.sage", source, None),
+        Document("unseen_ec_output.txt", invented_output(), None),
+    ])
+    assert model is not None
+    assert len(model.records) == 3
+
+
+def test_affine_ec_ast_rejects_unrelated_public_equation():
+    source = invented_source().replace(
+        "alpha * A + beta * B",
+        "(alpha * B) + (beta * B)",
+    )
+    assert extract_instance([
+        Document("unrelated_source.sage", source, None),
+        Document("unseen_ec_output.txt", invented_output(), None),
+    ]) is None

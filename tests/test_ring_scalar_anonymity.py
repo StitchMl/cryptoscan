@@ -182,3 +182,28 @@ def test_equal_width_simulated_scalars_do_not_trigger_anonymity_attack():
         assert extract_instance([
             Document("renamed_source", transformed, None), *docs[1:],
         ]) is None
+
+
+def test_wide_random_source_must_feed_signer_not_unrelated_code():
+    """Unrelated random sampling elsewhere must not prove a signer bias."""
+    docs = documents()
+    source_text = source().replace(
+        "responses_a = [sample_response() for _ in group]",
+        "responses_a = [1 for _ in group]",
+    ).replace(
+        "responses_b = [sample_response() for _ in group]",
+        "responses_b = [2 for _ in group]",
+    )
+    assert extract_instance([
+        Document("unrelated_random_source", source_text, None), *docs[1:],
+    ]) is None
+
+
+def test_direct_group_order_symbol_is_accepted():
+    docs = documents()
+    source_text = source().replace("ed25519.l", "l")
+    transformed = [
+        Document("different_source", source_text, None), *docs[1:],
+    ]
+    assert extract_instance(transformed) is not None
+    assert recover_flag(transformed) == "TEST{generalized_ring_signature}"

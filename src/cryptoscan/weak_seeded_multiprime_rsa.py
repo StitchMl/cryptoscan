@@ -101,8 +101,15 @@ def _origin(func, modules, functions):
     return None, None
 
 
-def _bounded_seed(node, argument, modules, functions):
-    """Recognize a seed bounded by a symbolic 2**k or k-bit draw."""
+def _bounded_seed(node, argument, modules, functions, definitions=None,
+                  seen=frozenset()):
+    """Recognize bounded seeds, including intermediate source aliases."""
+    if (isinstance(node, ast.Name) and definitions is not None
+            and node.id in definitions and node.id not in seen):
+        return _bounded_seed(
+            definitions[node.id], argument, modules, functions,
+            definitions, seen | {node.id},
+        )
     if not (isinstance(node, ast.Call) and len(node.args) == 1):
         return False
     module, name = _origin(node.func, modules, functions)
@@ -124,6 +131,7 @@ def _seeded_rng(function, modules, imports):
         return None
     argument = function.args.args[0].arg
     allocated, seeded_at = set(), {}
+    local_definitions = _definitions(function.body)
     for statement in function.body:
         if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
             target = _name(statement.targets[0])
@@ -132,7 +140,8 @@ def _seeded_rng(function, modules, imports):
                 module, name = _origin(value.func, modules, imports)
                 if module in ("random", None) and name == "Random" and len(value.args) <= 1:
                     allocated.add(target)
-                    if value.args and _bounded_seed(value.args[0], argument, modules, imports):
+                    if value.args and _bounded_seed(value.args[0], argument, modules, imports,
+                                                       local_definitions):
                         seeded_at[target] = statement.lineno
         for node in ast.walk(statement):
             if (isinstance(node, ast.Call)
@@ -140,7 +149,8 @@ def _seeded_rng(function, modules, imports):
                     and _name(node.func.value) in allocated
                     and node.func.attr == "seed"
                     and len(node.args) == 1
-                    and _bounded_seed(node.args[0], argument, modules, imports)):
+                    and _bounded_seed(node.args[0], argument, modules, imports,
+                                      local_definitions)):
                 name = _name(node.func.value)
                 seeded_at[name] = min(seeded_at.get(name, node.lineno), node.lineno)
     if len(seeded_at) != 1:
@@ -165,13 +175,29 @@ def _power_of_two_bits(node, definitions):
     return None
 
 
-def _prime_draw(node, rng, definitions):
+def _prime_draw(node, rng, definitions, seen=frozenset()):
+    # Resolve the call that supplies a prime candidate through local
+    # assignments, but do not interpret code or follow cyclic definitions.
+    if isinstance(node, ast.Name) and node.id in definitions and node.id not in seen:
+        return _prime_draw(
+            definitions[node.id], rng, definitions, seen | {node.id},
+        )
     mask = 0
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         if (v := _integer(node.right, definitions)) is not None:
             mask, node = v, node.left
         elif (v := _integer(node.left, definitions)) is not None:
             mask, node = v, node.right
+    if (isinstance(node, ast.Name) and node.id in definitions and node.id not in seen):
+        returned = _prime_draw(
+            definitions[node.id], rng, definitions, seen | {node.id},
+        )
+        if returned is not None:
+            bits, method, inherited_mask = returned
+            combined_mask = mask | inherited_mask
+            if combined_mask & 1 and combined_mask.bit_length() <= bits:
+                return bits, method, combined_mask
+        return None
     if not (isinstance(node, ast.Call) and len(node.args) == 1
             and isinstance(node.func, ast.Attribute)
             and _name(node.func.value) == rng):
@@ -204,12 +230,15 @@ def _prime_generator(function, modules, imports, definitions):
             if (name := _name(node.args[0])) is not None:
                 prime_vars.add(name)
     draws = []
+    local_definitions = _definitions(ast.walk(function))
+    # A candidate target can have multiple assignments; its sampling
+    # expression is identified only by exact PRNG data flow.
     for node in ast.walk(function):
         if (isinstance(node, ast.Assign)
                 and len(node.targets) == 1
                 and (target := _name(node.targets[0])) in prime_vars
                 and node.lineno > seed_line):
-            draw = _prime_draw(node.value, rng, definitions)
+            draw = _prime_draw(node.value, rng, {**definitions, **local_definitions})
             if draw:
                 draws.append((target, draw))
     if len(draws) != 1:

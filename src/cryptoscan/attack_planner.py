@@ -48,6 +48,7 @@ class Rejected:
 class AttackPlan:
     candidates: list[Candidate] = field(default_factory=list)
     rejected: list[Rejected] = field(default_factory=list)
+    investigations: list[Candidate] = field(default_factory=list)
 
     def describe(self) -> list[dict[str, object]]:
         return [
@@ -60,6 +61,18 @@ class AttackPlan:
                 "scope": candidate.scope,
             }
             for candidate in self.candidates
+        ] + [
+            {
+                "family": candidate.family,
+                "status": "analysis-only",
+                "scope": candidate.scope,
+                "backend": candidate.strategy.backend,
+                "reason": (
+                    "Mathematical analysis available; no verified "
+                    "plaintext-recovery solver"
+                ),
+            }
+            for candidate in self.investigations
         ] + [
             {"family": rejected.family, "status": "unavailable",
              "reason": rejected.reason}

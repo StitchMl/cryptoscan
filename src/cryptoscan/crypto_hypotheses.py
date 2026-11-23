@@ -14,6 +14,7 @@ from typing import Sequence
 from .parser import Document
 from .source_units import MAX_SOURCE_LENGTH, parse_python
 from .hyperelliptic_state_leak import _sage_tree
+from .reciprocal_rabin_oracle import _crt_functions
 
 
 @dataclass(frozen=True)
@@ -263,11 +264,55 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
         isinstance(node, ast.While) for node in nodes
     ):
         result.add("interactive_chosen_coordinate")
+    crt_combiners = _crt_functions(tree)
+    if crt_combiners:
+        result.add("crt_residue_recombination")
+        # This recognizes repeated calls into a factor-wise computation
+        # without assuming the specific root extraction algorithm.
+        for function in tree.body:
+            if not isinstance(function, ast.FunctionDef):
+                continue
+            calls = [
+                node for node in ast.walk(function)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id not in crt_combiners
+            ]
+            by_function = {}
+            for call in calls:
+                by_function.setdefault(call.func.id, []).append(call)
+            if not any(
+                len(invocations) >= 2
+                and len({
+                    (arg.value.id, arg.attr)
+                    for call in invocations for arg in call.args
+                    if isinstance(arg, ast.Attribute)
+                    and isinstance(arg.value, ast.Name)
+                }) >= 2
+                for invocations in by_function.values()
+            ):
+                continue
+            if any(
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id in crt_combiners
+                for call in calls
+            ):
+                result.add("factorwise_crt_computation")
+                break
     return result
 
 
 # Requirements describe mechanisms rather than target service names.
 HYPOTHESIS_RULES = (
+    ({"factorwise_crt_computation", "crt_residue_recombination",
+      "interaction"},
+     "CRT component-consistency and chosen-ciphertext oracle",
+     "An interactive computation repeats a factor-wise operation and "
+     "recombines results via CRT, requiring validation of every residue.",
+     ("Trace whether attacker-controlled ciphertexts reach both factor-wise operations",
+      "Verify that each modular root is correct before CRT recombination",
+      "Compare re-encryption across auxiliary ciphertext selectors")),
     ({"hyperelliptic_curve", "jacobian_construction",
       "binary_coefficient_serialization", "xor_operator", "interaction"},
      "Hyperelliptic Jacobian state exposure under chosen plaintext",

@@ -42,6 +42,7 @@ from .cyclotomic_rsa import _source_profile as cyclotomic_rsa_profile, extract_i
 from .modular_noise_mixture import _source_profile as modular_noise_profile, extract_instance as extract_modular_noise
 from .ec_twist_oracle import _source_profile as ec_twist_profile
 from .hyperelliptic_state_leak import _source_profile as hyperelliptic_leak_profile
+from .reciprocal_rabin_oracle import _source_profile as reciprocal_rabin_profile
 from .weak_seeded_multiprime_rsa import (
     extract_instance as extract_weak_seeded_rsa,
     _source_profile as weak_seeded_rsa_profile,
@@ -2121,6 +2122,57 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "Use the Mumford congruence to recover the hidden curve.",
                 "Determine whether the secret ciphertext can be decrypted "
                 "with enough uniquely constrained state information.",
+            ],
+        ))
+    for document in documents:
+        reciprocal = reciprocal_rabin_profile(document)
+        if reciprocal is None:
+            continue
+        findings.append(Finding(
+            "RABIN-RECIPROCAL-CRT-ORACLE-FAULT",
+            "Faulty quadratic roots disclose CRT factors through re-encryption",
+            "high", "high", document.path,
+            {
+                "source_verified": True,
+                "factor_bits": reciprocal.factor_bits,
+                "ciphertext_fields": list(reciprocal.ciphertext_labels),
+                "chosen_ciphertext_oracle": True,
+                "decrypt_then_reencrypt": True,
+                "public_modulus_required_before_attack": False,
+            },
+            [
+                "An attacker can choose the reciprocal-Rabin ciphertext "
+                "coefficient and its auxiliary disambiguation bits.",
+                "The decryptor solves quadratic equations independently "
+                "modulo two secret primes and recombines candidate roots "
+                "with CRT, without first proving that roots exist.",
+                "An observable decrypt-then-reencrypt service returns "
+                "ciphertexts or an explicit exception marker.",
+                "Re-encrypted coefficients may differ in only one CRT "
+                "component, producing differences divisible by a secret prime.",
+            ],
+            "Query the same quadratic coefficient with all auxiliary "
+            "selector combinations. Collect distinct re-encrypted "
+            "coefficients and pairwise gcd their differences to infer "
+            "private factors. Derive the unknown reciprocal constant from "
+            "the root-sum relation, then decrypt the captured ciphertext "
+            "and verify full re-encryption.",
+            {
+                "kind": "reciprocal_rabin_crt_fault",
+                "remote": True,
+                "source_verified": True,
+                "requires": ["authorized host", "port"],
+            },
+            "Reject ciphertexts whose quadratic discriminants are not "
+            "residues for both factors, enforce correct root extraction, "
+            "and never expose a decryption/re-encryption discrepancy oracle.",
+            [
+                "Identify the invertible-message reciprocal equation.",
+                "Trace source-specific root solvers and CRT recombination.",
+                "Compare four selector responses for identical input r.",
+                "Recover private factors from GCD of response differences.",
+                "Solve the recovered root-sum system for the public constant.",
+                "Certify the final plaintext by re-encrypting it.",
             ],
         ))
     return findings

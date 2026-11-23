@@ -451,3 +451,21 @@ def test_root_rejection_branch_is_not_an_unchecked_fault_oracle():
     assert extract_instance([
         Document("root_rejected_before_crt.py", source, None)
     ]) is None
+
+
+def test_unrelated_three_field_data_classes_are_ignored():
+    source = _fresh_source(bits=52)
+    extra = """
+@dataclass
+class UnrelatedRecord:
+    direction: int
+    timestamp: int
+    resource: int
+
+"""
+    source = source.replace("def draw_prime(width):", extra+"def draw_prime(width):")
+    profile = extract_instance([
+        Document("multiple_classes.py", source, None)
+    ])
+    assert profile is not None
+    assert profile.ciphertext_labels == ("alpha", "beta", "gamma")

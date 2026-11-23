@@ -220,6 +220,40 @@ def _key_initialized_before(tree, bit_loop, key_arg, generators):
     return False
 
 
+def _selector_relation(expression, authentic, decoy):
+    """Identify authentic selector bit across equivalent dispatch syntax."""
+    if isinstance(expression, ast.Subscript):
+        index = _name(expression.slice)
+        if index is None:
+            return None
+        if isinstance(expression.value, (ast.List, ast.Tuple)):
+            names = [_name(item) for item in expression.value.elts]
+            if len(names) == 2 and set(names) == {authentic, decoy}:
+                return index, names.index(authentic)
+        if isinstance(expression.value, ast.Dict):
+            values = {
+                _const(key): _name(value)
+                for key, value in zip(expression.value.keys,
+                                      expression.value.values)
+            }
+            if set(values) == {0, 1} and set(values.values()) == {
+                    authentic, decoy}:
+                return index, next(bit for bit in values
+                                   if values[bit] == authentic)
+    if isinstance(expression, ast.IfExp):
+        condition = expression.test
+        if (isinstance(condition, ast.Compare)
+                and len(condition.ops) == 1
+                and isinstance(condition.ops[0], ast.Eq)
+                and len(condition.comparators) == 1
+                and (index := _name(condition.left)) is not None
+                and (branch := _const(condition.comparators[0])) in (0, 1)):
+            yes, no = _name(expression.body), _name(expression.orelse)
+            if {yes, no} == {authentic, decoy}:
+                return index, branch if yes == authentic else 1 - branch
+    return None
+
+
 def _source_profile(source):
     if not source or len(source) > _MAX_SOURCE:
         return None
@@ -253,16 +287,12 @@ def _source_profile(source):
     for node in ast.walk(tree):
         if not (isinstance(node, ast.ListComp) and len(node.generators) == 1
                 and isinstance(node.elt, ast.Call)
-                and len(node.elt.args) == 1
-                and isinstance(node.elt.func, ast.Subscript)
-                and isinstance(node.elt.func.value, (ast.List, ast.Tuple))):
+                and len(node.elt.args) == 1):
             continue
-        options = node.elt.func.value.elts
-        if len(options) != 2:
+        relation = _selector_relation(node.elt.func, real_name, decoy_name)
+        if relation is None:
             continue
-        order = [_name(item) for item in options]
-        if set(order) != {real_name, decoy_name}:
-            continue
+        selector_name, real_bit = relation
         loop = node.generators[0].iter
         if not (_call(loop, "range") and len(loop.args) == 1):
             continue
@@ -271,27 +301,20 @@ def _source_profile(source):
             continue
         parents = [
             parent for parent in ast.walk(tree)
-            if isinstance(parent, (ast.For, ast.ListComp))
+            if isinstance(parent, ast.For)
             and node is not parent
             and any(child is node for child in ast.walk(parent))
-        ]
-        if not any(
-            isinstance(parent, ast.For)
             and isinstance(parent.iter, ast.Call)
             and _name(parent.iter.func) in bit_functions
-            for parent in parents
-        ):
-            continue
+            and _name(parent.target) == selector_name
+        ]
         key_arg = _name(node.elt.args[0])
         if key_arg is not None and any(
             _key_initialized_before(tree, parent, key_arg, keys)
             for parent in parents
-            if isinstance(parent, ast.For)
-            and isinstance(parent.iter, ast.Call)
-            and _name(parent.iter.func) in bit_functions
         ):
             candidates.append((next(iter(keys.values())), real[1], real[2],
-                               samples, order.index(real_name)))
+                               samples, real_bit))
     return candidates[0] if len(candidates) == 1 else None
 
 

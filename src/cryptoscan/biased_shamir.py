@@ -40,6 +40,7 @@ class BiasedShamirOracle:
     count_prompt: str
     secret_prompt: str
     shares_label: str
+    server_alarm: int | None = None
 
 
 def _symbol(node):
@@ -344,6 +345,20 @@ def _sharing_print(tree):
     return next(iter(outputs)) if len(outputs) == 1 else None
 
 
+def _server_deadline(tree):
+    values = {
+        node.args[0].value
+        for node in ast.walk(tree)
+        if (isinstance(node, ast.Call) and len(node.args) == 1
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "alarm"
+            and isinstance(node.args[0], ast.Constant)
+            and type(node.args[0].value) is int
+            and 1 <= node.args[0].value <= 3600)
+    }
+    return next(iter(values)) if len(values) == 1 else None
+
+
 def _source_profile(document):
     if not document.text or len(document.text) > _MAX_SOURCE:
         return None
@@ -462,6 +477,7 @@ def _source_profile(document):
                 candidates.append(BiasedShamirOracle(
                     bound, excluded, lower, prompts[public_p],
                     prompts[public_n], secrets.pop(), label,
+                    _server_deadline(tree),
                 ))
     return candidates[0] if len(candidates) == 1 else None
 
@@ -691,8 +707,11 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         raise ValueError("source does not prove a biased Shamir oracle")
     if not 1 <= max_queries <= 10000:
         raise ValueError("invalid interactive share-query budget")
-    # Source includes a 30-second alarm; reserve time for final submission.
-    budget = min(float(timeout), 27.0)
+    # Reserve a small margin for the final submission. Do not assume
+    # that unrelated protocols have this challenge's wall-clock limit.
+    budget = float(timeout)
+    if profile.server_alarm is not None:
+        budget = min(budget, max(0.1, profile.server_alarm - 3.0))
     if budget <= 0:
         raise ValueError("timeout must be positive")
     with socket.create_connection((host, port), timeout=timeout) as conn:

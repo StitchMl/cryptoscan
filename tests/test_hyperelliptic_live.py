@@ -164,6 +164,12 @@ def test_cli_investigate_json_is_one_document(tmp_path, monkeypatch, capsys):
     assert result["investigation"]["curve_polynomial"] == [
         str(c) for c in polynomial
     ]
+    assert bytes.fromhex(
+        result["investigation"]["public_ciphertext_hex"]
+    ) == ciphertext
+    assert bytes.fromhex(
+        result["investigation"]["chosen_keystream_hex"]
+    ) == stream
 
 
 def test_cli_solve_uses_verification_and_never_networks_during_planning(

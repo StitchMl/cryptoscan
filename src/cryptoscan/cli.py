@@ -335,21 +335,26 @@ def main(argv: list[str] | None = None) -> int:
     _validate_arguments(args)
     documents = collect_documents(args.targets)
     findings = scan(documents, args.fermat_steps)
+    if args.plan_attacks and args.format == "json":
+        plan = _candidate_plan(args, documents)
+        print(json.dumps({
+            "schema_version": 1,
+            "findings": [item.to_dict() for item in findings],
+            "attack_plan": plan.describe(),
+        }, sort_keys=True, indent=2, ensure_ascii=False))
+        return 0
     _print_report(args, findings)
     _report_supported_protocols(args, documents)
     if args.plan_attacks:
         plan = _candidate_plan(args, documents)
-        if args.format == "json":
-            print(json.dumps({"attack_plan": plan.describe()}, indent=2))
-        else:
-            print("Applicable attack families:")
-            for candidate in plan.candidates:
-                print(f"  - {candidate.family} ({candidate.strategy.backend})")
-            if not plan.candidates:
-                print("  none with verified source preconditions")
-            if args.verbose:
-                for rejected in plan.rejected:
-                    print(f"  skipped {rejected.family}: {rejected.reason}")
+        print("Applicable attack families:")
+        for candidate in plan.candidates:
+            print(f"  - {candidate.family} ({candidate.strategy.backend})")
+        if not plan.candidates:
+            print("  none with verified source preconditions")
+        if args.verbose:
+            for rejected in plan.rejected:
+                print(f"  skipped {rejected.family}: {rejected.reason}")
         return 0
     if args.format == "text" and not findings:
         hypotheses = inspect_hypotheses(documents)

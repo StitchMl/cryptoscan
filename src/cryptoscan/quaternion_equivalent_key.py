@@ -32,6 +32,38 @@ class QuaternionConjugationLeak:
     iv: bytes
 
 
+def _symbol_name(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+            and node.value.id == "self"):
+        return node.attr
+    return None
+
+
+def _has_tuple_return(tree, names):
+    return any(
+        isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Tuple)
+        and len(node.value.elts) == len(names) + 1
+        and tuple(_symbol_name(value) for value in node.value.elts[1:])
+        == tuple(names)
+        and _symbol_name(node.value.elts[0]) is not None
+        for node in ast.walk(tree)
+    )
+
+
+def _has_ciphertext_return(tree, masked, observed):
+    return any(
+        isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Tuple)
+        and len(node.value.elts) == 3
+        and _symbol_name(node.value.elts[1]) == masked
+        and _symbol_name(node.value.elts[2]) == observed
+        for node in ast.walk(tree)
+    )
+
+
 def _source_shape(source: str) -> bytes | None:
     """Accept only a linked conjugation-and-double-mask source structure."""
     if len(source) > 1_000_000:
@@ -110,19 +142,10 @@ def _source_shape(source: str) -> bytes | None:
         rf"\s*\)\.encode\(\s*\)\s*\)\.digest\(\s*\)", source,
     ):
         return None
-    # Require the exact public order and ciphertext order written by source.
-    public = re.search(
-        r"(?s)def\s+pub\s*\([^)]*\).*?return\s*\(\s*\w+\s*,"
-        rf"\s*{re.escape(alpha)}\s*,\s*{re.escape(beta)}"
-        rf"\s*,\s*{re.escape(gamma)}\s*\)", equations,
-    )
-    if public is None:
+    # Observe tuple positions, not the name of the public accessor.
+    if not _has_tuple_return(tree, (alpha, beta, gamma)):
         return None
-    encrypted = re.search(
-        rf"(?s)return\s*\(\s*\w+\s*,\s*{re.escape(mu.group(1))}\s*,"
-        rf"\s*{re.escape(eps.group(1))}\s*\)", equations,
-    )
-    if encrypted is None:
+    if not _has_ciphertext_return(tree, mu.group(1), eps.group(1)):
         return None
     # Extract the CBC IV without executing input source.
     iv_values = []

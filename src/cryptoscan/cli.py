@@ -21,6 +21,8 @@ from .weak_seeded_multiprime_rsa import extract_instance as extract_weak_seeded_
 from .cyclotomic_rsa import extract_instance as extract_cyclotomic_rsa, recover_flag as recover_cyclotomic_rsa_flag
 from .modular_noise_mixture import extract_instance as extract_modular_noise, recover_flag as recover_modular_noise_flag
 from .hyperelliptic_state_leak import extract_instance as extract_hyperelliptic_leak
+from .reciprocal_rabin_oracle import (extract_instance as extract_reciprocal_rabin,
+    recover_flag as recover_reciprocal_rabin_flag)
 from .hyperelliptic_live import (investigate as investigate_hyperelliptic,
     recover_flag as recover_hyperelliptic_flag,
     source_input_prompt as hyperelliptic_input_prompt)
@@ -174,6 +176,8 @@ def _attack_strategies(args):
             preflight=preflight,
         )
     interactive = (
+        remote("Faulty reciprocal-Rabin CRT re-encryption oracle",
+               extract_reciprocal_rabin, recover_reciprocal_rabin_flag, 1),
         remote("Jacobian Mumford known-plaintext divisor recovery",
                extract_hyperelliptic_leak, recover_hyperelliptic_flag, 2,
                preflight=lambda model: (
@@ -361,6 +365,13 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    reciprocal = extract_reciprocal_rabin(documents)
+    if reciprocal is not None:
+        print("Detected: reciprocal-Rabin encryption with per-prime "
+              "quadratic-root recovery and a chosen-ciphertext "
+              "decrypt-then-reencrypt oracle. Invalid-root CRT "
+              "inconsistency can leak the hidden modulus factors "
+              f"({reciprocal.factor_bits}-bit factors).")
     twist = extract_ec_twist(documents)
     if twist is not None:
         print("Detected: unvalidated x-only elliptic-curve scalar oracle; "

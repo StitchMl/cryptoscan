@@ -157,11 +157,42 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
                     and node.attr in {"MODE_CBC", "MODE_CTR", "MODE_GCM"}
                     for node in nodes)):
         result.add("hash_key_material")
+    if any(
+        isinstance(node, ast.Call) and len(node.args) >= 1
+        and ((isinstance(node.func, ast.Name)
+              and node.func.id in {"getRandomRange", "randbelow", "randrange"})
+             or (isinstance(node.func, ast.Attribute)
+                 and node.func.attr in {"getRandomRange", "randbelow", "randrange"}))
+        and isinstance(node.args[-1], ast.BinOp)
+        and isinstance(node.args[-1].op, ast.Sub)
+        and isinstance(node.args[-1].right, ast.Constant)
+        and type(node.args[-1].right.value) is int
+        and node.args[-1].right.value > 0
+        for node in nodes
+    ):
+        result.add("restricted_polynomial_sampler")
+    if any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "pow" and len(node.args) == 3
+        for node in nodes
+    ) and any(
+        isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod)
+        for node in nodes
+    ):
+        result.add("modular_polynomial_evaluation")
     return result
 
 
 # Requirements describe mechanisms rather than target service names.
 HYPOTHESIS_RULES = (
+    ({"restricted_polynomial_sampler", "modular_polynomial_evaluation",
+      "interaction"},
+     "Potential coefficient-support leakage in polynomial secret sharing",
+     "A field polynomial is evaluated while a random sampler appears to "
+     "omit part of its coefficient support.",
+     ("Determine the coefficient support and whether every field value can occur",
+      "Check whether independent share rounds use a fixed secret and "
+      "whether missing coefficients restrict secret candidates")),
     ({"gcd_operation", "computed_output_slice", "interaction"},
      "Attacker-controlled polynomial GCD information leak",
      "An attacker-controlled input influences an integer GCD and the length of an output.",

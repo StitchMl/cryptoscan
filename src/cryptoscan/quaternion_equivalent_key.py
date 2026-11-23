@@ -34,10 +34,32 @@ class QuaternionConjugationLeak:
 
 def _source_shape(source: str) -> bytes | None:
     """Accept only a linked conjugation-and-double-mask source structure."""
-    if len(source) > 1_000_000 or not all(x in source for x in (
-        "class Q:", "def invert(", "def __mul__(", "AES.MODE_CBC",
-        "hashlib.sha256(str(", "pad(", "getPrime(", "def __str__(",
-    )):
+    if len(source) > 1_000_000:
+        return None
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    # Detect the required algebra interface by methods rather than the
+    # implementation's class name. A renamed quaternion class is equivalent.
+    classes = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+        and {"__mul__", "invert", "__str__"} <= {
+            method.name for method in node.body
+            if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+    ]
+    if len(classes) != 1:
+        return None
+    if not any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "sha256"
+        and node.args and isinstance(node.args[0], ast.Call)
+        and isinstance(node.args[0].func, ast.Attribute)
+        and node.args[0].func.attr == "encode"
+        for node in ast.walk(tree)
+    ):
         return None
     # Canonicalize instance-field access without changing executable source.
     # This accommodates public state held on an object or in local variables.
@@ -103,10 +125,6 @@ def _source_shape(source: str) -> bytes | None:
     if encrypted is None:
         return None
     # Extract the CBC IV without executing input source.
-    try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError):
-        return None
     iv_values = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):

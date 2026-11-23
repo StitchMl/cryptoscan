@@ -129,3 +129,46 @@ def test_cli_dispatch(tmp_path, monkeypatch, capsys):
     assert "ring signature signer anonymity leak" in report
     assert "FLAG: TEST{synthetic_cli}" in report
     assert calls == [3]
+
+
+def test_renamed_json_schema_preserves_ring_key_recovery():
+    """Payload field names are transport details, not attack conditions."""
+    docs = documents()
+    payload = json.loads(docs[2].text)
+    renamed = {
+        "batches": [
+            {"transcript": entry["signature"],
+             "members": entry["public_keys"]}
+            for entry in payload["levels"]
+        ],
+        "initialization_bytes": payload["iv"],
+        "encrypted_payload": payload["enc"],
+    }
+    transformed = [
+        *docs[:2],
+        Document("independent_transcript.bin", json.dumps(renamed), None),
+    ]
+    assert extract_instance(transformed) is not None
+    assert recover_flag(transformed) == "TEST{generalized_ring_signature}"
+
+
+def test_ambiguous_transcript_schema_is_rejected():
+    docs = documents()
+    payload = json.loads(docs[2].text)
+    payload["duplicate_rings"] = payload["levels"]
+    assert extract_instance([
+        *docs[:2],
+        Document("ambiguous.json", json.dumps(payload), None),
+    ]) is None
+
+
+def test_renamed_data_fields_do_not_require_specific_file_extensions():
+    docs = documents()
+    payload = json.loads(docs[2].text)
+    payload["group_observations"] = payload.pop("levels")
+    payload["initialization_bytes"] = payload.pop("iv")
+    payload["encrypted_payload"] = payload.pop("enc")
+    assert extract_instance([
+        *docs[:2],
+        Document("captured_observations.log", json.dumps(payload), None),
+    ]) is not None

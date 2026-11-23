@@ -194,7 +194,7 @@ def test_source_recognizer_uses_math_roles_not_names():
     assert profile.input_prompt == "please give three integers: "
 
 
-@pytest.mark.parametrize("bits,seed", [(31,18),(39,42),(48,73)])
+@pytest.mark.parametrize("bits,seed", [(31,18),(39,42),(48,73),(96,527)])
 def test_faulty_reencryption_recovers_both_factors_and_parameter(bits,seed):
     p,q,c=_gen_instance(bits,seed)
     observations=[]

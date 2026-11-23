@@ -239,37 +239,53 @@ def _parse_quaternion(text: str, modulus: int) -> tuple[int, ...] | None:
 
 
 def _parse_output(text: str):
+    """Parse uniquely identifiable public/encrypted quaternion records.
+
+    Ignore unrelated log lines and labels, but never guess among multiple
+    compatible records. No source code or output is executed.
+    """
     if len(text) > 1_000_000:
         return None
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if len(lines) != 2:
+    if len(lines) > 256:
         return None
-    public_q = _QUAT.findall(lines[0])
-    encrypted_q = _QUAT.findall(lines[1])
-    if len(public_q) != 3 or len(encrypted_q) != 2:
-        return None
-    prefix = lines[0].split(",", 1)[0]
-    modulus_match = re.search(r"(\d+)\s*$", prefix)
-    if not modulus_match:
-        return None
-    modulus = int(modulus_match.group(1))
-    if not 16 <= modulus.bit_length() <= 8192 or modulus % 2 == 0:
-        return None
-    coordinates = [_parse_quaternion(q, modulus)
-                   for q in (*public_q, *encrypted_q)]
-    if any(q is None for q in coordinates):
-        return None
-    before_first_quat = lines[1].split(encrypted_q[0], 1)[0]
-    encoded = _BYTES.search(before_first_quat)
-    if encoded is None:
-        return None
-    try:
-        ciphertext = ast.literal_eval(encoded.group())
-    except (SyntaxError, ValueError):
-        return None
-    if not isinstance(ciphertext, bytes) or not ciphertext or len(ciphertext) % 16:
-        return None
-    return modulus, tuple(coordinates[:3]), ciphertext, coordinates[3], coordinates[4]
+    public_candidates = []
+    encrypted_candidates = []
+    for position, line in enumerate(lines):
+        quaternions = _QUAT.findall(line)
+        if len(quaternions) == 3:
+            prefix = line.split(quaternions[0], 1)[0]
+            modulus_match = re.search(r"(\d+)\s*,\s*$", prefix)
+            if modulus_match is None:
+                continue
+            modulus = int(modulus_match.group(1))
+            if not 16 <= modulus.bit_length() <= 8192 or modulus % 2 == 0:
+                continue
+            parsed = [_parse_quaternion(q, modulus) for q in quaternions]
+            if all(item is not None for item in parsed):
+                public_candidates.append((position, modulus, tuple(parsed)))
+        elif len(quaternions) == 2:
+            prefix = line.split(quaternions[0], 1)[0]
+            encoded = _BYTES.search(prefix)
+            if encoded is None:
+                continue
+            try:
+                ciphertext = ast.literal_eval(encoded.group())
+            except (ValueError, SyntaxError):
+                continue
+            if (isinstance(ciphertext, bytes) and ciphertext
+                    and len(ciphertext) % 16 == 0):
+                encrypted_candidates.append((position, quaternions, ciphertext))
+    candidates = []
+    for public_index, modulus, public in public_candidates:
+        for encrypted_index, quaternions, ciphertext in encrypted_candidates:
+            if public_index == encrypted_index:
+                continue
+            masked = _parse_quaternion(quaternions[0], modulus)
+            observed = _parse_quaternion(quaternions[1], modulus)
+            if masked is not None and observed is not None:
+                candidates.append((modulus, public, ciphertext, masked, observed))
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def extract_instance(documents: Sequence[Document]) -> QuaternionConjugationLeak | None:

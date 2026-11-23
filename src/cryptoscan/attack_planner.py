@@ -128,7 +128,11 @@ def execute_plan(plan: AttackPlan, documents: Sequence[Any], *args: Any,
     failures: list[tuple[str, str]] = []
     for candidate in plan.candidates:
         try:
-            output = candidate.strategy.recover(documents, *args, **kwargs)
+            relevant = [
+                document for document in documents
+                if getattr(document, "scope", candidate.scope) == candidate.scope
+            ]
+            output = candidate.strategy.recover(relevant, *args, **kwargs)
             if not isinstance(output, str) or not output.strip():
                 raise ValueError("solver did not return verified plaintext")
             return candidate.family, output

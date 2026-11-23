@@ -172,3 +172,13 @@ def test_renamed_data_fields_do_not_require_specific_file_extensions():
         *docs[:2],
         Document("captured_observations.log", json.dumps(payload), None),
     ]) is not None
+
+
+def test_equal_width_simulated_scalars_do_not_trigger_anonymity_attack():
+    """No range distinguisher exists merely because reductions are present."""
+    docs = documents()
+    for width in (128, ORDER.bit_length()):
+        transformed = source().replace("getrandbits(256)", f"getrandbits({width})")
+        assert extract_instance([
+            Document("renamed_source", transformed, None), *docs[1:],
+        ]) is None

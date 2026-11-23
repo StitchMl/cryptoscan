@@ -249,3 +249,29 @@ def test_64bit_field_genus_seven_factor_recovery_is_parameterized():
     assert result.polynomial == tuple(polynomial)
     assert result.recovered_flag == plaintext.decode()
     assert result.candidates == 1
+
+
+def test_short_known_suffix_keeps_only_analysis_not_false_flag_solver(
+        tmp_path, capsys):
+    from cryptoscan.cli import main
+
+    source = fresh_source(
+        genus=3, coefficient_type="H", known=b"x",
+    )
+    path = tmp_path/"partial_only.sage"
+    path.write_text(source, encoding="utf-8")
+    assert main([
+        str(path), "--plan-attacks", "--format", "json",
+        "--host", "example.invalid", "--port", "39003",
+    ]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert any(
+        item["family"] == "Hyperelliptic Mumford-state curve reconstruction"
+        and item["status"] == "analysis-only"
+        for item in report["attack_plan"]
+    )
+    assert not any(
+        item["family"] == "Jacobian Mumford known-plaintext divisor recovery"
+        and item["status"] == "applicable"
+        for item in report["attack_plan"]
+    )

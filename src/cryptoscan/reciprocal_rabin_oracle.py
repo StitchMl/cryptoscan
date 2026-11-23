@@ -137,6 +137,31 @@ def _reciprocal_encryption(tree):
     return None
 
 
+def _crt_functions(tree):
+    """Identify a four-argument coprime CRT combiner algebraically.
+
+    Source may call it crt(), recombine(), merge_residues() or anything
+    else. A modulo-product-of-two-moduli in a four-argument function
+    is the local sufficient evidence for this attack family.
+    """
+    result = set()
+    for fn in tree.body:
+        if not isinstance(fn, ast.FunctionDef) or len(fn.args.args) != 4:
+            continue
+        args = {arg.arg for arg in fn.args.args}
+        if any(
+            isinstance(node, ast.BinOp)
+            and isinstance(node.op, ast.Mod)
+            and isinstance(node.right, ast.BinOp)
+            and isinstance(node.right.op, ast.Mult)
+            and _name(node.right.left) in args
+            and _name(node.right.right) in args
+            for node in ast.walk(fn)
+        ):
+            result.add(fn.name)
+    return result
+
+
 def _quadratic_decrypt(tree, encryption):
     """Match a CRT combination of independently inverted quadratic roots.
 
@@ -146,6 +171,9 @@ def _quadratic_decrypt(tree, encryption):
     prime calls and CRT in the surrounding decryptor.
     """
     solver_names = set()
+    crt_names = _crt_functions(tree)
+    if not crt_names:
+        return None
     for fn in tree.body:
         if not isinstance(fn, ast.FunctionDef):
             continue
@@ -187,7 +215,12 @@ def _quadratic_decrypt(tree, encryption):
             member for call in invoked for arg in call.args
             if (member := _member(arg)) is not None
         }
-        if (len(moduli) >= 2 and _calls(fn, "crt")
+        invokes_crt = any(
+            isinstance(call, ast.Call)
+            and _name(call.func) in crt_names
+            for call in ast.walk(fn)
+        )
+        if (len(moduli) >= 2 and invokes_crt
                 and _calls(fn, "jacobi")):
             return fn.name
     return None

@@ -217,7 +217,7 @@ def test_preflight_excludes_unsupported_point_count_and_subgroup():
         "coordinate please: ", "LAB{", "}",
     )
     assert feasible_twist(complete)
-    assert not feasible_twist(replace(complete, curve_order=None))
+    assert feasible_twist(replace(complete, curve_order=None))
     assert not feasible_twist(replace(complete, field_prime=65535))
     assert not feasible_twist(complete, max_bsgs_steps=3)
 

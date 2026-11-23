@@ -272,15 +272,15 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
         for function in tree.body:
             if not isinstance(function, ast.FunctionDef):
                 continue
-            calls = [
+            all_calls = [
                 node for node in ast.walk(function)
                 if isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
-                and node.func.id not in crt_combiners
             ]
             by_function = {}
-            for call in calls:
-                by_function.setdefault(call.func.id, []).append(call)
+            for call in all_calls:
+                if call.func.id not in crt_combiners:
+                    by_function.setdefault(call.func.id, []).append(call)
             if not any(
                 len(invocations) >= 2
                 and len({
@@ -296,7 +296,7 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
                 isinstance(call, ast.Call)
                 and isinstance(call.func, ast.Name)
                 and call.func.id in crt_combiners
-                for call in calls
+                for call in all_calls
             ):
                 result.add("factorwise_crt_computation")
                 break

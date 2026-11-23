@@ -403,7 +403,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
             })
             proof = forge_signature(
                 instance, public_a, public_t,
-                private["secret"], private["error"],
+                private["secret"], private["noise"],
             )
             for prompt, value in zip(instance.prompt_labels, proof, strict=True):
                 wire.until(prompt.encode("utf-8"))

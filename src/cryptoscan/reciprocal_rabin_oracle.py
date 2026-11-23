@@ -253,22 +253,23 @@ def _protocol_profile(tree, encrypt, decrypt):
             and len(node.args) == 1 and isinstance(node.args[0], ast.Constant)
             and isinstance(node.args[0].value, str)
         ]
-        marker = next(
-            (s for s in prints if "wrong" in s.lower() or "error" in s.lower()
-             or "something" in s.lower()), None
-        )
-        success = [s for s in prints if s != marker]
-        if marker is None or len(success) != 1:
+        # Exception marker identity comes from the exception-handler
+        # control-flow branch, never from English words in the message.
+        failure_texts = {
+            arg.value
+            for handler in ast.walk(loop)
+            if isinstance(handler, ast.ExceptHandler)
+            for call in ast.walk(handler)
+            if isinstance(call, ast.Call) and _name(call.func) == "print"
+            for arg in call.args
+            if isinstance(arg, ast.Constant)
+            and isinstance(arg.value, str)
+        }
+        if len(failure_texts) != 1:
             continue
-        # The exception handler is part of the oracle side channel.
-        if not any(
-            isinstance(node, ast.ExceptHandler)
-            and any(isinstance(call, ast.Call) and _name(call.func) == "print"
-                    and any(isinstance(arg, ast.Constant)
-                            and arg.value == marker for arg in call.args)
-                    for call in ast.walk(node))
-            for node in ast.walk(loop)
-        ):
+        marker = next(iter(failure_texts))
+        success = [value for value in prints if value != marker]
+        if len(success) != 1:
             continue
         # Some services put their banner directly at module scope;
         # others guard startup under if __name__ == "__main__".

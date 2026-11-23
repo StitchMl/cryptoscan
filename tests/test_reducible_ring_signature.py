@@ -311,9 +311,15 @@ def test_worker_preflight_requires_fast_backend_for_large_factor(monkeypatch):
     assert spec.loader is not None
     worker = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(worker)
+    class SageIntegerLike:
+        """An integer-like value that json.dumps cannot serialize."""
+
+        def __int__(self):
+            return 64
+
     monkeypatch.setattr(
         worker, "_integral_factor_groups",
-        lambda n: [SimpleNamespace(degree=lambda: 64)],
+        lambda n: [SimpleNamespace(degree=SageIntegerLike)],
     )
     monkeypatch.setattr(worker.shutil, "which", lambda name: None)
     monkeypatch.delenv("CRYPTOSCAN_FLATTER", raising=False)
@@ -322,6 +328,11 @@ def test_worker_preflight_requires_fast_backend_for_large_factor(monkeypatch):
         worker._preflight({"dimension": 240})
     monkeypatch.setenv("CRYPTOSCAN_SLOW_LLL", "1")
     assert worker._preflight({"dimension": 240})["backend"] == "sage-lll"
+    import json
+
+    response = worker._preflight({"dimension": 240})
+    assert response["max_factor_degree"] == 64
+    assert json.loads(json.dumps(response))["max_factor_degree"] == 64
 
 
 def test_sage_worker_awaits_actual_process_exit_on_closed_stdout(monkeypatch):

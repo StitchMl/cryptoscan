@@ -10,6 +10,7 @@ from .crypto_hypotheses import inspect_hypotheses
 from .masked_ec_signature import extract_instance as extract_masked_ec, recover_flag as recover_masked_ec_flag
 from .affine_ec_leak import extract_instance as extract_affine_ec_leak, recover_flag as recover_affine_ec_leak_flag
 from .quaternion_equivalent_key import extract_instance as extract_quaternion_key, recover_flag as recover_quaternion_flag
+from .ring_scalar_anonymity import extract_instance as extract_ring_scalar_leak, recover_flag as recover_ring_scalar_leak_flag
 from .polynomial_gcd_prefix import extract_instance as extract_polynomial_gcd_prefix, recover_flag as recover_polynomial_gcd_prefix_flag
 from .cookie import main as cookie_main
 from .assistant import assistant_session
@@ -148,6 +149,11 @@ def _solve_remote(args, documents) -> int | None:
 
 
 def _solve_offline(args, documents) -> int | None:
+    if extract_ring_scalar_leak(documents) is not None:
+        return _execute_recovery(
+            "Ring signature scalar distribution", recover_ring_scalar_leak_flag,
+            documents,
+        )
     if extract_quaternion_key(documents) is not None:
         return _execute_recovery(
             "Equivalent quaternion conjugator", recover_quaternion_flag,
@@ -234,6 +240,12 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    ring_scalar = extract_ring_scalar_leak(documents)
+    if ring_scalar is not None:
+        print("Detected: ring signature signer anonymity leak from "
+              "nonuniform scalar ranges; offline signer candidate filtering "
+              "and AES-key verification available "
+              f"({len(ring_scalar.levels)} rings).")
     gcd_prefix = extract_polynomial_gcd_prefix(documents)
     if gcd_prefix is not None:
         print("Detected: attacker-controlled polynomial GCD determines "

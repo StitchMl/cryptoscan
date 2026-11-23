@@ -378,3 +378,29 @@ print(distribute(query, secret))
         item.family == "Potential coefficient-support leakage in polynomial secret sharing"
         for item in hypotheses
     )
+
+
+def test_protocol_deadline_derived_from_its_own_source():
+    source = "import signal\n" + new_source().replace(
+        '    hidden = bytes_to_long(os.urandom(6))',
+        '    signal.alarm(45)\n    hidden = bytes_to_long(os.urandom(6))',
+    )
+    model = extract_instance([Document("different_deadline.py", source, None)])
+    assert model is not None
+    assert model.server_alarm == 45
+
+
+def test_unbounded_field_core_does_not_require_original_participant_count():
+    # Small n with arbitrary evaluation points: the algebraic core is not
+    # restricted to the p-1 policy used by the interactive adapter.
+    p = 101
+    xs = [3, 7, 11]
+    secret = 72
+    coeffs = [secret, 28, 30, 41]
+    observed = [
+        sum(v*pow(x, i, p) for i, v in enumerate(coeffs)) % p
+        for x in xs
+    ]
+    assert secret in candidate_secrets(
+        observed, p, x_coordinates=xs, excluded_high=1,
+    )

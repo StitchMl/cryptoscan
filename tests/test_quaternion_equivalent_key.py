@@ -36,7 +36,8 @@ class Engine:
         self.X = Q()
         self.A = Q()
         self.B = self.X**-1 * self.A**-1 * self.X
-        self.G = self.X**3
+        r = 3
+        self.G = self.X**r
 
     @property
     def pub(self):
@@ -46,7 +47,8 @@ class Engine:
         k = Q()
         K = hashlib.sha256(str(k).encode()).digest()
         c = AES.new(K, AES.MODE_CBC, iv=b"\0" * 16).encrypt(pad(m, 16))
-        D = self.G**5
+        exponent = 5
+        D = self.G**exponent
         E = D**-1 * self.A * D
         H = D**-1 * self.B * D
         M = H * k * H

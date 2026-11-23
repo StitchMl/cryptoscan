@@ -30,6 +30,7 @@ class Candidate:
     strategy: Strategy
     evidence: Any
     requirements: tuple[str, ...] = ()
+    scope: str = "."
 
     @property
     def family(self) -> str:
@@ -55,6 +56,7 @@ class AttackPlan:
                 "backend": candidate.strategy.backend,
                 "rank": candidate.strategy.rank,
                 "status": "applicable",
+                "scope": candidate.scope,
             }
             for candidate in self.candidates
         ] + [
@@ -72,7 +74,8 @@ class RecoveryExhausted(RuntimeError):
 
 
 def build_plan(strategies: Iterable[Strategy], documents: Sequence[Any], *,
-               mode: str, capabilities: frozenset[str] = frozenset()
+               mode: str, capabilities: frozenset[str] = frozenset(),
+               scope: str = "."
                ) -> AttackPlan:
     """Collect every independently supported strategy and sort deterministically.
 
@@ -101,7 +104,7 @@ def build_plan(strategies: Iterable[Strategy], documents: Sequence[Any], *,
                 strategy.name, "source preconditions not established",
             ))
             continue
-        plan.candidates.append(Candidate(strategy, evidence))
+        plan.candidates.append(Candidate(strategy, evidence, scope=scope))
     plan.candidates.sort(key=lambda item: (
         item.strategy.rank, item.strategy.name,
     ))
@@ -116,6 +119,12 @@ def execute_plan(plan: AttackPlan, documents: Sequence[Any], *args: Any,
     Failures are collected, and the next independent strategy may run.
     Every solver remains responsible for verifying its own result.
     """
+    scopes = {candidate.scope for candidate in plan.candidates}
+    if len(scopes) > 1:
+        raise RecoveryExhausted([(
+            "planner", "multiple independent challenge scopes detected: "
+            + ", ".join(sorted(scopes)) + "; select one challenge",
+        )])
     failures: list[tuple[str, str]] = []
     for candidate in plan.candidates:
         try:

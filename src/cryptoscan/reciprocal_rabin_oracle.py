@@ -138,42 +138,41 @@ def _reciprocal_encryption(tree):
 
 
 def _quadratic_decrypt(tree, encryption):
-    """Prove factor-wise quadratic inversion followed by CRT recombination."""
-    candidates = []
+    """Match a CRT combination of independently inverted quadratic roots.
+
+    The implementation may use a hand-written quotient-ring exponentiation
+    instead of a literal x**2 in source: accept the inverse of the linear
+    coefficient and the complementary root r-a, then verify two private
+    prime calls and CRT in the surrounding decryptor.
+    """
+    solver_names = set()
     for fn in tree.body:
         if not isinstance(fn, ast.FunctionDef):
             continue
-        calls = [
-            call for call in ast.walk(fn)
-            if isinstance(call, ast.Call) and _name(call.func) == "pow"
-            and len(call.args) == 3
+        modular_inverses = [
+            call for call in _calls(fn, "pow")
+            if len(call.args) == 3
             and isinstance(call.args[1], ast.UnaryOp)
             and isinstance(call.args[1].op, ast.USub)
             and isinstance(call.args[1].operand, ast.Constant)
             and call.args[1].operand.value == 1
+            and isinstance(call.args[2], ast.Name)
         ]
-        if not calls:
+        if not modular_inverses:
             continue
-        for call in calls:
-            if isinstance(call.args[2], ast.Name):
-                modulus = call.args[2].id
-            else:
-                continue
-            if any(
-                isinstance(node, ast.BinOp)
-                and isinstance(node.op, ast.Pow)
-                and isinstance(node.right, ast.Constant)
-                and node.right.value == 2
-                for node in ast.walk(fn)
-            ) and any(
-                isinstance(node, ast.BinOp)
-                and isinstance(node.op, ast.Sub)
-                for node in ast.walk(fn)
-            ):
-                candidates.append(fn.name)
-    if not candidates:
-        return None
-    solver_names = set(candidates)
+        has_complementary_root = any(
+            isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub)
+            and any(isinstance(child, ast.Name)
+                    for child in (node.left, node.right))
+            for node in ast.walk(fn)
+        )
+        has_pair = any(
+            isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple)
+            and len(node.value.elts) == 2
+            for node in ast.walk(fn)
+        )
+        if has_pair and has_complementary_root:
+            solver_names.add(fn.name)
     for fn in tree.body:
         if not isinstance(fn, ast.FunctionDef) or fn.name == encryption:
             continue
@@ -182,18 +181,14 @@ def _quadratic_decrypt(tree, encryption):
             if isinstance(node, ast.Call)
             and _name(node.func) in solver_names
         ]
-        # The quadratic solver is evaluated independently on two private primes.
         if len(invoked) < 2:
             continue
-        prime_attrs = set()
-        for call in invoked:
-            for arg in call.args:
-                member = _member(arg)
-                if member is not None:
-                    prime_attrs.add(member)
-        if len(prime_attrs) < 2 or not _calls(fn, "crt"):
-            continue
-        if _calls(fn, "jacobi"):
+        moduli = {
+            member for call in invoked for arg in call.args
+            if (member := _member(arg)) is not None
+        }
+        if (len(moduli) >= 2 and _calls(fn, "crt")
+                and _calls(fn, "jacobi")):
             return fn.name
     return None
 
@@ -282,24 +277,70 @@ def _source_profile(document):
                 and isinstance(stmt.value, ast.Constant)
                 and type(stmt.value.value) is int):
             definitions[stmt.targets[0].id] = stmt.value.value
+    functions = {
+        fn.name: fn for fn in tree.body if isinstance(fn, ast.FunctionDef)
+    }
+    # Resolve generator bit length across arbitrary finite chains of wrapper
+    # functions and positional arguments. This is symbolic source dataflow,
+    # never execution of the user's Python.
     bits = None
-    for fn in tree.body:
-        if not isinstance(fn, ast.FunctionDef):
+    for fn in functions.values():
+        if not _calls(fn, "getPrime"):
             continue
-        for call in _calls(fn, "getPrime"):
-            if call.args:
-                value = call.args[0]
-                if isinstance(value, ast.Name):
-                    for parent in ast.walk(tree):
-                        if not (isinstance(parent, ast.Call)
-                                and _name(parent.func) == fn.name
-                                and parent.args):
-                            continue
-                        candidate = parent.args[0]
-                        if isinstance(candidate, ast.Name):
-                            bits = definitions.get(candidate.id)
-                        elif isinstance(candidate, ast.Constant):
-                            bits = candidate.value
+        parameters = [arg.arg for arg in fn.args.args]
+        prime_widths = [
+            call.args[0] for call in _calls(fn, "getPrime") if call.args
+        ]
+        if len(prime_widths) != 1:
+            continue
+        width = prime_widths[0]
+        if isinstance(width, ast.Constant) and type(width.value) is int:
+            bits = width.value
+            break
+        parameter = _name(width)
+        if parameter not in parameters:
+            continue
+        current_function = fn.name
+        parameter_index = parameters.index(parameter)
+        for _ in range(5):
+            calls = [
+                call for call in ast.walk(tree)
+                if isinstance(call, ast.Call)
+                and _name(call.func) == current_function
+                and len(call.args) > parameter_index
+            ]
+            if len(calls) == 0:
+                break
+            arguments = [call.args[parameter_index] for call in calls]
+            values = [
+                arg.value if isinstance(arg, ast.Constant) else
+                definitions.get(_name(arg))
+                for arg in arguments
+            ]
+            numbers = [
+                value for value in values
+                if type(value) is int
+            ]
+            if numbers and len(set(numbers)) == 1:
+                bits = numbers[0]
+                break
+            # Follow a name forwarded from an enclosing function.
+            names = {_name(arg) for arg in arguments}
+            if len(names) != 1 or None in names:
+                break
+            forward = next(iter(names))
+            owners = [
+                owner for owner in functions.values()
+                if forward in [arg.arg for arg in owner.args.args]
+                and any(child is calls[0] for child in ast.walk(owner))
+            ]
+            if len(owners) != 1:
+                break
+            owner = owners[0]
+            current_function = owner.name
+            parameter_index = [arg.arg for arg in owner.args.args].index(forward)
+        if bits is not None:
+            break
     if bits is None or not isinstance(bits, int) or not 16 <= bits <= 4096:
         return None
     # The source must generate odd primes in a known congruence class.

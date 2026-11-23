@@ -153,13 +153,17 @@ def derive_flag_candidates(ciphertext, polynomial, model, *, max_factors=1024):
         )
         if not _TOKEN.fullmatch(plaintext):
             continue
+        # Only first-state bytes are reconstructed here. Later stream
+        # states may also contain known plaintext, but cannot be checked
+        # against this state's Mumford divisor.
         if any((ciphertext[i] ^ state[i]) != suffix[i-secret_size]
-               for i in range(secret_size, len(ciphertext))):
+               for i in range(secret_size,
+                              min(len(ciphertext), len(state)))):
             continue
         found.add(plaintext.decode("ascii"))
     return tuple(sorted(found)), (
         "verified candidate Mumford factors of f-v² against every "
-        "known plaintext byte"
+        "known plaintext byte in the reconstructed first state"
     )
 
 

@@ -169,3 +169,51 @@ def test_nonunit_subresultant_can_still_reveal_long_prefix():
     chosen, certified = construct_input(model)
     assert certified > 256
     assert certified == math.gcd(int(first.eval(chosen)), int(second.eval(chosen)))
+
+
+def test_polynomial_gcd_intermediate_aliases_are_symbolically_propagated():
+    """An unseen source may calculate its public polynomials in stages."""
+    original = invented_source()
+    altered = original.replace(
+        "leak_length = gcd(user_value**3 + 37,\n"
+        "                  (user_value + 2)**3 + 42)",
+        "base = user_value + 2\n"
+        "first_public = user_value ** 3 + 37\n"
+        "second_public = base ** 3 + 42\n"
+        "leak_length = gcd(first_public, second_public)",
+    )
+    model = extract_instance([
+        Document("new_polynomial_program.py", altered, None),
+    ])
+    assert model is not None
+    chosen, certified = construct_input(model)
+    assert certified == math.gcd(
+        chosen**3 + 37, (chosen+2)**3 + 42,
+    )
+
+
+def test_polynomial_alias_cycle_and_untrusted_call_are_rejected():
+    source = invented_source()
+    original_gcd = (
+        "gcd(user_value**3 + 37,\n"
+        "                  (user_value + 2)**3 + 42)"
+    )
+    cyclic = source.replace(
+        original_gcd,
+        "gcd(first_public, second_public)",
+    ).replace(
+        "leak_length =",
+        "first_public = second_public\n"
+        "second_public = first_public\n"
+        "leak_length =",
+    )
+    assert extract_instance([
+        Document("bad_alias.py", cyclic, None),
+    ]) is None
+    untrusted = source.replace(
+        original_gcd,
+        "gcd(obscured(user_value), user_value**3 + 42)",
+    )
+    assert extract_instance([
+        Document("bad_call.py", untrusted, None),
+    ]) is None

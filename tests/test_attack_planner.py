@@ -159,3 +159,45 @@ def test_cli_json_plan_is_one_valid_structured_document(tmp_path, monkeypatch, c
     assert isinstance(report["findings"], list)
     assert report["attack_plan"][0]["family"] == "modular equations"
     assert report["attack_plan"][0]["status"] == "applicable"
+
+
+def test_multiple_independent_scopes_are_not_solved_as_one_case(tmp_path, monkeypatch, capsys):
+    import cryptoscan.cli as cli
+    for folder in ("case_one", "case_two"):
+        directory = tmp_path / folder
+        directory.mkdir()
+        (directory / "unseen_source.py").write_text(
+            "same generic attack class, independent source", encoding="utf-8",
+        )
+    called = []
+    def detector(docs):
+        return {"source_count": len(docs)}
+    def solver(docs):
+        called.append(1)
+        return "TEST{wrong_scope}"
+    monkeypatch.setattr(cli, "_attack_strategies", lambda args: (
+        Strategy("source-driven attack", "offline", detector, solver),
+    ))
+    status = cli.main([str(tmp_path), "--solve"])
+    assert status == 2
+    assert called == []
+    assert "multiple independent challenge scopes" in capsys.readouterr().err
+
+
+def test_scope_filtering_passes_only_relevant_evidence_to_solver():
+    docs = [
+        Document("one.py", "A", None, "first"),
+        Document("two.py", "B", None, "second"),
+    ]
+    received = []
+    strategy = Strategy(
+        "scoped algebra", "offline", lambda ds: True,
+        lambda ds: received.extend(ds) or "TEST{only_first_scope}",
+    )
+    plan = build_plan(
+        [strategy], docs[:1], mode="offline", scope="first",
+    )
+    assert execute_plan(plan, docs) == (
+        "scoped algebra", "TEST{only_first_scope}",
+    )
+    assert received == docs[:1]

@@ -64,6 +64,107 @@ def _has_ciphertext_return(tree, masked, observed):
     )
 
 
+def _negative_one(node):
+    return (isinstance(node, ast.UnaryOp)
+            and isinstance(node.op, ast.USub)
+            and isinstance(node.operand, ast.Constant)
+            and node.operand.value == 1)
+
+
+def _inverse_name(node):
+    if (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow)
+            and _negative_one(node.right)):
+        return _symbol_name(node.left)
+    return None
+
+
+def _power_base(node):
+    if (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow)
+            and not _negative_one(node.right)):
+        return _symbol_name(node.left)
+    return None
+
+
+def _multiplicative_terms(node):
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+        return _multiplicative_terms(node.left) + _multiplicative_terms(node.right)
+    return [node]
+
+
+def _has_key_digest(tree, key_name):
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "sha256" and len(node.args) == 1):
+            continue
+        value = node.args[0]
+        if not (isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Attribute)
+                and value.func.attr == "encode"
+                and isinstance(value.func.value, ast.Call)
+                and isinstance(value.func.value.func, ast.Name)
+                and value.func.value.func.id == "str"
+                and len(value.func.value.args) == 1):
+            continue
+        if _symbol_name(value.func.value.args[0]) == key_name:
+            return True
+    return False
+
+
+def _algebraic_roles(tree):
+    """Extract the conjugation graph from syntax trees, not text formatting.
+
+    Supports arbitrary identifiers, attributes, parenthesization, and
+    multiplication association, while preserving operand order.
+    """
+    assignments = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and (name := _symbol_name(node.targets[0])) is not None):
+            assignments.append((name, node.value))
+    candidates = []
+    for beta, expression in assignments:
+        terms = _multiplicative_terms(expression)
+        if len(terms) != 3:
+            continue
+        chi = _inverse_name(terms[0])
+        alpha = _inverse_name(terms[1])
+        if not chi or not alpha or _symbol_name(terms[2]) != chi:
+            continue
+        for gamma, gamma_expression in assignments:
+            if _power_base(gamma_expression) != chi:
+                continue
+            for delta, delta_expression in assignments:
+                if _power_base(delta_expression) != gamma:
+                    continue
+                def conjugates(name):
+                    return [
+                        output for output, equation in assignments
+                        if (lambda parts: len(parts) == 3
+                            and _inverse_name(parts[0]) == delta
+                            and _symbol_name(parts[1]) == name
+                            and _symbol_name(parts[2]) == delta)(
+                                _multiplicative_terms(equation))
+                    ]
+                for epsilon in conjugates(alpha):
+                    for kappa in conjugates(beta):
+                        for mu, equation in assignments:
+                            parts = _multiplicative_terms(equation)
+                            if (len(parts) != 3
+                                    or _symbol_name(parts[0]) != kappa
+                                    or _symbol_name(parts[2]) != kappa):
+                                continue
+                            key_name = _symbol_name(parts[1])
+                            if not key_name or not _has_key_digest(tree, key_name):
+                                continue
+                            if not _has_tuple_return(tree, (alpha, beta, gamma)):
+                                continue
+                            if not _has_ciphertext_return(tree, mu, epsilon):
+                                continue
+                            candidates.append((alpha, beta, gamma))
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def _source_shape(source: str) -> bytes | None:
     """Accept only a linked conjugation-and-double-mask source structure."""
     if len(source) > 1_000_000:
@@ -93,59 +194,7 @@ def _source_shape(source: str) -> bytes | None:
         for node in ast.walk(tree)
     ):
         return None
-    # Canonicalize instance-field access without changing executable source.
-    # This accommodates public state held on an object or in local variables.
-    equations = source.replace("self.", "")
-    # Discover roles by the equations, never by their identifiers.
-    inverse_conjugate = re.search(
-        rf"(?m)^\s*{_NAME}\s*=\s*{_NAME}\s*\*\*\s*-1\s*\*\s*"
-        rf"{_NAME}\s*\*\*\s*-1\s*\*\s*([^\W\d]\w*)\s*$", equations,
-    )
-    if inverse_conjugate is None:
-        return None
-    beta, chi, alpha, conjugator = inverse_conjugate.groups()
-    if chi != conjugator:
-        return None
-    gamma_match = re.search(
-        rf"(?m)^\s*{_NAME}\s*=\s*{re.escape(chi)}\s*\*\*\s*{_NAME}\s*$",
-        equations,
-    )
-    if gamma_match is None:
-        return None
-    gamma = gamma_match.group(1)
-    delta_match = re.search(
-        rf"(?m)^\s*{_NAME}\s*=\s*{re.escape(gamma)}\s*\*\*\s*{_NAME}\s*$",
-        equations,
-    )
-    if delta_match is None:
-        return None
-    delta = delta_match.group(1)
-    def conjugated(value):
-        return re.search(
-            rf"(?m)^\s*{_NAME}\s*=\s*{re.escape(delta)}\s*\*\*\s*-1"
-            rf"\s*\*\s*{re.escape(value)}\s*\*\s*{re.escape(delta)}\s*$",
-            equations,
-        )
-    eps, kap = conjugated(alpha), conjugated(beta)
-    if eps is None or kap is None:
-        return None
-    kappa = kap.group(1)
-    mu = re.search(
-        rf"(?m)^\s*{_NAME}\s*=\s*{re.escape(kappa)}\s*\*\s*"
-        rf"{_NAME}\s*\*\s*{re.escape(kappa)}\s*$", equations,
-    )
-    if mu is None:
-        return None
-    key_name = mu.group(2)
-    if not re.search(
-        rf"hashlib\.sha256\(\s*str\(\s*{re.escape(key_name)}"
-        rf"\s*\)\.encode\(\s*\)\s*\)\.digest\(\s*\)", source,
-    ):
-        return None
-    # Observe tuple positions, not the name of the public accessor.
-    if not _has_tuple_return(tree, (alpha, beta, gamma)):
-        return None
-    if not _has_ciphertext_return(tree, mu.group(1), eps.group(1)):
+    if _algebraic_roles(tree) is None:
         return None
     # Extract the CBC IV without executing input source.
     iv_values = []

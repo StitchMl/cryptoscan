@@ -168,6 +168,40 @@ For a secret longer than the twist order, the recovered scalar is
 must be unique under explicit source-derived encoding constraints.
 Unknown or ambiguous cases fail rather than fabricating a flag.
 
+## Hyperelliptic Jacobian state disclosure and analysis-only attack plans
+
+CryptoScan recognizes Sage hyperelliptic curves and Jacobian-based stream
+generators whose internal Mumford divisor coefficients are serialized
+and XORed directly with input data. A **chosen-zero plaintext** query
+then discloses a complete binary state, not merely a generic stream
+cipher ciphertext.
+
+If a state contains the Mumford pair `(u(x), v(x))` on a curve
+`y**2 = f(x)`, it satisfies `f(x) == v(x)**2 (mod u(x))`.
+The finite-field algebra in `hyperelliptic_state_leak.py` unpacks
+the coefficient bytes (with source-derived word width and byte order),
+collects equations from independent states and reconstructs a hidden
+curve polynomial of source-derived degree whenever the equations have
+full rank. The result is verified against every observed pair.
+
+The Sage normalizer handles polynomial-ring declarations and distinguishes
+Sage power `^` from Sage bitwise XOR `^^` without executing source.
+Source recognition relies on AST dataflow from group state through
+binary packing to the XOR, not on the challenge's filename, field prime,
+class name, genus, multiplier or known suffix.
+
+```powershell
+cryptoscan chall.sage
+cryptoscan chall.sage --plan-attacks --format json --host HOST --port PORT
+```
+
+The report distinguishes `status: "analysis-only"` from a complete
+`status: "applicable"` flag-recovery solver. **An analysis-only item
+is never executed by `--solve`**, even if host and port are supplied.
+Reconstruction of a hidden curve from exposed states is mathematically
+distinct from recovering the unknown flag keystream. A source-only finding
+must not falsely claim that the latter is already solved.
+
 ## Readable output and colors
 
 By default the terminal report is a short, color-coded finding summary

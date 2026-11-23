@@ -100,6 +100,38 @@ if the prime relation is absent, the extension is reducible for
 the chosen trials, or the model cannot verify factors, CryptoScan
 will not claim recovery. This is not generic RSA factoring.
 
+## Modular-noise LWE mixtures: noiseless projection and block RANSAC
+
+An LWE-like source may sample its additive error from a **proper additive
+subgroup**, rather than from a distribution with full support modulo the
+public modulus. For example, left shifting the noise by `t` bits and
+subtracting an offset divisible by `2**t` forces the error to vanish
+modulo `2**t`. Every authentic sample then leaks an **exact linear
+equation modulo `2**t`**.
+
+The scanner derives the key length, sample modulus, noise divisibility,
+real-versus-decoy ordering, observations per secret bit, and the bit
+packing order from Python AST. The solver uses block-wise RANSAC over
+`GF(2)` and lifts key residues bit by bit for higher powers of two.
+Coherent observation blocks reveal the selected message bits without
+reconstructing the original full-precision key. Different variable
+names, sample counts, secret lengths, shift counts and sampler order
+are supported; no flag or key from a known challenge is embedded.
+
+```powershell
+cryptoscan challenge.py output.txt
+cryptoscan challenge.py output.txt --plan-attacks --format json
+cryptoscan challenge.py output.txt --solve
+```
+
+The output is statistical, **not a perfect membership oracle**: an
+independent decoy block may accidentally satisfy every modular
+equation. For `k` independent samples projected modulo `2**t`,
+its chance is `2**(-t*k)`. The tool checks for strong cross-block
+consistency and a plausible decoded text token, but ambiguous cases
+can require more observations or independent validation. It must not
+claim that this attack applies to ordinary full-support LWE errors.
+
 ## Readable output and colors
 
 By default the terminal report is a short, color-coded finding summary

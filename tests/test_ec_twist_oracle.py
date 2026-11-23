@@ -206,3 +206,71 @@ def test_composite_field_order_is_never_claimed_prime():
     )
     with pytest.raises(RuntimeError, match="not prime"):
         recover_residue(bogus, 3)
+
+
+def test_preflight_excludes_unsupported_point_count_and_subgroup():
+    from cryptoscan.ec_twist_oracle import feasible_twist
+
+    q, a, b = 65519, 2, 17
+    complete = TwistOracle(
+        q, a, b, _main_order(q,a,b),
+        "coordinate please: ", "LAB{", "}",
+    )
+    assert feasible_twist(complete)
+    assert not feasible_twist(replace(complete, curve_order=None))
+    assert not feasible_twist(replace(complete, field_prime=65535))
+    assert not feasible_twist(complete, max_bsgs_steps=3)
+
+
+def test_remote_solver_with_fresh_long_secret_and_mocked_x_oracle(monkeypatch):
+    import cryptoscan.ec_twist_oracle as oracle
+
+    q, a, b = 2**128-159, 1, 1494
+    curve_order = 340282366920938463465004184633952524077
+    source = _ec_source(q,a,b,curve_order,prefix="LAB{")
+    docs = [Document("alternate_protocol.py", source, None)]
+    model = extract_instance(docs)
+    assert model is not None
+    secret_text = "ANOTHERTESTKEY12"
+    secret = int.from_bytes(secret_text.encode(), "big")
+    curve, twist_constant, P, query_x = twist_generator(
+        model, factorint(2*(q+1)-curve_order),
+    )
+    reply = curve.mul(P, secret)
+    assert reply is not None
+    output_x = reply[0]*pow(twist_constant,-1,q)%q
+
+    class Oracle:
+        def __init__(self):
+            self.output = bytearray(model.input_prompt.encode())
+            self.asked = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def settimeout(self, seconds):
+            pass
+
+        def sendall(self, payload):
+            self.asked.append(int(payload))
+            self.output += (
+                str(output_x) + "\n" + model.input_prompt
+            ).encode()
+
+        def recv(self, limit):
+            chunk = self.output[:limit]
+            del self.output[:limit]
+            return bytes(chunk)
+
+    fake = Oracle()
+    monkeypatch.setattr(
+        oracle.socket, "create_connection",
+        lambda *args, **kwargs: fake,
+    )
+    assert oracle.recover_flag(
+        docs, "ctf.example", 1337, timeout=10,
+    ) == "LAB{" + secret_text + "}"
+    assert fake.asked == [query_x]

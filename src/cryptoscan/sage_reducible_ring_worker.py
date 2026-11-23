@@ -178,6 +178,48 @@ def _candidate_component(a, t, factor, modulus, deadline=None):
     )
 
 
+
+def _recover_factor_components(a, t, factor, modulus, deadline=None):
+    """Recover a quotient or refine a failed composite quotient.
+
+    Grouped factors reduce the number of lattice calls, but their coefficient
+    growth can obscure a short vector. An unsuccessful composite quotient is
+    therefore split into its integral irreducible factors, without relying on
+    any challenge-specific factorization or coefficients.
+    """
+    try:
+        return [(a.parent()(factor), _candidate_component(
+            a, t, factor, modulus, deadline,
+        ))]
+    except ComponentNotRecovered as exc:
+        factors = [
+            divisor for divisor, multiplicity in factor.factor()
+            for _ in range(multiplicity)
+        ]
+        if len(factors) <= 1:
+            raise ComponentNotRecovered(
+                f"No verified component for irreducible factor of degree "
+                f"{int(factor.degree())}: {exc}"
+            ) from exc
+        print(
+            f"[CYCLIC-LATTICE] refining failed composite factor "
+            f"degree {int(factor.degree())} into "
+            f"{len(factors)} integral factors",
+            file=sys.stderr, flush=True,
+        )
+        recovered = []
+        for divisor in factors:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise LatticeBackendError(
+                    "Cyclic-ring recovery exhausted the allotted lattice "
+                    "time budget during factor refinement"
+                )
+            recovered.extend(_recover_factor_components(
+                a, t, divisor, modulus, deadline,
+            ))
+        return recovered
+
+
 def _public_ring(message):
     size, modulus = int(message["dimension"]), int(message["modulus"])
     bound = int(message["coefficient_bound"])
@@ -258,8 +300,8 @@ def _recover(message):
             f"factor degree {factor.degree()}",
             file=sys.stderr, flush=True,
         )
-        components.append(
-            (ring(factor), _candidate_component(a, t, factor, q, deadline))
+        components.extend(
+            _recover_factor_components(a, t, factor, q, deadline)
         )
     moduli = [modulus for modulus, _ in components]
     if any(
@@ -282,7 +324,7 @@ def _recover(message):
     return {
         "secret": secret_coefficients,
         "error": error_coefficients,
-        "factor_degrees": [int(factor.degree()) for factor in groups],
+        "factor_degrees": [int(factor.degree()) for factor, _ in components],
     }
 
 

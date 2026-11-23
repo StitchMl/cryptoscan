@@ -19,6 +19,7 @@ from .polynomial_gcd_prefix import extract_instance as extract_polynomial_gcd_pr
 from .polynomial_gcd_prefix import construct_input as construct_polynomial_gcd_input
 from .weak_seeded_multiprime_rsa import extract_instance as extract_weak_seeded_rsa, recover_flag as recover_weak_seeded_rsa_flag
 from .cyclotomic_rsa import extract_instance as extract_cyclotomic_rsa, recover_flag as recover_cyclotomic_rsa_flag
+from .modular_noise_mixture import extract_instance as extract_modular_noise, recover_flag as recover_modular_noise_flag
 from .biased_shamir import extract_instance as extract_biased_shamir, recover_flag as recover_biased_shamir_flag
 from .cookie import main as cookie_main
 from .assistant import assistant_session
@@ -123,6 +124,8 @@ def _attack_strategies(args):
                         tuple(capabilities), rank, backend, preflight)
 
     offline = (
+        strategy("Modular-noise LWE mixture linear distinguisher", "offline",
+                 extract_modular_noise, recover_modular_noise_flag, 3),
         strategy("Cyclotomic related RSA finite-field factorization", "offline",
                  extract_cyclotomic_rsa, recover_cyclotomic_rsa_flag, 4),
         strategy("Weak-seeded RSA partial CRT", "offline",
@@ -312,6 +315,14 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    modular_noise = extract_modular_noise(documents)
+    if modular_noise is not None:
+        print("Detected: mixed LWE-like samples have a noise component "
+              "divisible by a source-proven power of two; group-wise "
+              "linear recovery can identify authentic samples "
+              f"({modular_noise.key_bytes} key bytes, "
+              f"{modular_noise.samples_per_bit} samples per bit, "
+              f"noise divisible by 2**{modular_noise.noise_bits}).")
     cyclotomic = extract_cyclotomic_rsa(documents)
     if cyclotomic is not None:
         print("Detected: RSA factors satisfy a cyclotomic geometric-sum "

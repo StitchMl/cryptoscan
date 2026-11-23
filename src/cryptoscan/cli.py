@@ -14,7 +14,9 @@ from .masked_ec_signature import extract_instance as extract_masked_ec, recover_
 from .affine_ec_leak import extract_instance as extract_affine_ec_leak, recover_flag as recover_affine_ec_leak_flag
 from .quaternion_equivalent_key import extract_instance as extract_quaternion_key, recover_flag as recover_quaternion_flag
 from .ring_scalar_anonymity import extract_instance as extract_ring_scalar_leak, recover_flag as recover_ring_scalar_leak_flag
+from .ring_scalar_anonymity import signer_candidates as ring_signer_candidates
 from .polynomial_gcd_prefix import extract_instance as extract_polynomial_gcd_prefix, recover_flag as recover_polynomial_gcd_prefix_flag
+from .polynomial_gcd_prefix import construct_input as construct_polynomial_gcd_input
 from .cookie import main as cookie_main
 from .assistant import assistant_session
 from .diagnostics import diagnose_runtime
@@ -91,6 +93,19 @@ def _execute_recovery(label, solver, *parameters, **options) -> int:
     return 0
 
 
+def _ring_range_preflight(model):
+    """Verify signer response range constraints before attempting AES keys."""
+    combinations = 1
+    for level in model.levels:
+        candidates = ring_signer_candidates(level, model.order)
+        if not candidates:
+            return False
+        combinations *= len(candidates)
+        if combinations > 2_000_000:
+            return False
+    return True
+
+
 def _attack_strategies(args):
     """Register attack families by verified preconditions, not challenge IDs.
 
@@ -98,13 +113,14 @@ def _attack_strategies(args):
     can replace a recognizer or recovery function without stale references.
     """
     def strategy(name, mode, recognize, recover, rank, *,
-                 capabilities=(), backend="python"):
+                 capabilities=(), backend="python", preflight=None):
         return Strategy(name, mode, recognize, recover,
-                        tuple(capabilities), rank, backend)
+                        tuple(capabilities), rank, backend, preflight)
 
     offline = (
         strategy("Ring signature scalar distribution", "offline",
-                 extract_ring_scalar_leak, recover_ring_scalar_leak_flag, 10),
+                 extract_ring_scalar_leak, recover_ring_scalar_leak_flag, 10,
+                 preflight=_ring_range_preflight),
         strategy("Equivalent quaternion conjugator", "offline",
                  extract_quaternion_key, recover_quaternion_flag, 20),
         strategy("Affine EC public-combination discrete log", "offline",
@@ -126,17 +142,20 @@ def _attack_strategies(args):
                      timeout_seconds=args.lattice_timeout,
                  ), 70),
     )
-    def remote(name, recognize, recover, rank, *, backend="python"):
+    def remote(name, recognize, recover, rank, *,
+               backend="python", preflight=None):
         return strategy(
             name, "remote", recognize,
             lambda docs: recover(
                 docs, args.host, args.port, timeout=args.timeout,
             ), rank, capabilities=("network",), backend=backend,
+            preflight=preflight,
         )
     interactive = (
         remote("Polynomial GCD prefix oracle",
                extract_polynomial_gcd_prefix,
-               recover_polynomial_gcd_prefix_flag, 10),
+               recover_polynomial_gcd_prefix_flag, 10,
+               preflight=lambda model: construct_polynomial_gcd_input(model)[1] >= 256),
         remote("Reducible cyclic-ring signature",
                extract_reducible_glp, recover_reducible_glp_flag, 20,
                backend="sage"),

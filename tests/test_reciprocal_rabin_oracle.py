@@ -149,7 +149,23 @@ def _simulate(r,s,t,p,q,c):
 def test_source_recognizer_uses_math_roles_not_names():
     source=_fresh_source(bits=51,labels=("charge","stamp","direction"))
     profile=_source_profile(Document("unseen_oracle.py",source,None))
-    assert profile is not None
+    if profile is None:
+        import ast
+        import cryptoscan.reciprocal_rabin_oracle as detector
+        tree = ast.parse(source)
+        encrypted = detector._reciprocal_encryption(tree)
+        decrypted = detector._quadratic_decrypt(
+            tree, encrypted[0] if encrypted else "unknown",
+        )
+        wire = detector._protocol_profile(
+            tree, encrypted[0] if encrypted else "unknown",
+            decrypted or "unknown",
+        )
+        raise AssertionError(
+            f"source detector stages: encryption={encrypted!r}, "
+            f"CRT={detector._crt_functions(tree)!r}, "
+            f"decrypt={decrypted!r}, wire={wire!r}"
+        )
     assert profile.factor_bits==51
     assert profile.ciphertext_labels == ("charge","stamp","direction")
     assert profile.input_prompt == "please give three integers: "

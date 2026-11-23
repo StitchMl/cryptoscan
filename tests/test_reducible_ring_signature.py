@@ -510,3 +510,41 @@ def test_integral_projection_bounds_are_valid_for_short_secrets(monkeypatch):
 
     with pytest.raises(ValueError, match="monic"):
         worker._projected_coefficient_limits(NonMonic(), dimension, 1, 257)
+
+
+def test_failed_projected_certificate_retries_next_embedding(monkeypatch):
+    """A rejected quotient must not preempt other lattice strategies."""
+    import importlib.util
+    import sys
+    import types
+
+    sage = types.ModuleType("sage")
+    sage.__path__ = []
+    sage_all = types.ModuleType("sage.all")
+    for name in ("GF", "PolynomialRing", "ZZ", "crt", "matrix"):
+        setattr(sage_all, name, object())
+    monkeypatch.setitem(sys.modules, "sage", sage)
+    monkeypatch.setitem(sys.modules, "sage.all", sage_all)
+    path = (Path(__file__).resolve().parents[1] / "src" / "cryptoscan"
+            / "sage_reducible_ring_worker.py")
+    spec = importlib.util.spec_from_file_location("retry_cert_worker", path)
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+
+    attempts = []
+
+    def recover(a, t, factor, modulus, embedding, shortened, deadline):
+        attempts.append((embedding, shortened))
+        return "false-candidate" if shortened else "valid-candidate"
+
+    def validate(candidate):
+        if candidate == "false-candidate":
+            raise worker.ComponentNotRecovered("source shortness certificate failed")
+        return candidate
+
+    monkeypatch.setattr(worker, "_recover_component", recover)
+    factor = types.SimpleNamespace(degree=lambda: 18)
+    assert worker._candidate_component(
+        None, None, factor, 65537, validator=validate,
+    ) == "valid-candidate"
+    assert len(attempts) == 2

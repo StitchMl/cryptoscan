@@ -151,3 +151,21 @@ def test_unrelated_local_gcd_function_is_not_trusted_as_math_gcd():
         "def gcd(a, b):\n    return 1000",
     )
     assert extract_instance([Document("shadowed.py", changed, None)]) is None
+
+
+def test_nonunit_subresultant_can_still_reveal_long_prefix():
+    """A linear modular root need not have an invertible coefficient."""
+    from sympy import Poly, Symbol, subresultants
+    from cryptoscan.polynomial_gcd_prefix import PolynomialGCDPrefix
+
+    variable = Symbol("controlled_input")
+    first = Poly(variable**2 - 3*variable + 188, variable)
+    second = Poly(variable**2 + 15*variable - 180, variable)
+    chain = subresultants(first, second)
+    resulting_modulus = abs(int(chain[-1].nth(0)))
+    linear = next(p for p in chain if p.degree() == 1)
+    assert math.gcd(int(linear.nth(1)), resulting_modulus) > 1
+    model = PolynomialGCDPrefix(first, second, "value = ", "value")
+    chosen, certified = construct_input(model)
+    assert certified > 256
+    assert certified == math.gcd(int(first.eval(chosen)), int(second.eval(chosen)))

@@ -84,7 +84,7 @@ def _source_profile(source):
         and node.func.attr == "fromhex" for node in ast.walk(tree)
     ):
         return None
-    return slices.pop(), symbols.pop()
+    return slices.pop(), symbols.pop(), max(bit_widths)
 
 
 def _order(source, symbol):
@@ -216,12 +216,14 @@ def extract_instance(documents: Sequence[Document]) -> RingScalarLeak | None:
         profile = _source_profile(source.text)
         if profile is None:
             continue
-        key_slice, symbol = profile
+        key_slice, symbol, simulated_bits = profile
         for helper in documents:
             if helper.scope != source.scope:
                 continue
             order = _order(helper.text, symbol)
-            if order is None:
+            # With uniform modulo-order scalar sampling there is no
+            # distinguishing information in the scalar magnitude.
+            if order is None or simulated_bits <= order.bit_length():
                 continue
             for data_document in documents:
                 if (data_document.scope != source.scope

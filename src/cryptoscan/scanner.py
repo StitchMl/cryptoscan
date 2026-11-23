@@ -1806,51 +1806,57 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
         _source_pattern_findings(doc, rules, findings)
         _cbc_source_finding(doc, findings)
     weak_model = extract_weak_seeded_rsa(documents)
-    if weak_model is not None:
-        source = next(
-            (doc.path for doc in documents
-             if weak_seeded_rsa_profile(doc.text) is not None),
-            "<source>",
-        )
+    # A vulnerable PRNG construction is a meaningful source finding even
+    # when the ciphertext/output has not yet been collected. Recovery
+    # requires a separately matched public corpus.
+    for source in documents:
+        profile = weak_seeded_rsa_profile(source.text)
+        if profile is None:
+            continue
+        exponent, length, prime_bits, sampling, mask, first, last = profile
+        matched_output = weak_model is not None and weak_model.exponent == exponent
+        evidence = {
+            "source_verified": True,
+            "first_seed_entropy_bits": first,
+            "prime_candidate_bits": prime_bits,
+            "rsa_exponent": exponent,
+            "plaintext_upper_bound_bits": 8 * length,
+            "public_output_matched": matched_output,
+        }
+        if matched_output:
+            evidence["modulus_bits"] = weak_model.modulus.bit_length()
         findings.append(Finding(
             "RSA-WEAK-SEEDED-PRIME-GENERATOR",
             "Deterministic RSA primes generated from limited-entropy seeds",
-            "high", "high", source,
-            {
-                "source_verified": True,
-                "first_seed_entropy_bits": weak_model.first_seed_bits,
-                "prime_candidate_bits": weak_model.prime_bits,
-                "rsa_exponent": weak_model.exponent,
-                "plaintext_upper_bound_bits": 8 * weak_model.message_bytes,
-                "modulus_bits": weak_model.modulus.bit_length(),
-            },
+            "high", "high", source.path,
+            evidence,
             [
                 "An RSA factor originates from a predictable PRNG initialized "
                 "with an enumerable seed.",
-                "Candidate primes are checked by exact divisibility of N.",
-                "The product of recovered factors must exceed the source-proven "
-                "plaintext bound before partial CRT recovery is unique.",
+                "Candidate primes must be checked by exact divisibility of N.",
+                "Partial CRT gives a unique plaintext only when the recovered "
+                "factor product exceeds the source-proven plaintext bound.",
             ],
             "Enumerate bounded PRNG seeds; regenerate possible primes and "
-            "verify exact factors of N. Decrypt modulo each known factor and "
-            "reconstruct the bounded plaintext with CRT, then re-encrypt to "
-            "verify the result.",
+            "verify exact divisibility by N. Decrypt modulo each known factor "
+            "and reconstruct the bounded plaintext by CRT, then re-encrypt "
+            "to verify the result.",
             {
                 "kind": "rsa_weak_seed_partial_crt",
                 "offline": True,
-                "seed_enumeration_bounded": True,
+                "source_verified": True,
+                "public_corpus_available": matched_output,
                 "requires": ["source", "public modulus", "ciphertext"],
             },
             "Use a cryptographic prime generator with fresh high-entropy "
             "randomness for every prime. Never derive large primes from a "
             "deterministic PRNG seeded by a small secret.",
             [
-                "Identify the PRNG, its seed entropy and its prime sampling loop.",
-                "Regenerate candidate primes for feasible seeds and check N % p == 0.",
-                "Recover enough pairwise-coprime factors that their product "
+                "Identify the PRNG, seed entropy and prime sampling loop.",
+                "Regenerate candidate primes and verify N % p == 0.",
+                "Recover enough independent factors that their product "
                 "exceeds the maximum plaintext integer.",
-                "Compute RSA residues with each factor, combine by CRT and "
-                "verify partial re-encryption.",
+                "Compute residues, combine via CRT and verify re-encryption.",
             ],
         ))
     return findings

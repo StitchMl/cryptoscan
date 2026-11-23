@@ -176,3 +176,24 @@ def test_quaternion_class_renaming_is_semantically_equivalent():
 def test_quaternion_without_inverse_method_is_not_claimed():
     source_without_inverse = source().replace("def invert(self):", "def reciprocal(self):")
     assert _source_shape(source_without_inverse) is None
+
+
+def test_quaternion_public_accessor_renaming_preserves_equivalence():
+    documents, plaintext = synthetic_instance()
+    rewritten = documents[0].text.replace("def pub(self):", "def exposed_values(self):")
+    # Whitespace and tuple formatting changes must not alter AST roles.
+    rewritten = rewritten.replace(
+        "return (self.mod, self.A, self.B, self.G)",
+        "return (\n            self.mod,\n            self.A,\n            self.B,\n            self.G,\n        )",
+    )
+    transformed = [Document("independent_case.py", rewritten, None), documents[1]]
+    assert _source_shape(rewritten) == bytes(16)
+    assert recover_flag(transformed) == plaintext.decode()
+
+
+def test_quaternion_public_tuple_order_is_a_required_equation():
+    changed = source().replace(
+        "return (self.mod, self.A, self.B, self.G)",
+        "return (self.mod, self.B, self.A, self.G)",
+    )
+    assert _source_shape(changed) is None

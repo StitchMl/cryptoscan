@@ -68,6 +68,38 @@ socket timeout; the solver respects source-derived deadlines where
 possible. This attack is not applicable to uniformly sampled
 polynomials or to transcripts without a fixed secret across queries.
 
+## Cyclotomic related-prime RSA via finite-field extension
+
+CryptoScan can detect RSA modulus constructions with a factor pair
+`p` and `Q(p) = 1 + p + ... + p**(d-1)`, also recognized in
+the equivalent expression `(p**d - 1) // (p - 1)`. This property
+implies `Q(p) | (p**d - 1)`: in a degree-`d` finite-field extension
+modulo `p`, exponentiation by the public modulus removes the
+`Q(p)`-order component. Quotient-ring calculations over `Z/NZ`
+then yield nonconstant coefficients divisible by `p`, allowing
+its extraction by a GCD with `N`.
+
+The solver explores bounded independent monic quotient polynomials,
+checks every proposed factor with exact integer division, verifies the
+relation `Q(p)`, checks primality of all recovered factors, decrypts
+RSA, and validates re-encryption. Neither factors nor message
+constants from any known challenge are incorporated. The detector
+uses source ASTs and links the inferred construction to the
+public `N,e,c` transcript; variable names and import aliases are
+derived rather than fixed.
+
+```powershell
+cryptoscan challenge.py output.txt
+cryptoscan challenge.py output.txt --plan-attacks --format json
+cryptoscan challenge.py output.txt --solve
+```
+
+Source-only scans can report the algebraic relation even when
+the public transcript is missing. The method is **conditional**:
+if the prime relation is absent, the extension is reducible for
+the chosen trials, or the model cannot verify factors, CryptoScan
+will not claim recovery. This is not generic RSA factoring.
+
 ## Readable output and colors
 
 By default the terminal report is a short, color-coded finding summary

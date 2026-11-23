@@ -52,8 +52,7 @@ def key_pair(width):
     first, second = draw_prime(width), draw_prime(width)
     return Key(first*second, 12), Private(first,second)
 
-def jacobi(x,y):
-    return 1
+from sympy import jacobi_symbol as jacobi
 
 def stamp(message, public):
     z = (message + public.multiplier * pow(message,-1,public.mod)) % public.mod
@@ -62,7 +61,22 @@ def stamp(message, public):
     return Sealed(z, parity, ordering)
 
 def inverted_quadratic(a,b,modulus):
-    tmp = pow(a + b, -1, modulus)
+    # Independent implementation of arithmetic in F_p[X]/(X**2-aX+b).
+    def times(left, right):
+        head = (left[0]*right[0] - left[1]*right[1]*b) % modulus
+        tail = (left[0]*right[1] + left[1]*right[0]
+                + left[1]*right[1]*a) % modulus
+        return head,tail
+    exponent = (modulus-1)//2
+    power = (0,1)
+    value = (1,0)
+    while exponent:
+        if exponent & 1:
+            value = times(value,power)
+        exponent //= 2
+        if exponent:
+            power = times(power,power)
+    tmp = (-(value[0]-1)*pow(value[1],-1,modulus)) % modulus
     alternate = (a-tmp) % modulus
     return tmp,alternate
 

@@ -201,3 +201,42 @@ def test_scope_filtering_passes_only_relevant_evidence_to_solver():
         "scoped algebra", "TEST{only_first_scope}",
     )
     assert received == docs[:1]
+
+
+def test_preflight_disqualifies_recognized_but_unsolvable_instance():
+    """A recognizable construction is not necessarily an exploitable one."""
+    calls = []
+    blocked = Strategy(
+        "noninvertible attack", "offline",
+        lambda docs: {"algebra": "determinant matrix"},
+        lambda docs: calls.append("bad") or "TEST{unsafe}",
+        preflight=lambda evidence: False,
+    )
+    valid = Strategy(
+        "alternative technique", "offline",
+        lambda docs: {"algebra": "independent observation"},
+        lambda docs: calls.append("good") or "TEST{verified}",
+        rank=200,
+        preflight=lambda evidence: True,
+    )
+    plan = build_plan((blocked, valid), (), mode="offline")
+    assert [candidate.family for candidate in plan.candidates] == [
+        "alternative technique",
+    ]
+    assert "mathematical preconditions" in plan.rejected[0].reason
+    assert execute_plan(plan, ()) == ("alternative technique", "TEST{verified}")
+    assert calls == ["good"]
+
+
+def test_preflight_exception_is_recorded_not_executed():
+    strategy = Strategy(
+        "unavailable modulus", "offline",
+        lambda docs: {"public_modulus": 1},
+        lambda docs: "TEST{bad}",
+        preflight=lambda evidence: (_ for _ in ()).throw(
+            ValueError("public modulus is not usable"),
+        ),
+    )
+    plan = build_plan((strategy,), (), mode="offline")
+    assert plan.candidates == []
+    assert "mathematical preflight failed" in plan.rejected[0].reason

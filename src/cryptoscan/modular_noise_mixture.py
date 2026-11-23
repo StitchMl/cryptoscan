@@ -86,8 +86,15 @@ def _noise_trailing_zero_bits(function):
                 for node in loop.body[:-1]
             ):
                 continue
-            if any(isinstance(stmt, ast.Return) and _name(stmt.value) == acc
-                   for stmt in function.body if stmt.lineno > loop.lineno):
+            try:
+                following = function.body[function.body.index(loop) + 1:]
+            except ValueError:
+                continue
+            # Do not infer a divisible error if the accumulator changes
+            # between the final shift and the returned value.
+            if (len(following) == 1
+                    and isinstance(following[0], ast.Return)
+                    and _name(following[0].value) == acc):
                 return shift
     return None
 
@@ -197,6 +204,22 @@ def _flag_bits(function):
     return False
 
 
+def _key_initialized_before(tree, bit_loop, key_arg, generators):
+    """Prove one key is constructed outside and before the bit loop."""
+    for container in ast.walk(tree):
+        statements = getattr(container, "body", None)
+        if not isinstance(statements, list) or bit_loop not in statements:
+            continue
+        for statement in statements[:statements.index(bit_loop)]:
+            if (isinstance(statement, ast.Assign)
+                    and len(statement.targets) == 1
+                    and _name(statement.targets[0]) == key_arg
+                    and isinstance(statement.value, ast.Call)
+                    and _name(statement.value.func) in generators):
+                return True
+    return False
+
+
 def _source_profile(source):
     if not source or len(source) > _MAX_SOURCE:
         return None
@@ -259,16 +282,14 @@ def _source_profile(source):
             for parent in parents
         ):
             continue
-        key_args = {_name(item) for item in node.elt.args}
-        key_allocations = {
-            stmt.targets[0].id
-            for stmt in ast.walk(tree)
-            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Name)
-            and isinstance(stmt.value, ast.Call)
-            and _name(stmt.value.func) in keys
-        }
-        if key_args & key_allocations:
+        key_arg = _name(node.elt.args[0])
+        if key_arg is not None and any(
+            _key_initialized_before(tree, parent, key_arg, keys)
+            for parent in parents
+            if isinstance(parent, ast.For)
+            and isinstance(parent.iter, ast.Call)
+            and _name(parent.iter.func) in bit_functions
+        ):
             candidates.append((next(iter(keys.values())), real[1], real[2],
                                samples, order.index(real_name)))
     return candidates[0] if len(candidates) == 1 else None

@@ -158,3 +158,21 @@ def test_cli_dispatches_offline_quaternion_solver(tmp_path, monkeypatch, capsys)
     report = capsys.readouterr().out
     assert "equivalent quaternion conjugation key" in report.lower()
     assert "FLAG: TEST{synthetic_dispatch}" in report
+
+
+def test_quaternion_class_renaming_is_semantically_equivalent():
+    """Changing an algebra implementation's class name must not hide the leak."""
+    documents, message = synthetic_instance()
+    renamed = documents[0].text.replace("class Q:", "class QuaternionElement:")
+    renamed = renamed.replace("Q()", "QuaternionElement()")
+    revised = [
+        Document(documents[0].path, renamed, None),
+        documents[1],
+    ]
+    assert _source_shape(renamed) == bytes(16)
+    assert recover_flag(revised) == message.decode()
+
+
+def test_quaternion_without_inverse_method_is_not_claimed():
+    source_without_inverse = source().replace("def invert(self):", "def reciprocal(self):")
+    assert _source_shape(source_without_inverse) is None

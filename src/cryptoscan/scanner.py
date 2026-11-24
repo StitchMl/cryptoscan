@@ -24,6 +24,7 @@ from .mathutil import (
 )
 from .model import Finding
 from .rsa_related_key import extract_instance as extract_related_key, source_profiles as related_key_profiles
+from .rotated_quadratic_rsa import extract_instance as extract_rotated_rsa, source_profiles as rotated_rsa_profiles
 from .eclcg_detector import detect_ec_lcg
 from .fischlin_workflow import supported_source as supported_fischlin_source
 from .dghv_workflow import supported_source as supported_dghv_source
@@ -1491,6 +1492,7 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
     _scan_phase_16(documents, findings)
     _scan_phase_17(documents, findings)
     findings.extend(_related_key_findings(documents))
+    findings.extend(_rotated_rsa_findings(documents))
     unique = {finding.id: finding for finding in findings}
     return sorted(unique.values(), key=lambda finding: (finding.location.casefold(), finding.rule, finding.id))
 
@@ -2239,3 +2241,22 @@ def _related_key_findings(documents):
                 {"kind": "rsa_related_key_material", "offline": True},
                 "Never publish raw RSA encryptions of private key components; use standard key wrapping.",
             )
+
+
+def _rotated_rsa_findings(documents):
+    instance = extract_rotated_rsa(documents)
+    for document in documents:
+        for profile in rotated_rsa_profiles(document):
+            yield Finding(
+                "RSA-ROTATED-QUADRATIC-REPRESENTATIONS",
+                "Jointly rotated norm representations leak an RSA factor",
+                "high", "high", document.path,
+                {"public_corpus_available": instance is not None,
+                 "vector_labels": list(profile.vectors)},
+                ["Two exact representations x_i� + e y_i� = n share an orthogonal rotation."],
+                "Recover e from the rotation-invariant trace, invert the rotation, "
+                "and verify the determinant factor and RSA ciphertext.",
+                {"kind": "rotated_quadratic_rsa", "offline": True},
+                "Do not disclose high-precision rotations of secret representations of an RSA modulus.",
+            )
+

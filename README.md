@@ -169,7 +169,7 @@ coefficients, optional published curve order, and input checks.
 The generic mathematical core selects a twist point of verified
 order, derives its associated x-coordinate, collects one
 authorized oracle response, and applies bounded subgroup discrete
-logarithms, Pohlig-Hellman and CRT. Every recovered scalar residue
+logarithms, Pohlig–Hellman and CRT. Every recovered scalar residue
 is validated against the oracle point, and both possible signs
 are retained because x-only responses identify P and -P.
 
@@ -928,7 +928,7 @@ under Linux/WSL or SageMath if they are not available on your Windows
 Python installation. A 1023-dimensional LLL and optional BKZ may require
 considerable memory/time and might still find no private key.
 The menu asks before starting and optionally accepts a BKZ block size
-(0 for LLL only, 2-60 for BKZ). It never invents a flag from the
+(0 for LLL only, 2–60 for BKZ). It never invents a flag from the
 Hamming-weight leak.
 
 This is a deterministic mathematical method derived from the analyzed
@@ -978,7 +978,7 @@ After the `0` (LLL only) answer, the assistant asks:
 Maximum worker duration in seconds [300]:
 ```
 
-Press Enter for 300 seconds, or choose 1-3600 seconds. A timeout stops the
+Press Enter for 300 seconds, or choose 1–3600 seconds. A timeout stops the
 child process without claiming a flag. If large-instance LLL is too expensive,
 choose `N` at the confirmation rather than repeatedly running it. Native
 Windows LLL at NTRU n=512 is still computationally demanding and is **not**
@@ -1206,4 +1206,3 @@ Finding IDs derive from rule, relative location, and evidence. Reports omit time
 ```console
 python -m pytest
 ```
-

@@ -11,6 +11,7 @@ from .attack_planner import (
 )
 from .cantor_pairing import extract_instance as extract_cantor_pairing, recover_flag as recover_cantor_flag
 from .public_residue_exchange import extract_instance as extract_public_residue, recover_flag as recover_public_residue_flag
+from .gaussian_square_rsa import extract_instance as extract_gaussian_square, recover_flag as recover_gaussian_square_flag
 from .crypto_hypotheses import inspect_hypotheses
 from .rsa_related_key import extract_instance as extract_related_key, recover_flag as recover_related_key_flag
 from .rotated_quadratic_rsa import extract_instance as extract_rotated_rsa, recover_flag as recover_rotated_rsa_flag
@@ -137,6 +138,8 @@ def _attack_strategies(args):
                         tuple(capabilities), rank, backend, preflight)
 
     offline = (
+        strategy("Gaussian RSA over squared semiprime", "offline",
+                 extract_gaussian_square, recover_gaussian_square_flag, 1),
         strategy("Public-residue multiplicative exchange", "offline",
                  extract_public_residue, recover_public_residue_flag, 1),
         strategy("Recursive Cantor pairing of byte sequence", "offline",
@@ -389,6 +392,10 @@ def _report_supported_protocols(args, documents) -> None:
 
 
 def _report_algebraic_protocols(documents) -> None:
+    if extract_gaussian_square(documents) is not None:
+        print("Detected: Gaussian-integer RSA modulo a squared semiprime "
+              "with disclosed factors; source-verified unit-group "
+              "inversion and ciphertext round-trip available offline.")
     if extract_public_residue(documents) is not None:
         print("Detected: multiplicative shared key derives from published "
               "private residues; exact ciphertext division and plaintext "

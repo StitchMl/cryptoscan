@@ -84,8 +84,8 @@ def _profile_inverse(inverse_name, inverse, bindings):
         if isinstance(modulus, ast.Name) and _exponent(power, bindings) == exponent:
             groups.setdefault(modulus.id, []).append((name, base))
     for modulus, entries in groups.items():
-        inverse_ciphers = [name for name, base in entries if _same(base, ast.Name(id=inverse_name))]
-        order_ciphers = [name for name, base in entries if _same(base, order)]
+        inverse_ciphers = [name for name, base in entries if isinstance(base, ast.Name) and base.id == inverse_name]
+        order_ciphers = [name for name, base in entries if isinstance(base, ast.Name) and base.id == order.id]
         other = [name for name, _ in entries if name not in inverse_ciphers + order_ciphers]
         if len(inverse_ciphers) == len(order_ciphers) == len(other) == 1:
             yield Profile(exponent, modulus, inverse_ciphers[0], order_ciphers[0], other[0])

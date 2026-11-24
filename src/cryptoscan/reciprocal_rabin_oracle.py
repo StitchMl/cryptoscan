@@ -45,6 +45,7 @@ class ReciprocalRabinOracle:
     ciphertext_header: str
     result_header: str
     failure_marker: str
+    input_separator: str = ","
 
 
 @dataclass(frozen=True)
@@ -548,6 +549,28 @@ def _protocol_profile(tree, encrypt, decrypt):
         ]
         if len(set(prompts)) != 1:
             continue
+        # Derive the source's input wire representation rather than
+        # assuming comma-separated triples. Fail closed for unfamiliar
+        # parsing or inconsistent delimiters.
+        separators = set()
+        for call in ast.walk(loop):
+            if not (isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "split"):
+                continue
+            if not (len(call.args) in (0, 1)
+                    and (not call.args or isinstance(
+                        call.args[0], ast.Constant))):
+                continue
+            separator = (
+                call.args[0].value if call.args else " "
+            )
+            if (isinstance(separator, str) and len(separator) == 1
+                    and separator in {",", ";", " ", "|", ":"}):
+                separators.add(separator)
+        if len(separators) != 1:
+            continue
+        separator = next(iter(separators))
         nested = [
             call for call in ast.walk(loop)
             if isinstance(call, ast.Call)
@@ -597,7 +620,7 @@ def _protocol_profile(tree, encrypt, decrypt):
         banners = [s for s in banners if s not in prints]
         if len(banners) != 1:
             continue
-        return prompts[0], banners[0], success[0], marker
+        return prompts[0], banners[0], success[0], marker, separator
     return None
 
 
@@ -731,7 +754,7 @@ def _source_profile(document):
     ciphertext_class = next(iter(output_types))
     return ReciprocalRabinOracle(
         bits, classes[ciphertext_class], protocol[0], protocol[1],
-        protocol[2], protocol[3],
+        protocol[2], protocol[3], protocol[4],
     )
 
 
@@ -916,7 +939,8 @@ class TextOracle:
         return tuple(observed[label] for label in labels)
 
     def query(self, r,s,t):
-        self.conn.sendall(f"{r},{s},{t}\n".encode())
+        delimiter = self.profile.input_separator
+        self.conn.sendall(f"{r}{delimiter}{s}{delimiter}{t}\n".encode())
         self.probes += 1
         message = self._until_prompt()
         if self.profile.failure_marker.encode() in message:

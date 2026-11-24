@@ -501,3 +501,63 @@ def test_reassigned_reciprocal_temporary_does_not_get_trusted():
     assert extract_instance([
         Document("reassigned_alias.py", source, None)
     ]) is None
+
+
+@pytest.mark.parametrize("record", [
+    b"alpha = 178\nbeta = -1\ngamma = 0\n",
+    b"Sealed(alpha=178, beta=-1, gamma=0)\n",
+    b'{"alpha":178,"beta":-1,"gamma":0}\n',
+    b"{'alpha': 178, 'beta': -1, 'gamma': 0}\n",
+    b"other_field=4\nSealed(gamma=0,alpha=178,beta=-1)\n",
+])
+def test_wire_parser_handles_independent_named_record_encodings(record):
+    from cryptoscan.reciprocal_rabin_oracle import TextOracle
+
+    profile = extract_instance([
+        Document("alternate_wire.py", _fresh_source(), None)
+    ])
+    assert profile is not None
+    adapter = TextOracle(None, profile)
+    assert adapter._triple(record) == (178, -1, 0)
+
+
+def test_wire_parser_rejects_duplicate_or_incomplete_fields():
+    from cryptoscan.reciprocal_rabin_oracle import TextOracle
+
+    profile = extract_instance([
+        Document("alternate_wire.py", _fresh_source(), None)
+    ])
+    adapter = TextOracle(None, profile)
+    with pytest.raises(ValueError, match="ambiguous"):
+        adapter._triple(b"Sealed(alpha=1,beta=1,gamma=0)\nalpha=2\n")
+    with pytest.raises(ValueError, match="missing"):
+        adapter._triple(b"alpha=1\nbeta=1\n")
+
+
+def test_partial_selector_failures_still_expose_factor_differences():
+    p, q, c = _gen_instance(39, seed=938)
+    records = []
+    for r in range(1, 100):
+        responses = [
+            _simulate(r, sign, order, p, q, c)
+            for sign in (-1, 1) for order in (0, 1)
+        ]
+        if any(reply is None for reply in responses):
+            continue
+        values = [reply[0] for reply in responses]
+        if len(set(values)) != 2:
+            continue
+        # Simulate an unreliable endpoint where one selector result fails.
+        remaining = frozenset(values[:3])
+        if len(remaining) >= 2:
+            records.append((r, remaining))
+        if len(records) >= 10:
+            break
+    assert len(records) >= 3
+    factors = _records_to_factors(records, 35)
+    assert factors is not None
+    assert set(factors) == {p, q}
+    # Partial transcripts must not silently manufacture a public constant:
+    # return a result only with at least two independent compatible samples.
+    if _recover_constant(records, factors) is not None:
+        assert _recover_constant(records, factors) == c

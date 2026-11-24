@@ -29,7 +29,7 @@ from .source_units import parse_python
 _MAX_SOURCE = 1_000_000
 _MAX_PRIME = 367
 _MAX_BATCH = 1024
-_FLAG = re.compile(r"\b[A-Za-z][A-Za-z0-9_]{1,39}\{[^{}\r\n]{1,256}\}")
+_FLAG = re.compile(r"\b[A-Za-z](?a:\w){1,39}\{[^{}\r\n]{1,256}\}")
 
 
 @dataclass(frozen=True)
@@ -80,6 +80,19 @@ def _bound_difference(node):
     return None
 
 
+def _register_from_import(statement, known, names):
+    if statement.module not in set(known.values()):
+        return
+    for alias in statement.names:
+        if alias.name == "*":
+            names.update(
+                {name: name for name, module in known.items()
+                 if module == statement.module}
+            )
+        elif known.get(alias.name) == statement.module:
+            names[alias.asname or alias.name] = alias.name
+
+
 def _sampler_imports(tree):
     """Resolve sampler API aliases while preserving inclusive/exclusive bounds."""
     known = {
@@ -91,16 +104,7 @@ def _sampler_imports(tree):
     names, modules = {}, {}
     for statement in tree.body:
         if isinstance(statement, ast.ImportFrom):
-            if statement.module not in set(known.values()):
-                continue
-            for alias in statement.names:
-                if alias.name == "*":
-                    names.update(
-                        {name: name for name, module in known.items()
-                         if module == statement.module}
-                    )
-                elif known.get(alias.name) == statement.module:
-                    names[alias.asname or alias.name] = alias.name
+            _register_from_import(statement, known, names)
         elif isinstance(statement, ast.Import):
             for alias in statement.names:
                 if alias.name in set(known.values()):
@@ -108,37 +112,43 @@ def _sampler_imports(tree):
     return names, modules
 
 
-def _sampler_bound(node, permitted):
-    if not isinstance(node, ast.Call):
-        return None
+def _sampler_method(node, permitted):
     names, modules = permitted
     func = node.func
     if isinstance(func, ast.Name):
-        method = names.get(func.id)
-    elif (isinstance(func, ast.Attribute)
-            and isinstance(func.value, ast.Name)):
+        return names.get(func.id)
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
         module = modules.get(func.value.id)
         permitted_methods = {
             "Crypto.Util.number": ("getRandomRange",),
             "random": ("randrange", "randint"),
             "secrets": ("randbelow",),
         }
-        method = func.attr if func.attr in permitted_methods.get(module, ()) else None
-    else:
+        return func.attr if func.attr in permitted_methods.get(module, ()) else None
+    return None
+
+
+def _two_argument_bound(method, node):
+    if len(node.args) != 2:
         return None
+    low, high = node.args
+    if not (isinstance(low, ast.Constant) and low.value == 0):
+        return None
+    bound = _bound_difference(high)
+    if bound and method == "randint":
+        member, name, difference = bound
+        return (member, name, difference - 1) if difference >= 2 else None
+    return bound
+
+
+def _sampler_bound(node, permitted):
+    if not isinstance(node, ast.Call):
+        return None
+    method = _sampler_method(node, permitted)
     if method is None:
         return None
     if method in ("getRandomRange", "randint"):
-        if len(node.args) != 2:
-            return None
-        low, high = node.args
-        if not (isinstance(low, ast.Constant) and low.value == 0):
-            return None
-        bound = _bound_difference(high)
-        if bound and method == "randint":
-            member, name, difference = bound
-            return (member, name, difference - 1) if difference >= 2 else None
-        return bound
+        return _two_argument_bound(method, node)
     if method == "randrange":
         if len(node.args) == 1:
             return _bound_difference(node.args[0])
@@ -151,6 +161,69 @@ def _sampler_bound(node, permitted):
     return None
 
 
+def _self_argument_assignments(method, self_name, arguments):
+    """Map `self.field = argument` assignments to their constructor argument."""
+    assignments = {}
+    for stmt in ast.walk(method):
+        if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                and (member := _member(stmt.targets[0])) is not None
+                and member[0] == self_name
+                and (value := _symbol(stmt.value)) in arguments):
+            assignments[member[1]] = value
+    return assignments
+
+
+def _coefficient_shape(stmt, self_name, arguments):
+    """Match `self.f = [secret] + [... for ...]`; return (field, secret, comprehension)."""
+    if not (isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and (target := _member(stmt.targets[0])) is not None
+            and target[0] == self_name
+            and isinstance(stmt.value, ast.BinOp)
+            and isinstance(stmt.value.op, ast.Add)):
+        return None
+    values, random_part = stmt.value.left, stmt.value.right
+    if (not isinstance(values, ast.List) or len(values.elts) != 1
+            or (secret_arg := _symbol(values.elts[0])) not in arguments
+            or not isinstance(random_part, ast.ListComp)
+            or len(random_part.generators) != 1):
+        return None
+    return target[1], secret_arg, random_part
+
+
+def _coefficient_roles(stmt, self_name, arguments, assignments, permitted):
+    """Match `self.f = [secret] + [sample for _ in range(n - 1)]`."""
+    shape = _coefficient_shape(stmt, self_name, arguments)
+    if shape is None:
+        return None
+    field, secret_arg, random_part = shape
+    sampler = _sampler_bound(random_part.elt, permitted)
+    if sampler is None:
+        return None
+    modulus_member, modulus_arg, excluded = sampler
+    if modulus_member and modulus_member[0] == self_name:
+        modulus_arg = assignments.get(modulus_member[1])
+    if modulus_arg is None or modulus_arg == secret_arg:
+        return None
+    loop = random_part.generators[0]
+    if not (isinstance(loop.iter, ast.Call)
+            and isinstance(loop.iter.func, ast.Name)
+            and loop.iter.func.id == "range"
+            and len(loop.iter.args) == 1):
+        return None
+    end = _bound_difference(loop.iter.args[0])
+    if end is None:
+        return None
+    count_member, count_arg, degree_offset = end
+    if degree_offset != 1:
+        return None
+    if count_member and count_member[0] == self_name:
+        count_arg = assignments.get(count_member[1])
+    if count_arg is None or count_arg in (modulus_arg, secret_arg):
+        return None
+    return modulus_arg, count_arg, secret_arg, excluded, field
+
+
 def _constructor_roles(class_node, permitted):
     """Infer modulus, threshold, and constant-term roles from a class AST."""
     for method in class_node.body:
@@ -159,53 +232,12 @@ def _constructor_roles(class_node, permitted):
         parameters = [item.arg for item in method.args.args]
         arguments = set(parameters)
         self_name = parameters[0]
-        assignments = {}
+        assignments = _self_argument_assignments(method, self_name, arguments)
         for stmt in ast.walk(method):
-            if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
-                    and (member := _member(stmt.targets[0])) is not None
-                    and member[0] == self_name
-                    and (value := _symbol(stmt.value)) in arguments):
-                assignments[member[1]] = value
-        for stmt in ast.walk(method):
-            if not (isinstance(stmt, ast.Assign)
-                    and len(stmt.targets) == 1
-                    and (target := _member(stmt.targets[0])) is not None
-                    and target[0] == self_name
-                    and isinstance(stmt.value, ast.BinOp)
-                    and isinstance(stmt.value.op, ast.Add)):
-                continue
-            values, random_part = stmt.value.left, stmt.value.right
-            if (not isinstance(values, ast.List) or len(values.elts) != 1
-                    or (secret_arg := _symbol(values.elts[0])) not in arguments
-                    or not isinstance(random_part, ast.ListComp)
-                    or len(random_part.generators) != 1):
-                continue
-            sampler = _sampler_bound(random_part.elt, permitted)
-            if sampler is None:
-                continue
-            modulus_member, modulus_arg, excluded = sampler
-            if modulus_member and modulus_member[0] == self_name:
-                modulus_arg = assignments.get(modulus_member[1])
-            if modulus_arg is None or modulus_arg == secret_arg:
-                continue
-            loop = random_part.generators[0]
-            if not (isinstance(loop.iter, ast.Call)
-                    and isinstance(loop.iter.func, ast.Name)
-                    and loop.iter.func.id == "range"
-                    and len(loop.iter.args) == 1):
-                continue
-            end = _bound_difference(loop.iter.args[0])
-            if end is None:
-                continue
-            count_member, count_arg, degree_offset = end
-            if degree_offset != 1:
-                continue
-            if count_member and count_member[0] == self_name:
-                count_arg = assignments.get(count_member[1])
-            if count_arg is None or count_arg in (modulus_arg, secret_arg):
-                continue
-            return (modulus_arg, count_arg, secret_arg, excluded,
-                    target[1], self_name, method.name)
+            roles = _coefficient_roles(
+                stmt, self_name, arguments, assignments, permitted)
+            if roles is not None:
+                return (*roles, self_name, method.name)
     return None
 
 
@@ -235,33 +267,37 @@ def _has_polynomial_evaluation(class_node, coefficient_field):
     return False
 
 
+def _is_contiguous_share_comprehension(node, count_field):
+    if not (isinstance(node, (ast.ListComp, ast.GeneratorExp))
+            and len(node.generators) == 1
+            and isinstance(node.elt, ast.Call)
+            and isinstance(node.elt.func, ast.Attribute)
+            and len(node.elt.args) == 1):
+        return False
+    loop = node.generators[0]
+    if not (isinstance(loop.target, ast.Name)
+            and isinstance(loop.iter, ast.Call)
+            and isinstance(loop.iter.func, ast.Name)
+            and loop.iter.func.id == "range"
+            and len(loop.iter.args) == 1
+            and (member := _member(loop.iter.args[0])) is not None
+            and member[1] == count_field):
+        return False
+    x = node.elt.args[0]
+    return (isinstance(x, ast.BinOp)
+            and isinstance(x.op, ast.Add)
+            and _symbol(x.left) == loop.target.id
+            and isinstance(x.right, ast.Constant)
+            and x.right.value == 1)
+
+
 def _has_contiguous_shares(class_node, count_field):
     for method in class_node.body:
         if not isinstance(method, ast.FunctionDef):
             continue
-        for node in ast.walk(method):
-            if not (isinstance(node, (ast.ListComp, ast.GeneratorExp))
-                    and len(node.generators) == 1
-                    and isinstance(node.elt, ast.Call)
-                    and isinstance(node.elt.func, ast.Attribute)
-                    and len(node.elt.args) == 1):
-                continue
-            loop = node.generators[0]
-            if not (isinstance(loop.target, ast.Name)
-                    and isinstance(loop.iter, ast.Call)
-                    and isinstance(loop.iter.func, ast.Name)
-                    and loop.iter.func.id == "range"
-                    and len(loop.iter.args) == 1
-                    and (member := _member(loop.iter.args[0])) is not None
-                    and member[1] == count_field):
-                continue
-            x = node.elt.args[0]
-            if (isinstance(x, ast.BinOp)
-                    and isinstance(x.op, ast.Add)
-                    and _symbol(x.left) == loop.target.id
-                    and isinstance(x.right, ast.Constant)
-                    and x.right.value == 1):
-                return True
+        if any(_is_contiguous_share_comprehension(node, count_field)
+               for node in ast.walk(method)):
+            return True
     return False
 
 
@@ -294,31 +330,39 @@ def _constant_lower_bound(node):
     return None
 
 
-def _prime_range_check(tree, p_name, n_name):
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.If):
-            continue
-        calls = [
-            sub for sub in ast.walk(node.test)
-            if isinstance(sub, ast.Call)
+def _is_prime_test_of(sub, p_name):
+    return (isinstance(sub, ast.Call)
             and len(sub.args) == 1 and _symbol(sub.args[0]) == p_name
             and ((isinstance(sub.func, ast.Name)
                   and sub.func.id in ("isPrime", "isprime"))
                  or isinstance(sub.func, ast.Attribute)
-                 and sub.func.attr in ("isPrime", "isprime"))
-        ]
-        if not calls:
+                 and sub.func.attr in ("isPrime", "isprime")))
+
+
+def _lower_limit(condition, p_name, n_name):
+    """Return L for a chained comparison `L < n < p`, else None."""
+    if (len(condition.ops) == 2
+            and all(isinstance(op, ast.Lt) for op in condition.ops)
+            and len(condition.comparators) == 2
+            and _symbol(condition.comparators[0]) == n_name
+            and _symbol(condition.comparators[1]) == p_name
+            and (limit := _constant_lower_bound(condition.left)) is not None
+            and 0 <= limit <= 300):
+        return limit
+    return None
+
+
+def _prime_range_check(tree, p_name, n_name):
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        if not any(_is_prime_test_of(sub, p_name) for sub in ast.walk(node.test)):
             continue
         for condition in ast.walk(node.test):
             if not isinstance(condition, ast.Compare):
                 continue
-            if (len(condition.ops) == 2
-                    and all(isinstance(op, ast.Lt) for op in condition.ops)
-                    and len(condition.comparators) == 2
-                    and _symbol(condition.comparators[0]) == n_name
-                    and _symbol(condition.comparators[1]) == p_name
-                    and (limit := _constant_lower_bound(condition.left)) is not None
-                    and 0 <= limit <= 300):
+            limit = _lower_limit(condition, p_name, n_name)
+            if limit is not None:
                 return limit
     return None
 
@@ -360,6 +404,161 @@ def _server_deadline(tree):
     return next(iter(values)) if len(values) == 1 else None
 
 
+def _has_share_structure(node, coeff_field, n_arg):
+    if not _has_polynomial_evaluation(node, coeff_field):
+        return False
+    if _has_contiguous_shares(node, n_arg if n_arg else ""):
+        return True
+    # count_field is the self attribute, not its constructor argument
+    count_field = next(
+        (member.attr for stmt in ast.walk(node)
+         if isinstance(stmt, ast.Assign)
+         for member in stmt.targets
+         if isinstance(member, ast.Attribute)
+         and _symbol(stmt.value) == n_arg), None,
+    )
+    return bool(count_field) and _has_contiguous_shares(node, count_field)
+
+
+def _input_prompts(tree, public_p, public_n):
+    prompts = {}
+    for assign in ast.walk(tree):
+        if (isinstance(assign, ast.Assign)
+                and len(assign.targets) == 1
+                and (name := _symbol(assign.targets[0])) in
+                (public_p, public_n)):
+            label = _call_label(assign.value)
+            if label is not None:
+                prompts[name] = label
+    return prompts
+
+
+def _printed_from_instance(tree, printed_name, instance):
+    # The observed slice must be derived from this very constructor.
+    # A disjoint share print elsewhere in the source is not evidence.
+    return any(
+        isinstance(assign, ast.Assign)
+        and len(assign.targets) == 1
+        and _symbol(assign.targets[0]) == printed_name
+        and isinstance(assign.value, ast.Call)
+        and isinstance(assign.value.func, ast.Attribute)
+        and assign.value.func.value is instance
+        for assign in ast.walk(tree)
+    )
+
+
+def _fixed_secret_in_loop(tree, instance, public_secret):
+    """Repeated observations must share the SAME constant term."""
+    loops = [
+        loop for loop in ast.walk(tree)
+        if isinstance(loop, ast.While)
+        and any(child is instance for child in ast.walk(loop))
+    ]
+    secret_definitions = [
+        assign for assign in ast.walk(tree)
+        if isinstance(assign, ast.Assign)
+        and len(assign.targets) == 1
+        and _symbol(assign.targets[0]) == public_secret
+    ]
+    return not (len(loops) != 1 or len(secret_definitions) != 1
+                or secret_definitions[0].lineno >= loops[0].lineno)
+
+
+def _compared_labels(branch, public_secret):
+    if not (isinstance(branch, ast.If)
+            and isinstance(branch.test, ast.Compare)):
+        return []
+    condition = branch.test
+    if (len(condition.ops) != 1
+            or not isinstance(condition.ops[0], ast.Eq)
+            or len(condition.comparators) != 1):
+        return []
+    labels = []
+    for left, right in (
+        (condition.left, condition.comparators[0]),
+        (condition.comparators[0], condition.left),
+    ):
+        if _symbol(right) == public_secret:
+            value = _call_label(left)
+            if value is not None:
+                labels.append(value)
+    return labels
+
+
+def _secret_prompts(tree, public_secret):
+    secrets = set()
+    for branch in ast.walk(tree):
+        secrets.update(_compared_labels(branch, public_secret))
+    return secrets
+
+
+def _instance_profile(tree, node, instance, roles):
+    """Match one constructor call to interactive input and build the oracle."""
+    p_arg, n_arg, secret_arg, excluded = roles[:4]
+    ctor = next(
+        method for method in node.body
+        if isinstance(method, ast.FunctionDef)
+        and len(method.args.args) >= 4
+        and secret_arg in [arg.arg for arg in method.args.args]
+    )
+    parameters = [arg.arg for arg in ctor.args.args[1:]]
+    bindings = {
+        argument: _symbol(value)
+        for argument, value in zip(parameters, instance.args)
+    }
+    public_p = bindings.get(p_arg)
+    public_n = bindings.get(n_arg)
+    public_secret = bindings.get(secret_arg)
+    if not all((public_p, public_n, public_secret)):
+        return None
+    prompts = _input_prompts(tree, public_p, public_n)
+    if public_p not in prompts or public_n not in prompts:
+        return None
+    lower = _prime_range_check(tree, public_p, public_n)
+    bound = _secret_size(tree, public_secret)
+    printing = _sharing_print(tree)
+    if lower is None or bound is None or printing is None:
+        return None
+    label, printed_name = printing
+    if not _printed_from_instance(tree, printed_name, instance):
+        return None
+    if not _fixed_secret_in_loop(tree, instance, public_secret):
+        return None
+    secrets = _secret_prompts(tree, public_secret)
+    if len(secrets) != 1:
+        return None
+    return BiasedShamirOracle(
+        bound, excluded, lower, prompts[public_p],
+        prompts[public_n], secrets.pop(), label,
+        _server_deadline(tree),
+    )
+
+
+def _is_constructor_call(instance, class_name):
+    return (isinstance(instance, ast.Call)
+            and isinstance(instance.func, ast.Name)
+            and instance.func.id == class_name
+            and len(instance.args) >= 3)
+
+
+def _class_profiles(tree, node, permitted):
+    roles = _constructor_roles(node, permitted)
+    if roles is None:
+        return []
+    coeff_field = roles[4]
+    if not _has_share_structure(node, coeff_field, roles[1]):
+        return []
+    profiles = []
+    # Match the constructor call to actual interactive input variables.
+    for instance in ast.walk(tree):
+        if not _is_constructor_call(instance, node.name):
+            continue
+        profile = _instance_profile(tree, node, instance, roles)
+        if profile is not None:
+            profiles.append(profile)
+    return profiles
+
+
 def _source_profile(document):
     if not document.text or len(document.text) > _MAX_SOURCE:
         return None
@@ -369,117 +568,8 @@ def _source_profile(document):
     candidates = []
     permitted = _sampler_imports(tree)
     for node in tree.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        roles = _constructor_roles(node, permitted)
-        if roles is None:
-            continue
-        p_arg, n_arg, secret_arg, excluded, coeff_field, _, _ = roles
-        if (not _has_polynomial_evaluation(node, coeff_field)
-                or not _has_contiguous_shares(node, n_arg if n_arg else "")):
-            # count_field is the self attribute, not its constructor argument
-            count_field = next(
-                (member.attr for stmt in ast.walk(node)
-                 if isinstance(stmt, ast.Assign)
-                 for member in stmt.targets
-                 if isinstance(member, ast.Attribute)
-                 and _symbol(stmt.value) == n_arg), None,
-            )
-            if (not _has_polynomial_evaluation(node, coeff_field)
-                    or not count_field
-                    or not _has_contiguous_shares(node, count_field)):
-                continue
-        # Match the constructor call to actual interactive input variables.
-        for instance in ast.walk(tree):
-            if not (isinstance(instance, ast.Call)
-                    and isinstance(instance.func, ast.Name)
-                    and instance.func.id == node.name
-                    and len(instance.args) >= 3):
-                continue
-            ctor = next(
-                method for method in node.body
-                if isinstance(method, ast.FunctionDef)
-                and len(method.args.args) >= 4
-                and secret_arg in [arg.arg for arg in method.args.args]
-            )
-            parameters = [arg.arg for arg in ctor.args.args[1:]]
-            bindings = {
-                argument: _symbol(value)
-                for argument, value in zip(parameters, instance.args)
-            }
-            public_p = bindings.get(p_arg)
-            public_n = bindings.get(n_arg)
-            public_secret = bindings.get(secret_arg)
-            if not all((public_p, public_n, public_secret)):
-                continue
-            prompts = {}
-            for assign in ast.walk(tree):
-                if (isinstance(assign, ast.Assign)
-                        and len(assign.targets) == 1
-                        and (name := _symbol(assign.targets[0])) in
-                        (public_p, public_n)):
-                    label = _call_label(assign.value)
-                    if label is not None:
-                        prompts[name] = label
-            if public_p not in prompts or public_n not in prompts:
-                continue
-            lower = _prime_range_check(tree, public_p, public_n)
-            bound = _secret_size(tree, public_secret)
-            printing = _sharing_print(tree)
-            if lower is None or bound is None or printing is None:
-                continue
-            label, printed_name = printing
-            # The observed slice must be derived from this very constructor.
-            # A disjoint share print elsewhere in the source is not evidence.
-            if not any(
-                isinstance(assign, ast.Assign)
-                and len(assign.targets) == 1
-                and _symbol(assign.targets[0]) == printed_name
-                and isinstance(assign.value, ast.Call)
-                and isinstance(assign.value.func, ast.Attribute)
-                and assign.value.func.value is instance
-                for assign in ast.walk(tree)
-            ):
-                continue
-            loops = [
-                loop for loop in ast.walk(tree)
-                if isinstance(loop, ast.While)
-                and any(child is instance for child in ast.walk(loop))
-            ]
-            secret_definitions = [
-                assign for assign in ast.walk(tree)
-                if isinstance(assign, ast.Assign)
-                and len(assign.targets) == 1
-                and _symbol(assign.targets[0]) == public_secret
-            ]
-            if (len(loops) != 1 or len(secret_definitions) != 1
-                    or secret_definitions[0].lineno >= loops[0].lineno):
-                # Repeated observations must share the SAME constant term.
-                continue
-            secrets = set()
-            for branch in ast.walk(tree):
-                if not (isinstance(branch, ast.If)
-                        and isinstance(branch.test, ast.Compare)):
-                    continue
-                condition = branch.test
-                if (len(condition.ops) != 1
-                        or not isinstance(condition.ops[0], ast.Eq)
-                        or len(condition.comparators) != 1):
-                    continue
-                for left, right in (
-                    (condition.left, condition.comparators[0]),
-                    (condition.comparators[0], condition.left),
-                ):
-                    if _symbol(right) == public_secret:
-                        value = _call_label(left)
-                        if value is not None:
-                            secrets.add(value)
-            if len(secrets) == 1:
-                candidates.append(BiasedShamirOracle(
-                    bound, excluded, lower, prompts[public_p],
-                    prompts[public_n], secrets.pop(), label,
-                    _server_deadline(tree),
-                ))
+        if isinstance(node, ast.ClassDef):
+            candidates.extend(_class_profiles(tree, node, permitted))
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -503,6 +593,36 @@ def _multiply_linear(polynomial, root, p):
     return next_coefficients
 
 
+def _newton_differences(values, points, p):
+    m = len(values)
+    differences = values.copy()
+    for level in range(1, m):
+        for index in range(m - 1, level - 1, -1):
+            differences[index] = (
+                (differences[index] - differences[index - 1])
+                * pow(points[index] - points[index - level], -1, p)
+            ) % p
+    return differences
+
+
+def _forbidden_constants(base, kernel, m, p, excluded_high):
+    """Return forbidden multiples t, or None when the shares are contradictory."""
+    forbidden = set()
+    for degree in range(1, m + 1):
+        base_coefficient = base[degree] if degree < len(base) else 0
+        multiplier = kernel[degree]
+        if multiplier == 0:
+            if base_coefficient >= p - excluded_high:
+                return None
+            continue
+        inverse = pow(multiplier, -1, p)
+        for illegal in range(p - excluded_high, p):
+            forbidden.add(
+                (illegal - base_coefficient) * inverse % p
+            )
+    return forbidden
+
+
 def candidate_secrets(shares, p, *, x_coordinates=None, excluded_high=1):
     """Enumerate source-compatible constant terms over F_p.
 
@@ -520,23 +640,7 @@ def candidate_secrets(shares, p, *, x_coordinates=None, excluded_high=1):
             or any(x % p == 0 for x in points)
             or any(type(y) is not int or not 0 <= y < p for y in values)):
         raise ValueError("invalid or duplicate shares")
-    if points == list(range(1, m + 1)):
-        differences = values.copy()
-        for level in range(1, m):
-            inverse = pow(level, -1, p)
-            for index in range(m - 1, level - 1, -1):
-                differences[index] = (
-                    (differences[index] - differences[index - 1])
-                    * inverse
-                ) % p
-    else:
-        differences = values.copy()
-        for level in range(1, m):
-            for index in range(m - 1, level - 1, -1):
-                differences[index] = (
-                    (differences[index] - differences[index - 1])
-                    * pow(points[index] - points[index - level], -1, p)
-                ) % p
+    differences = _newton_differences(values, points, p)
     base = [differences[-1]]
     for index in range(m - 2, -1, -1):
         base = _multiply_linear(base, points[index], p)
@@ -544,19 +648,9 @@ def candidate_secrets(shares, p, *, x_coordinates=None, excluded_high=1):
     kernel = [1]
     for point in points:
         kernel = _multiply_linear(kernel, point, p)
-    forbidden = set()
-    for degree in range(1, m + 1):
-        base_coefficient = base[degree] if degree < len(base) else 0
-        multiplier = kernel[degree]
-        if multiplier == 0:
-            if base_coefficient >= p - excluded_high:
-                return frozenset()
-            continue
-        inverse = pow(multiplier, -1, p)
-        for illegal in range(p - excluded_high, p):
-            forbidden.add(
-                (illegal - base_coefficient) * inverse % p
-            )
+    forbidden = _forbidden_constants(base, kernel, m, p, excluded_high)
+    if forbidden is None:
+        return frozenset()
     return frozenset(
         (base[0] + t * kernel[0]) % p
         for t in range(p) if t not in forbidden
@@ -593,6 +687,26 @@ def _crt(residues):
     return value, modulus
 
 
+def _parse_share_list(raw):
+    try:
+        parsed = ast.literal_eval(raw)
+    except (SyntaxError, ValueError):
+        raise ValueError("invalid share list") from None
+    if (not isinstance(parsed, list) or len(parsed) > _MAX_PRIME
+            or not all(type(value) is int for value in parsed)):
+        raise ValueError("invalid finite-field shares")
+    return parsed
+
+
+def _drain_share_lists(buffer, expression, results, expected):
+    while (match := expression.search(buffer)) is not None:
+        results.append(_parse_share_list(match.group(1)))
+        buffer = buffer[match.end():]
+        if len(results) >= expected:
+            break
+    return buffer
+
+
 def _read_share_lists(conn, label, expected, deadline):
     if not 0 < expected <= _MAX_BATCH:
         raise ValueError("unsupported response batch")
@@ -614,19 +728,7 @@ def _read_share_lists(conn, label, expected, deadline):
         buffer += chunk.decode("utf-8", errors="replace")
         if len(buffer) > 3_000_000:
             raise ValueError("oversized secret-sharing response")
-        while (match := expression.search(buffer)) is not None:
-            raw = match.group(1)
-            try:
-                parsed = ast.literal_eval(raw)
-            except (SyntaxError, ValueError):
-                raise ValueError("invalid share list") from None
-            if (not isinstance(parsed, list) or len(parsed) > _MAX_PRIME
-                    or not all(type(value) is int for value in parsed)):
-                raise ValueError("invalid finite-field shares")
-            results.append(parsed)
-            buffer = buffer[match.end():]
-            if len(results) >= expected:
-                break
+        buffer = _drain_share_lists(buffer, expression, results, expected)
     return results
 
 
@@ -645,6 +747,37 @@ def _query_batch(conn, profile, primes, deadline):
         if len(shares) != prime - 2:
             raise ValueError("unexpected number of shares from server")
     return replies
+
+
+def _intersect_observations(possibilities, pending, observed, excluded_high):
+    for prime, shares in zip(pending, observed, strict=True):
+        possibilities[prime] &= candidate_secrets(
+            shares, prime, excluded_high=excluded_high,
+        )
+        if not possibilities[prime]:
+            raise RuntimeError(
+                "the observed shares contradict the source-defined "
+                "coefficient distribution"
+            )
+
+
+def _resolved_secret(possibilities, profile, queries):
+    """Return (secret, details) once unique residues pin the secret, else None."""
+    unique = {
+        prime: next(iter(values))
+        for prime, values in possibilities.items() if len(values) == 1
+    }
+    if math.prod(unique) <= (1 << profile.secret_bits):
+        return None
+    secret, crt_modulus = _crt(unique)
+    if crt_modulus <= (1 << profile.secret_bits):
+        raise RuntimeError("CRT has not determined a unique secret")
+    return secret, {
+        "queries": queries, "primes_used": len(unique),
+        "crt_modulus_bits": crt_modulus.bit_length(),
+        "secret_upper_bound_bits": profile.secret_bits,
+        "independent_residues": True,
+    }
 
 
 def recover_secret_from_oracle(conn, profile, *,
@@ -670,30 +803,11 @@ def recover_secret_from_oracle(conn, profile, *,
                 raise RuntimeError("bounded share-query budget exhausted")
             observed = _query_batch(conn, profile, pending, deadline)
             queries += len(pending)
-            for prime, shares in zip(pending, observed, strict=True):
-                possibilities[prime] &= candidate_secrets(
-                    shares, prime, excluded_high=profile.excluded_high,
-                )
-                if not possibilities[prime]:
-                    raise RuntimeError(
-                        "the observed shares contradict the source-defined "
-                        "coefficient distribution"
-                    )
-        unique = {
-            prime: next(iter(values))
-            for prime, values in possibilities.items() if len(values) == 1
-        }
-        total = math.prod(unique)
-        if total > (1 << profile.secret_bits):
-            secret, crt_modulus = _crt(unique)
-            if crt_modulus <= (1 << profile.secret_bits):
-                raise RuntimeError("CRT has not determined a unique secret")
-            return secret, {
-                "queries": queries, "primes_used": len(unique),
-                "crt_modulus_bits": crt_modulus.bit_length(),
-                "secret_upper_bound_bits": profile.secret_bits,
-                "independent_residues": True,
-            }
+            _intersect_observations(
+                possibilities, pending, observed, profile.excluded_high)
+        resolved = _resolved_secret(possibilities, profile, queries)
+        if resolved is not None:
+            return resolved
         pending = [
             p for p in primes if len(possibilities[p]) > 1
         ]
@@ -717,7 +831,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         raise ValueError("timeout must be positive")
     with connect_authorized(host, port, timeout) as conn:
         conn.settimeout(min(timeout, 2.0))
-        secret, certificate = recover_secret_from_oracle(
+        secret, _ = recover_secret_from_oracle(
             conn, profile, budget_seconds=budget, max_queries=max_queries,
         )
         # An invalid prime exits the loop. Input for the final guess may

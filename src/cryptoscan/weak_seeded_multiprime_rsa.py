@@ -45,6 +45,20 @@ def _name(node):
     return node.id if isinstance(node, ast.Name) else None
 
 
+def _apply_op(op, a, b):
+    if isinstance(op, ast.Add):
+        return a + b
+    if isinstance(op, ast.Sub):
+        return a - b
+    if isinstance(op, ast.Pow) and b <= 32:
+        return a**b
+    if isinstance(op, ast.LShift) and b <= 32:
+        return a << b
+    if isinstance(op, ast.BitOr):
+        return a | b
+    return None
+
+
 def _integer(node, definitions, seen=frozenset()):
     """Bounded integer-expression interpreter; never eval source text."""
     if isinstance(node, ast.Constant) and type(node.value) is int:
@@ -57,17 +71,8 @@ def _integer(node, definitions, seen=frozenset()):
     b = _integer(node.right, definitions, seen)
     if a is None or b is None:
         return None
-    if isinstance(node.op, ast.Add):
-        out = a + b
-    elif isinstance(node.op, ast.Sub):
-        out = a - b
-    elif isinstance(node.op, ast.Pow) and b <= 32:
-        out = a**b
-    elif isinstance(node.op, ast.LShift) and b <= 32:
-        out = a << b
-    elif isinstance(node.op, ast.BitOr):
-        out = a | b
-    else:
+    out = _apply_op(node.op, a, b)
+    if out is None:
         return None
     return out if 0 <= out <= 1 << 20 else None
 
@@ -126,6 +131,32 @@ def _bounded_seed(node, argument, modules, functions, definitions=None,
     return False
 
 
+def _rng_allocation(statement, argument, modules, imports, definitions):
+    """Return (target, bounded_seed) for `x = random.Random(...)`, else None."""
+    if not (isinstance(statement, ast.Assign) and len(statement.targets) == 1):
+        return None
+    target = _name(statement.targets[0])
+    value = statement.value
+    if not (target and isinstance(value, ast.Call)):
+        return None
+    module, name = _origin(value.func, modules, imports)
+    if not (module in ("random", None) and name == "Random" and len(value.args) <= 1):
+        return None
+    bounded = bool(value.args) and _bounded_seed(
+        value.args[0], argument, modules, imports, definitions)
+    return target, bounded
+
+
+def _is_bounded_reseed(node, allocated, argument, modules, imports, definitions):
+    return (isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and _name(node.func.value) in allocated
+            and node.func.attr == "seed"
+            and len(node.args) == 1
+            and _bounded_seed(node.args[0], argument, modules, imports,
+                              definitions))
+
+
 def _seeded_rng(function, modules, imports):
     if not function.args.args:
         return None
@@ -133,24 +164,15 @@ def _seeded_rng(function, modules, imports):
     allocated, seeded_at = set(), {}
     local_definitions = _definitions(function.body)
     for statement in function.body:
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = _name(statement.targets[0])
-            value = statement.value
-            if target and isinstance(value, ast.Call):
-                module, name = _origin(value.func, modules, imports)
-                if module in ("random", None) and name == "Random" and len(value.args) <= 1:
-                    allocated.add(target)
-                    if value.args and _bounded_seed(value.args[0], argument, modules, imports,
-                                                       local_definitions):
-                        seeded_at[target] = statement.lineno
+        allocation = _rng_allocation(
+            statement, argument, modules, imports, local_definitions)
+        if allocation:
+            allocated.add(allocation[0])
+            if allocation[1]:
+                seeded_at[allocation[0]] = statement.lineno
         for node in ast.walk(statement):
-            if (isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Attribute)
-                    and _name(node.func.value) in allocated
-                    and node.func.attr == "seed"
-                    and len(node.args) == 1
-                    and _bounded_seed(node.args[0], argument, modules, imports,
-                                      local_definitions)):
+            if _is_bounded_reseed(node, allocated, argument, modules, imports,
+                                  local_definitions):
                 name = _name(node.func.value)
                 seeded_at[name] = min(seeded_at.get(name, node.lineno), node.lineno)
     if len(seeded_at) != 1:
@@ -159,19 +181,64 @@ def _seeded_rng(function, modules, imports):
     return rng, seeded_at[rng]
 
 
+def _power_of_two_expr_bits(node, definitions):
+    left = _integer(node.left, definitions)
+    right = _integer(node.right, definitions)
+    if right is not None and 1 <= right <= _MAX_PRIME_BITS:
+        if left == 2 and isinstance(node.op, ast.Pow):
+            return right
+        if left == 1 and isinstance(node.op, ast.LShift):
+            return right
+    return None
+
+
 def _power_of_two_bits(node, definitions):
     if isinstance(node, ast.BinOp):
-        left = _integer(node.left, definitions)
-        right = _integer(node.right, definitions)
-        if right is not None and 1 <= right <= _MAX_PRIME_BITS:
-            if left == 2 and isinstance(node.op, ast.Pow):
-                return right
-            if left == 1 and isinstance(node.op, ast.LShift):
-                return right
+        bits = _power_of_two_expr_bits(node, definitions)
+        if bits is not None:
+            return bits
     if isinstance(node, ast.Constant) and type(node.value) is int:
         value = node.value
         if value > 0 and (value & (value - 1)) == 0:
             return value.bit_length() - 1
+    return None
+
+
+def _split_mask(node, definitions):
+    """Split `expr | constant` into (mask, expr); (0, node) otherwise."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        if (v := _integer(node.right, definitions)) is not None:
+            return v, node.left
+        if (v := _integer(node.left, definitions)) is not None:
+            return v, node.right
+    return 0, node
+
+
+def _rng_sample_bits(node, rng, definitions):
+    """Return (bits, method) for a single-argument call on the seeded RNG."""
+    if not (isinstance(node, ast.Call) and len(node.args) == 1
+            and isinstance(node.func, ast.Attribute)
+            and _name(node.func.value) == rng):
+        return None
+    method = node.func.attr
+    if method == "getrandbits":
+        return _integer(node.args[0], definitions), method
+    if method in ("_randbelow", "randrange"):
+        return _power_of_two_bits(node.args[0], definitions), method
+    return None
+
+
+def _inherit_draw(node, mask, rng, definitions, seen, allow_even_intermediate):
+    returned = _prime_draw(
+        definitions[node.id], rng, definitions, seen | {node.id},
+        allow_even_intermediate=bool(mask & 1) or allow_even_intermediate,
+    )
+    if returned is None:
+        return None
+    bits, method, inherited_mask = returned
+    combined_mask = mask | inherited_mask
+    if (combined_mask & 1 or allow_even_intermediate) and combined_mask.bit_length() <= bits:
+        return bits, method, combined_mask
     return None
 
 
@@ -184,34 +251,14 @@ def _prime_draw(node, rng, definitions, seen=frozenset(), *,
             definitions[node.id], rng, definitions, seen | {node.id},
             allow_even_intermediate=allow_even_intermediate,
         )
-    mask = 0
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        if (v := _integer(node.right, definitions)) is not None:
-            mask, node = v, node.left
-        elif (v := _integer(node.left, definitions)) is not None:
-            mask, node = v, node.right
+    mask, node = _split_mask(node, definitions)
     if (isinstance(node, ast.Name) and node.id in definitions and node.id not in seen):
-        returned = _prime_draw(
-            definitions[node.id], rng, definitions, seen | {node.id},
-            allow_even_intermediate=bool(mask & 1) or allow_even_intermediate,
-        )
-        if returned is not None:
-            bits, method, inherited_mask = returned
-            combined_mask = mask | inherited_mask
-            if (combined_mask & 1 or allow_even_intermediate) and combined_mask.bit_length() <= bits:
-                return bits, method, combined_mask
+        return _inherit_draw(node, mask, rng, definitions, seen,
+                             allow_even_intermediate)
+    sampled = _rng_sample_bits(node, rng, definitions)
+    if sampled is None:
         return None
-    if not (isinstance(node, ast.Call) and len(node.args) == 1
-            and isinstance(node.func, ast.Attribute)
-            and _name(node.func.value) == rng):
-        return None
-    method = node.func.attr
-    if method == "getrandbits":
-        bits = _integer(node.args[0], definitions)
-    elif method in ("_randbelow", "randrange"):
-        bits = _power_of_two_bits(node.args[0], definitions)
-    else:
-        return None
+    bits, method = sampled
     if (bits is None or not 32 <= bits <= _MAX_PRIME_BITS
             or (not mask & 1 and not allow_even_intermediate)
             or mask.bit_length() > bits):
@@ -219,12 +266,8 @@ def _prime_draw(node, rng, definitions, seen=frozenset(), *,
     return bits, method, mask
 
 
-def _prime_generator(function, modules, imports, definitions):
-    configured = _seeded_rng(function, modules, imports)
-    if configured is None:
-        return None
-    rng, seed_line = configured
-    prime_vars = set()
+def _primality_checked_names(function, modules, imports):
+    names = set()
     for node in ast.walk(function):
         if not (isinstance(node, ast.Call) and len(node.args) == 1):
             continue
@@ -232,7 +275,23 @@ def _prime_generator(function, modules, imports, definitions):
         if predicate in ("isPrime", "isprime") and module in (
                 None, "Crypto.Util.number", "sympy", "sympy.ntheory.primetest"):
             if (name := _name(node.args[0])) is not None:
-                prime_vars.add(name)
+                names.add(name)
+    return names
+
+
+def _returns_name(function, target):
+    return any(
+        isinstance(node, ast.Return) and _name(node.value) == target
+        for node in ast.walk(function)
+    )
+
+
+def _prime_generator(function, modules, imports, definitions):
+    configured = _seeded_rng(function, modules, imports)
+    if configured is None:
+        return None
+    rng, seed_line = configured
+    prime_vars = _primality_checked_names(function, modules, imports)
     draws = []
     local_definitions = _definitions(ast.walk(function))
     # A candidate target can have multiple assignments; its sampling
@@ -248,12 +307,21 @@ def _prime_generator(function, modules, imports, definitions):
     if len(draws) != 1:
         return None
     target, draw = draws[0]
-    if not any(
-        isinstance(node, ast.Return) and _name(node.value) == target
-        for node in ast.walk(function)
-    ):
+    if not _returns_name(function, target):
         return None
     return draw
+
+
+def _len_operand_size(length, number, message, definitions):
+    if (isinstance(length, ast.Call)
+            and isinstance(length.func, ast.Name)
+            and length.func.id == "len"
+            and len(length.args) == 1
+            and _name(length.args[0]) == message):
+        size = _integer(number, definitions)
+        if size is not None and 1 <= size <= 4096:
+            return size
+    return None
 
 
 def _message_length(tree, message, definitions):
@@ -269,15 +337,27 @@ def _message_length(tree, message, definitions):
             (node.test.left, node.test.comparators[0]),
             (node.test.comparators[0], node.test.left),
         ):
-            if (isinstance(length, ast.Call)
-                    and isinstance(length.func, ast.Name)
-                    and length.func.id == "len"
-                    and len(length.args) == 1
-                    and _name(length.args[0]) == message):
-                size = _integer(number, definitions)
-                if size is not None and 1 <= size <= 4096:
-                    sizes.add(size)
+            size = _len_operand_size(length, number, message, definitions)
+            if size is not None:
+                sizes.add(size)
     return next(iter(sizes)) if len(sizes) == 1 else None
+
+
+def _plaintext_secret(plain, modules, imports):
+    """Name of the bytes variable converted to an integer, else None."""
+    module, conversion = _origin(plain.func, modules, imports)
+    if (conversion == "bytes_to_long"
+            and module in (None, "Crypto.Util.number")
+            and len(plain.args) == 1):
+        return _name(plain.args[0])
+    if (isinstance(plain.func, ast.Attribute)
+            and _name(plain.func.value) == "int"
+            and plain.func.attr == "from_bytes"
+            and len(plain.args) == 2
+            and isinstance(plain.args[1], ast.Constant)
+            and plain.args[1].value == "big"):
+        return _name(plain.args[0])
+    return None
 
 
 def _encryption(tree, modulus, definitions, modules, imports):
@@ -293,24 +373,58 @@ def _encryption(tree, modulus, definitions, modules, imports):
         plain = node.args[0]
         if not isinstance(plain, ast.Call):
             continue
-        module, conversion = _origin(plain.func, modules, imports)
-        if (conversion == "bytes_to_long"
-                and module in (None, "Crypto.Util.number")
-                and len(plain.args) == 1):
-            secret = _name(plain.args[0])
-        elif (isinstance(plain.func, ast.Attribute)
-                and _name(plain.func.value) == "int"
-                and plain.func.attr == "from_bytes"
-                and len(plain.args) == 2
-                and isinstance(plain.args[1], ast.Constant)
-                and plain.args[1].value == "big"):
-            secret = _name(plain.args[0])
-        else:
-            continue
+        secret = _plaintext_secret(plain, modules, imports)
         exponent = _integer(node.args[1], definitions)
         if secret and exponent and exponent > 1 and exponent % 2:
             candidates.append((secret, exponent))
     return candidates[0] if len(candidates) == 1 else None
+
+
+def _prime_generators(tree, modules, imports, definitions):
+    generators = {}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            if (result := _prime_generator(node, modules, imports, definitions)):
+                generators[node.name] = result
+    return generators
+
+
+def _product_comprehension(node, modules, imports, generators):
+    """Match `N = prod(gen(i) for i in range(a, b))`; return (modulus, generator, loop)."""
+    if not (isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Call)
+            and len(node.value.args) == 1
+            and isinstance(node.value.args[0], (ast.GeneratorExp, ast.ListComp))):
+        return None
+    origin, product = _origin(node.value.func, modules, imports)
+    if product != "prod" or origin not in (None, "math"):
+        return None
+    generator = node.value.args[0]
+    if (len(generator.generators) != 1
+            or not isinstance(generator.elt, ast.Call)
+            or not isinstance(generator.elt.func, ast.Name)
+            or generator.elt.func.id not in generators
+            or len(generator.elt.args) != 1):
+        return None
+    loop = generator.generators[0]
+    if not (isinstance(loop.target, ast.Name)
+            and _name(generator.elt.args[0]) == loop.target.id
+            and isinstance(loop.iter, ast.Call)
+            and isinstance(loop.iter.func, ast.Name)
+            and loop.iter.func.id == "range"
+            and len(loop.iter.args) == 2):
+        return None
+    return node.targets[0].id, generator, loop
+
+
+def _is_len_of(stop, message):
+    return (isinstance(stop, ast.Call)
+            and isinstance(stop.func, ast.Name)
+            and stop.func.id == "len"
+            and len(stop.args) == 1
+            and _name(stop.args[0]) == message)
 
 
 def _source_profile(source):
@@ -321,52 +435,21 @@ def _source_profile(source):
         return None
     definitions = _definitions(tree.body)
     modules, imports = _imports(tree)
-    generators = {}
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            if (result := _prime_generator(node, modules, imports, definitions)):
-                generators[node.name] = result
+    generators = _prime_generators(tree, modules, imports, definitions)
     profiles = []
     for node in tree.body:
-        if not (isinstance(node, ast.Assign)
-                and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and isinstance(node.value, ast.Call)
-                and len(node.value.args) == 1
-                and isinstance(node.value.args[0], (ast.GeneratorExp, ast.ListComp))):
+        matched = _product_comprehension(node, modules, imports, generators)
+        if matched is None:
             continue
-        modulus = node.targets[0].id
-        origin, product = _origin(node.value.func, modules, imports)
-        if (product != "prod" or origin not in (None, "math")):
-            continue
-        generator = node.value.args[0]
-        if (len(generator.generators) != 1
-                or not isinstance(generator.elt, ast.Call)
-                or not isinstance(generator.elt.func, ast.Name)
-                or generator.elt.func.id not in generators
-                or len(generator.elt.args) != 1):
-            continue
-        loop = generator.generators[0]
-        if not (isinstance(loop.target, ast.Name)
-                and _name(generator.elt.args[0]) == loop.target.id
-                and isinstance(loop.iter, ast.Call)
-                and isinstance(loop.iter.func, ast.Name)
-                and loop.iter.func.id == "range"
-                and len(loop.iter.args) == 2):
-            continue
+        modulus, generator, loop = matched
         start = _integer(loop.iter.args[0], definitions)
         encryption = _encryption(tree, modulus, definitions, modules, imports)
         if start is None or start < 0 or start > 16 or encryption is None:
             continue
         message, exponent = encryption
         length = _message_length(tree, message, definitions)
-        stop = loop.iter.args[1]
         if (length is None or length <= start
-                or not isinstance(stop, ast.Call)
-                or not isinstance(stop.func, ast.Name)
-                or stop.func.id != "len"
-                or len(stop.args) != 1
-                or _name(stop.args[0]) != message):
+                or not _is_len_of(loop.iter.args[1], message)):
             continue
         prime_bits, method, mask = generators[generator.elt.func.id]
         profiles.append((exponent, length, prime_bits, method, mask,

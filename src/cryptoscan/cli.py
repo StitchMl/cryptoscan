@@ -231,6 +231,10 @@ def _attack_strategies(args):
     return offline + interactive
 
 
+def _analysis_only_solver(_documents):
+    raise RuntimeError("analysis-only; flag solver not implemented")
+
+
 def _analysis_strategies():
     """Source-derived mathematical investigations without a flag solver.
 
@@ -242,9 +246,7 @@ def _analysis_strategies():
             "Hyperelliptic Mumford-state curve reconstruction",
             "analysis",
             extract_hyperelliptic_leak,
-            lambda docs: (_ for _ in ()).throw(
-                RuntimeError("analysis-only; flag solver not implemented"),
-            ),
+            _analysis_only_solver,
             rank=10,
         ),
     )
@@ -291,7 +293,7 @@ def _execute_attack_plan(args, documents) -> int | None:
     if not plan.candidates:
         return None
     try:
-        family, plaintext = execute_plan(plan, documents)
+        _, plaintext = execute_plan(plan, documents)
     except RecoveryExhausted as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -318,11 +320,15 @@ def _solve_documents(args, documents) -> int:
     return 2
 
 
-def _validate_arguments(args) -> None:
+def _validate_numeric_arguments(args) -> None:
     if not 1 <= args.seed_search_limit <= (1 << 20):
         _parser().error("--seed-search-limit must be between 1 and 1048576")
     if args.fermat_steps < 0:
         _parser().error("--fermat-steps must be non-negative")
+
+
+def _validate_arguments(args) -> None:
+    _validate_numeric_arguments(args)
     if args.assist and args.no_assist:
         _parser().error("--assist and --no-assist cannot be combined")
     if args.solve and (args.format == "json" or args.assist or args.no_assist):
@@ -368,6 +374,12 @@ def _special_command(arguments: list[str]) -> int | list[str]:
 def _report_supported_protocols(args, documents) -> None:
     if args.format != "text":
         return
+    _report_algebraic_protocols(documents)
+    _report_key_recovery_protocols(documents)
+    _report_oracle_protocols(documents)
+
+
+def _report_algebraic_protocols(documents) -> None:
     reciprocal = extract_reciprocal_rabin(documents)
     if reciprocal is not None:
         print("Detected: reciprocal-Rabin encryption with per-prime "
@@ -426,6 +438,9 @@ def _report_supported_protocols(args, documents) -> None:
               "commuting public power and inverse conjugacy; modular "
               "linear-key recovery and offline AES-CBC verification available "
               f"({quaternion.modulus.bit_length()}-bit modulus).")
+
+
+def _report_key_recovery_protocols(documents) -> None:
     affine_ec = extract_affine_ec_leak(documents)
     if affine_ec is not None:
         print("Detected: public affine combinations of elliptic-curve points "
@@ -451,6 +466,9 @@ def _report_supported_protocols(args, documents) -> None:
         print("Detected: pairing-based confirmation protocol exposes a product "
               "of verifier secrets; source-gated signature-confirmation forgery "
               "available (SageMath worker).")
+
+
+def _report_oracle_protocols(documents) -> None:
     rsa_shares = extract_truncated_rsa(documents)
     if rsa_shares is not None:
         print("Detected: reshare-dependent truncated RSA private-exponent "
@@ -472,6 +490,55 @@ def _report_supported_protocols(args, documents) -> None:
               "(witness, special-soundness extraction, HVZK simulation).")
 
 
+def _run_investigation(args, documents) -> int:
+    if len({document.scope for document in documents}) != 1:
+        _parser().error("--investigate requires a single source scope")
+    try:
+        result = investigate_hyperelliptic(
+            documents, args.host, args.port, timeout=args.timeout,
+        )
+    except (RuntimeError, ValueError, OSError, ImportError,
+            ArithmeticError) as exc:
+        print(f"Source-verified mathematical investigation failed: {exc}",
+              file=sys.stderr)
+        return 2
+    if args.format == "json":
+        print(json.dumps({
+            "schema_version": 1,
+            "investigation": result.report(),
+        }, sort_keys=True, indent=2, ensure_ascii=False))
+    else:
+        print("Jacobian curve reconstructed and verified from "
+              f"{result.states} observed divisor states.")
+        print("Recovered curve coefficients (ascending degree): "
+              + ", ".join(map(str, result.polynomial)))
+        print("Flag recovery: " +
+              (result.recovered_flag or
+               "not uniquely established; " + result.explanation))
+    return 0
+
+
+def _print_attack_plan(args, plan) -> None:
+    print("Applicable attack families:")
+    for candidate in plan.candidates:
+        print(f"  - {candidate.family} ({candidate.strategy.backend})")
+    for candidate in plan.investigations:
+        print(f"  - {candidate.family} [analysis only; no flag solver]")
+    if not plan.candidates and not plan.investigations:
+        print("  none with verified source preconditions")
+    if args.verbose:
+        for rejected in plan.rejected:
+            print(f"  skipped {rejected.family}: {rejected.reason}")
+
+
+def _print_hypotheses(documents) -> None:
+    hypotheses = inspect_hypotheses(documents)
+    if hypotheses:
+        print("Cryptographic attack hypotheses (unverified; not confirmed weaknesses):")
+        for hypothesis in hypotheses:
+            print(f"  - {hypothesis.family}: {hypothesis.next_checks[0]}.")
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     command = _special_command(arguments)
@@ -482,31 +549,7 @@ def main(argv: list[str] | None = None) -> int:
     documents = collect_documents(args.targets)
     findings = scan(documents, args.fermat_steps)
     if args.investigate:
-        if len({document.scope for document in documents}) != 1:
-            _parser().error("--investigate requires a single source scope")
-        try:
-            result = investigate_hyperelliptic(
-                documents, args.host, args.port, timeout=args.timeout,
-            )
-        except (RuntimeError, ValueError, OSError, ImportError,
-                ArithmeticError) as exc:
-            print(f"Source-verified mathematical investigation failed: {exc}",
-                  file=sys.stderr)
-            return 2
-        if args.format == "json":
-            print(json.dumps({
-                "schema_version": 1,
-                "investigation": result.report(),
-            }, sort_keys=True, indent=2, ensure_ascii=False))
-        else:
-            print("Jacobian curve reconstructed and verified from "
-                  f"{result.states} observed divisor states.")
-            print("Recovered curve coefficients (ascending degree): "
-                  + ", ".join(map(str, result.polynomial)))
-            print("Flag recovery: " +
-                  (result.recovered_flag or
-                   "not uniquely established; " + result.explanation))
-        return 0
+        return _run_investigation(args, documents)
     if args.plan_attacks and args.format == "json":
         plan = _candidate_plan(args, documents)
         print(json.dumps({
@@ -518,24 +561,10 @@ def main(argv: list[str] | None = None) -> int:
     _print_report(args, findings)
     _report_supported_protocols(args, documents)
     if args.plan_attacks:
-        plan = _candidate_plan(args, documents)
-        print("Applicable attack families:")
-        for candidate in plan.candidates:
-            print(f"  - {candidate.family} ({candidate.strategy.backend})")
-        for candidate in plan.investigations:
-            print(f"  - {candidate.family} [analysis only; no flag solver]")
-        if not plan.candidates and not plan.investigations:
-            print("  none with verified source preconditions")
-        if args.verbose:
-            for rejected in plan.rejected:
-                print(f"  skipped {rejected.family}: {rejected.reason}")
+        _print_attack_plan(args, _candidate_plan(args, documents))
         return 0
     if args.format == "text" and not findings:
-        hypotheses = inspect_hypotheses(documents)
-        if hypotheses:
-            print("Cryptographic attack hypotheses (unverified; not confirmed weaknesses):")
-            for hypothesis in hypotheses:
-                print(f"  - {hypothesis.family}: {hypothesis.next_checks[0]}.")
+        _print_hypotheses(documents)
     if args.solve:
         return _solve_documents(args, documents)
     if _should_assist(args, findings):

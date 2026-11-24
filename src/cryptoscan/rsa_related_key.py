@@ -124,12 +124,11 @@ def _public_instance(profile, output):
 def extract_instance(documents: Sequence[Document]):
     matches = set()
     for source in documents:
+        outputs = [output for output in documents
+                   if output.scope == source.scope and output.path != source.path]
         for profile in source_profiles(source):
-            for output in documents:
-                if output.scope == source.scope and output.path != source.path:
-                    instance = _public_instance(profile, output)
-                    if instance is not None:
-                        matches.add(instance)
+            instances = (_public_instance(profile, output) for output in outputs)
+            matches.update(item for item in instances if item is not None)
     return next(iter(matches)) if len(matches) == 1 else None
 
 

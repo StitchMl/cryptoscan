@@ -57,6 +57,8 @@ from .parser import (
     scalar_records,
 )
 
+_AUTHORIZED_HOST = "authorized host"
+
 
 def _pick(obj: dict[str, Any], *names: str) -> Any | None:
     lowered = {str(k).casefold(): v for k, v in obj.items()}
@@ -1604,40 +1606,7 @@ def _cbc_source_finding(doc: Document, findings: list[Finding]) -> None:
         ))
 
 
-def _source_findings(documents: list[Document]) -> list[Finding]:
-    rules = [
-        ("HASH-WEAK", "Weak hash primitive", "medium", r"\b(?:md5|sha1)\s*\(",
-         "Collision and chosen-prefix attacks can defeat integrity checks built on this digest.",
-         "Use SHA-256 or SHA-3 for digests; use HMAC-SHA-256 for keyed authentication."),
-        ("MAC-PREFIX-HASH", "Secret-prefix hash MAC may permit length extension", "high",
-         r"(?:md5|sha1|sha256)\s*\(\s*(?:secret|key)\s*\+",
-         "Compute a length-extension suffix after guessing secret length; submit the extended message and forged digest.",
-         "Use HMAC with a maintained cryptographic library."),
-        ("PRNG-PREDICTABLE-SEED", "Predictable PRNG seed", "high",
-         r"(?:random\.seed\s*\(\s*(?:time|int\s*\(\s*time)|srand\s*\(\s*time)",
-         "Enumerate timestamps around challenge execution, regenerate outputs, then recover the key or token.",
-         "Use secrets or an operating-system CSPRNG. Do not seed it with time."),
-        ("PRNG-MT-CRYPTO", "Mersenne Twister used in cryptographic path", "high",
-         r"\b(?:mt19937|random\.getrandbits|random\.randbytes)\b",
-         "Collect enough outputs to clone MT state, then predict later keys, nonces, or tokens.",
-         "Use secrets.token_bytes or an operating-system CSPRNG."),
-        ("PRNG-NONCRYPTO-RANDOM", "Non-cryptographic random value protects a secret", "high",
-         r"\b(?:key|nonce|token|secret|otp)\s*=\s*random\.(?:randint|randrange|choice|choices)\s*\(",
-         "Reconstruct or brute-force the PRNG state, then predict the generated secret value.",
-         "Generate keys, nonces, and tokens with secrets or an operating-system CSPRNG."),
-        ("KEY-HARDCODED", "Hardcoded cryptographic key", "high",
-         r"\b(?:aes_?|encryption_?|secret_?)?key\s*=\s*(?:b|bytes\.fromhex\s*\()?[\"'][^\"']{8,}[\"']",
-         "Read the embedded key and decrypt the challenge ciphertext with the declared algorithm and parameters.",
-         "Load the key from a secret store or challenge runtime. Rotate the exposed key."),
-        ("CIPHER-ECB", "ECB mode selected in source", "high", r"\b(?:MODE_ECB|AES[-_]?ECB|\becb\b)",
-         "Exploit equal-block leakage; with an encryption oracle, align input for byte-at-a-time secret recovery.",
-         "Use AES-GCM or ChaCha20-Poly1305 with a unique nonce."),
-        ("NONCE-CONSTANT", "Constant nonce or IV in source", "high",
-         r"\b(?:nonce|iv)\s*=\s*(?:b?[\"'][^\"']+[\"']|bytes\s*\(|0x[0-9a-fA-F]+)",
-         "Request or collect two encryptions, XOR ciphertexts, and recover plaintext through known format or crib dragging.",
-         "Generate a unique nonce per key and store it with the ciphertext."),
-    ]
-    findings: list[Finding] = []
+def _lcg_and_stream_findings(documents: list[Document], findings: list[Finding]) -> None:
     for context in detect_ec_lcg(documents):
         findings.append(Finding(
             "ECDSA-LCG-CORRELATED-NONCES",
@@ -1685,6 +1654,9 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
              "Solve remaining unknown states and verify every stream bit.",
              "Decrypt the following ciphertext with the recovered keystream."],
         ))
+
+
+def _fiat_shamir_findings(documents: list[Document], findings: list[Finding]) -> None:
     batch_graph = extract_batch_fiat_shamir(documents)
     if batch_graph is not None:
         findings.append(Finding(
@@ -1706,7 +1678,7 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
             "the matching proof branch for each round.",
             {"kind": "fiat_shamir_decimal_serialization_equivocation",
              "implemented": True, "verified_by": "local Pedersen openings and hash equality",
-             "requires": ["authorized host", "port"]},
+             "requires": [_AUTHORIZED_HOST, "port"]},
             "Serialize commitments canonically with unambiguous length framing "
             "and reject out-of-range commitment integers before hashing.",
             ["Confirm the unframed decimal serialization and verifier modulus checks.",
@@ -1740,6 +1712,9 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
              "Grind the challenge hash to the opening branch before submission.",
              "Submit each transcript to an authorized verifier and check its response."],
         ))
+
+
+def _gcm_oracle_findings(documents: list[Document], findings: list[Finding]) -> None:
     for oracle in recognize_gcm_tag_oracle(documents):
         findings.append(Finding(
             "GCM-HIDDEN-STATE-TAG-ORACLE",
@@ -1771,6 +1746,9 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
              "Use u2 to extend message lengths and solve for hidden GHASH coefficients.",
              "Compute candidate authentication pads, submit one per session, and only print remotely verified flags."],
         ))
+
+
+def _per_document_source_findings(documents: list[Document], rules, findings: list[Finding]) -> None:
     for doc in documents:
         if supported_fischlin_source([doc]):
             findings.append(Finding(
@@ -1813,6 +1791,9 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
             ))
         _source_pattern_findings(doc, rules, findings)
         _cbc_source_finding(doc, findings)
+
+
+def _weak_seeded_rsa_findings(documents: list[Document], findings: list[Finding]) -> None:
     weak_model = extract_weak_seeded_rsa(documents)
     # A vulnerable PRNG construction is a meaningful source finding even
     # when the ciphertext/output has not yet been collected. Recovery
@@ -1821,7 +1802,7 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
         profile = weak_seeded_rsa_profile(source.text)
         if profile is None:
             continue
-        exponent, length, prime_bits, sampling, mask, first, last = profile
+        exponent, length, prime_bits, _, _, first, _ = profile
         matched_output = weak_model is not None and weak_model.exponent == exponent
         evidence = {
             "source_verified": True,
@@ -1867,6 +1848,9 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "Compute residues, combine via CRT and verify re-encryption.",
             ],
         ))
+
+
+def _biased_shamir_findings(documents: list[Document], findings: list[Finding]) -> None:
     for document in documents:
         profile = biased_shamir_profile(document)
         if profile is None:
@@ -1900,7 +1884,7 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "kind": "shamir_coefficient_bias_crt",
                 "remote": True,
                 "source_verified": True,
-                "requires": ["authorized host", "port"],
+                "requires": [_AUTHORIZED_HOST, "port"],
             },
             "Sample every nonconstant polynomial coefficient uniformly "
             "over the entire finite field, including p-1. Never allow an "
@@ -1917,6 +1901,9 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "using CRT; submit only after a uniqueness certificate.",
             ],
         ))
+
+
+def _cyclotomic_rsa_findings(documents: list[Document], findings: list[Finding]) -> None:
     related_rsa = extract_cyclotomic_rsa(documents)
     for document in documents:
         related = cyclotomic_rsa_profile(document.text)
@@ -1967,6 +1954,9 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "RSA re-encryption.",
             ],
         ))
+
+
+def _modular_noise_findings(documents: list[Document], findings: list[Finding]) -> None:
     modular_model = extract_modular_noise(documents)
     for document in documents:
         profile = modular_noise_profile(document.text)
@@ -2018,6 +2008,9 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "true/fake mixture, accounting for accidental decoy matches.",
             ],
         ))
+
+
+def _ec_twist_findings(documents: list[Document], findings: list[Finding]) -> None:
     for document in documents:
         twist = ec_twist_profile(document)
         if twist is None:
@@ -2054,7 +2047,7 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "kind": "ec_chosen_coordinate_twist_subgroup",
                 "remote": True,
                 "source_verified": True,
-                "requires": ["authorized host", "port", "twist order"],
+                "requires": [_AUTHORIZED_HOST, "port", "twist order"],
             },
             "Reject invalid and twist points before multiplying by a "
             "private scalar, or use a validated prime-order subgroup "
@@ -2068,6 +2061,9 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "the original secret before claiming a plaintext.",
             ],
         ))
+
+
+def _hyperelliptic_findings(documents: list[Document], findings: list[Finding]) -> None:
     for document in documents:
         hyper = hyperelliptic_leak_profile(document)
         if hyper is None:
@@ -2110,7 +2106,7 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "remote": True,
                 "source_verified": True,
                 "recovery_status": "partial_state_and_curve",
-                "requires": ["authorized host", "port", "chosen plaintext"],
+                "requires": [_AUTHORIZED_HOST, "port", "chosen plaintext"],
             },
             "Never expose algebraic PRNG internal state through reversible "
             "serialization and XOR with attacker-controlled plaintext. "
@@ -2126,6 +2122,9 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "with enough uniquely constrained state information.",
             ],
         ))
+
+
+def _reciprocal_rabin_findings(documents: list[Document], findings: list[Finding]) -> None:
     for document in documents:
         reciprocal = reciprocal_rabin_profile(document)
         if reciprocal is None:
@@ -2163,7 +2162,7 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "kind": "reciprocal_rabin_crt_fault",
                 "remote": True,
                 "source_verified": True,
-                "requires": ["authorized host", "port"],
+                "requires": [_AUTHORIZED_HOST, "port"],
             },
             "Reject ciphertexts whose quadratic discriminants are not "
             "residues for both factors, enforce correct root extraction, "
@@ -2177,6 +2176,53 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
                 "Certify the final plaintext by re-encrypting it.",
             ],
         ))
+
+
+def _source_findings(documents: list[Document]) -> list[Finding]:
+    rules = [
+        ("HASH-WEAK", "Weak hash primitive", "medium", r"\b(?:md5|sha1)\s*\(",
+         "Collision and chosen-prefix attacks can defeat integrity checks built on this digest.",
+         "Use SHA-256 or SHA-3 for digests; use HMAC-SHA-256 for keyed authentication."),
+        ("MAC-PREFIX-HASH", "Secret-prefix hash MAC may permit length extension", "high",
+         r"(?:md5|sha1|sha256)\s*\(\s*(?:secret|key)\s*\+",
+         "Compute a length-extension suffix after guessing secret length; submit the extended message and forged digest.",
+         "Use HMAC with a maintained cryptographic library."),
+        ("PRNG-PREDICTABLE-SEED", "Predictable PRNG seed", "high",
+         r"(?:random\.seed\s*\(\s*(?:time|int\s*\(\s*time)|srand\s*\(\s*time)",
+         "Enumerate timestamps around challenge execution, regenerate outputs, then recover the key or token.",
+         "Use secrets or an operating-system CSPRNG. Do not seed it with time."),
+        ("PRNG-MT-CRYPTO", "Mersenne Twister used in cryptographic path", "high",
+         r"\b(?:mt19937|random\.getrandbits|random\.randbytes)\b",
+         "Collect enough outputs to clone MT state, then predict later keys, nonces, or tokens.",
+         "Use secrets.token_bytes or an operating-system CSPRNG."),
+        ("PRNG-NONCRYPTO-RANDOM", "Non-cryptographic random value protects a secret", "high",
+         r"\b(?:key|nonce|token|secret|otp)\s*=\s*random\.(?:randint|randrange|choice|choices)\s*\(",
+         "Reconstruct or brute-force the PRNG state, then predict the generated secret value.",
+         "Generate keys, nonces, and tokens with secrets or an operating-system CSPRNG."),
+        ("KEY-HARDCODED", "Hardcoded cryptographic key", "high",
+         r"\b(?:aes_?|encryption_?|secret_?)?key\s*=\s*(?:b|bytes\.fromhex\s*\()?[\"'][^\"']{8,}[\"']",
+         "Read the embedded key and decrypt the challenge ciphertext with the declared algorithm and parameters.",
+         "Load the key from a secret store or challenge runtime. Rotate the exposed key."),
+        ("CIPHER-ECB", "ECB mode selected in source", "high", r"\b(?:MODE_ECB|AES[-_]?ECB|\becb\b)",
+         "Exploit equal-block leakage; with an encryption oracle, align input for byte-at-a-time secret recovery.",
+         "Use AES-GCM or ChaCha20-Poly1305 with a unique nonce."),
+        ("NONCE-CONSTANT", "Constant nonce or IV in source", "high",
+         r"\b(?:nonce|iv)\s*=\s*(?:b?[\"'][^\"']+[\"']|bytes\s*\(|0x[0-9a-fA-F]+)",
+         "Request or collect two encryptions, XOR ciphertexts, and recover plaintext through known format or crib dragging.",
+         "Generate a unique nonce per key and store it with the ciphertext."),
+    ]
+    findings: list[Finding] = []
+    _lcg_and_stream_findings(documents, findings)
+    _fiat_shamir_findings(documents, findings)
+    _gcm_oracle_findings(documents, findings)
+    _per_document_source_findings(documents, rules, findings)
+    _weak_seeded_rsa_findings(documents, findings)
+    _biased_shamir_findings(documents, findings)
+    _cyclotomic_rsa_findings(documents, findings)
+    _modular_noise_findings(documents, findings)
+    _ec_twist_findings(documents, findings)
+    _hyperelliptic_findings(documents, findings)
+    _reciprocal_rabin_findings(documents, findings)
     return findings
 
 def _related_key_findings(documents):

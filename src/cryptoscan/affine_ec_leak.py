@@ -33,6 +33,36 @@ class AffineECLeak:
     suffix: str
 
 
+def _mult_terms(expression):
+    terms = []
+    for term in (expression.left, expression.right):
+        if not (isinstance(term, ast.BinOp)
+                and isinstance(term.op, ast.Mult)
+                and isinstance(term.left, ast.Name)
+                and isinstance(term.right, ast.Name)):
+            break
+        terms.append((term.left.id, term.right.id))
+    return terms
+
+
+def _is_affine_append(node, base, hidden):
+    if not (isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "append"
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Tuple)
+            and len(node.args[0].elts) == 3):
+        return False
+    first, second, expression = node.args[0].elts
+    if not (isinstance(first, ast.Name) and isinstance(second, ast.Name)
+            and isinstance(expression, ast.BinOp)
+            and isinstance(expression.op, ast.Add)):
+        return False
+    terms = _mult_terms(expression)
+    return len(terms) == 2 and set(terms) == {
+        (first.id, base), (second.id, hidden)}
+
+
 def _affine_append_roles(source, base, hidden):
     """Read public affine equations from Sage source using AST where possible.
 
@@ -47,32 +77,46 @@ def _affine_append_roles(source, base, hidden):
         tree = ast.parse(normalized)
     except (SyntaxError, ValueError, RecursionError):
         return None
-    candidates = []
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "append"
-                and len(node.args) == 1
-                and isinstance(node.args[0], ast.Tuple)
-                and len(node.args[0].elts) == 3):
-            continue
-        first, second, expression = node.args[0].elts
-        if not (isinstance(first, ast.Name) and isinstance(second, ast.Name)
-                and isinstance(expression, ast.BinOp)
-                and isinstance(expression.op, ast.Add)):
-            continue
-        terms = []
-        for term in (expression.left, expression.right):
-            if not (isinstance(term, ast.BinOp)
-                    and isinstance(term.op, ast.Mult)
-                    and isinstance(term.left, ast.Name)
-                    and isinstance(term.right, ast.Name)):
-                break
-            terms.append((term.left.id, term.right.id))
-        if len(terms) == 2 and set(terms) == {
-                (first.id, base), (second.id, hidden)}:
-            candidates.append(True)
+    candidates = [node for node in ast.walk(tree)
+                  if _is_affine_append(node, base, hidden)]
     return len(candidates) == 1 if candidates else False
+
+
+def _affine_source_consistent(source, base_name, hidden_name):
+    affine_ast = _affine_append_roles(source, base_name, hidden_name)
+    if affine_ast is True:
+        return True
+    # Fallback for Sage constructs outside the supported Python AST.
+    # Never let a syntactically valid but semantically mismatched AST
+    # bypass the source consistency check.
+    if affine_ast is False:
+        return False
+    combinations = re.findall(
+        r"\\.append\\(\\(\\s*(\\w+)\\s*,\\s*(\\w+)\\s*,\\s*"
+        r"(\\w+)\\s*\\*\\s*(\\w+)\\s*\\+\\s*"
+        r"(\\w+)\\s*\\*\\s*(\\w+)\\s*\\)\\)",
+        source,
+    )
+    if len(combinations) != 1:
+        return False
+    first, second, u, u_point, v, v_point = combinations[0]
+    return {(u, u_point), (v, v_point)} == {
+        (first, base_name), (second, hidden_name),
+    }
+
+
+def _curve_parameters(source, p_name, a_name, b_name):
+    names = {}
+    for name, value in _ASSIGNMENT.findall(source):
+        names.setdefault(name, int(value.replace("_", "")))
+    p, a, b = (names.get(name) for name in (p_name, a_name, b_name))
+    if any(v is None for v in (p, a, b)):
+        return None, None, None
+    if not (5 <= p.bit_length() <= 512 and 0 <= a < p and 0 <= b < p):
+        return None, None, None
+    if (4*a**3 + 27*b**2) % p == 0:
+        return None, None, None
+    return p, a, b
 
 
 def _source_profile(source: str):
@@ -103,41 +147,15 @@ def _source_profile(source: str):
     hidden_name, secret_name = second.groups()
     if not re.search(rf"\b{re.escape(secret_name)}\s*=\s*bytes_to_long\(", source):
         return None
-    affine_ast = _affine_append_roles(source, base_name, hidden_name)
-    if affine_ast is not True:
-        # Fallback for Sage constructs outside the supported Python AST.
-        # Never let a syntactically valid but semantically mismatched AST
-        # bypass the source consistency check.
-        if affine_ast is False:
-            return None
-        combinations = re.findall(
-            r"\\.append\\(\\(\\s*(\\w+)\\s*,\\s*(\\w+)\\s*,\\s*"
-            r"(\\w+)\\s*\\*\\s*(\\w+)\\s*\\+\\s*"
-            r"(\\w+)\\s*\\*\\s*(\\w+)\\s*\\)\\)",
-            source,
-        )
-        if len(combinations) != 1:
-            return None
-        first, second, u, u_point, v, v_point = combinations[0]
-        if {(u, u_point), (v, v_point)} != {
-            (first, base_name), (second, hidden_name),
-        }:
-            return None
+    if not _affine_source_consistent(source, base_name, hidden_name):
+        return None
     field_match = re.search(
         rf"\b{re.escape(field)}\s*=\s*GF\(\s*(\w+)\s*\)", source,
     )
     if field_match is None:
         return None
-    names = {}
-    for name, value in _ASSIGNMENT.findall(source):
-        names.setdefault(name, int(value.replace("_", "")))
-    p, a, b = (names.get(name) for name in
-               (field_match.group(1), a_name, b_name))
-    if any(v is None for v in (p, a, b)):
-        return None
-    if not (5 <= p.bit_length() <= 512 and 0 <= a < p and 0 <= b < p):
-        return None
-    if (4*a**3 + 27*b**2) % p == 0:
+    p, a, b = _curve_parameters(source, field_match.group(1), a_name, b_name)
+    if p is None:
         return None
     framing = re.search(
         r'\[\s*len\(\s*([\'"])([^\'"]{1,40})\1\s*\)\s*:\s*-1\s*\]',

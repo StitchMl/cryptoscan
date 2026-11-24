@@ -430,10 +430,9 @@ def test_failed_composite_lattice_quotient_refines_without_fixed_factors(monkeyp
     assert calls == [32, 13, 19]
     assert recovered == [(small_a, "residue-13"), (small_b, "residue-19")]
 
+    public, factor = Public(), Factor(17)
     with pytest.raises(module.ComponentNotRecovered, match="irreducible"):
-        module._recover_factor_components(
-            Public(), None, Factor(17), 257,
-        )
+        module._recover_factor_components(public, None, factor, 257)
 
 
 def test_quotient_embedding_scales_with_modulus_and_degree(monkeypatch):
@@ -521,8 +520,9 @@ def test_integral_projection_bounds_are_valid_for_short_secrets(monkeypatch):
         def __getitem__(self, index):
             return (1, 1, 2)[index]
 
+    non_monic = NonMonic()
     with pytest.raises(ValueError, match="monic"):
-        worker._projected_coefficient_limits(NonMonic(), dimension, 1, 257)
+        worker._projected_coefficient_limits(non_monic, dimension, 1, 257)
 
 
 def test_failed_projected_certificate_retries_next_embedding(monkeypatch):

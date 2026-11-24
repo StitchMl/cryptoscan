@@ -593,3 +593,24 @@ def test_user_defined_inverse_stub_never_establishes_reciprocal_formula():
     assert extract_instance([
         Document("bad_inverse_stub.py", source, None)
     ]) is None
+
+
+def test_imported_inverse_name_shadowed_by_local_assignment_is_not_verified():
+    source = _fresh_source().replace(
+        "pow(message,-1,public.mod)", "inverse_alias(message,public.mod)",
+    )
+    source = (
+        "from sympy import mod_inverse as inverse_alias\n"
+        "inverse_alias = lambda message, modulus: 3\n" + source
+    )
+    assert extract_instance([
+        Document("shadowed_library_inverse.py", source, None)
+    ]) is None
+
+
+def test_imported_jacobi_name_shadowed_by_local_function_is_not_verified():
+    source = _fresh_source()
+    source += "\ndef jacobi(message, modulus):\n    return 1\n"
+    assert extract_instance([
+        Document("shadowed_jacobi.py", source, None)
+    ]) is None

@@ -21,6 +21,7 @@ The only online action is an explicitly authorized CTF TCP oracle.
 from __future__ import annotations
 
 import ast
+import json
 import math
 import re
 import socket
@@ -46,6 +47,7 @@ class ReciprocalRabinOracle:
     result_header: str
     failure_marker: str
     input_separator: str = ","
+    input_format: str = "delimited"
 
 
 @dataclass(frozen=True)
@@ -568,9 +570,52 @@ def _protocol_profile(tree, encrypt, decrypt):
             if (isinstance(separator, str) and len(separator) == 1
                     and separator in {",", ";", " ", "|", ":"}):
                 separators.add(separator)
-        if len(separators) != 1:
+        if len(separators) == 1:
+            separator = next(iter(separators))
+            input_format = "delimited"
+        elif len(separators) == 0:
+            # A three-value JSON array is an alternate representation
+            # of the same selected ciphertext, but this is safe to send
+            # only when the source actually unpacks JSON into three items.
+            json_modules = {
+                alias.asname or alias.name
+                for statement in tree.body
+                if isinstance(statement, ast.Import)
+                for alias in statement.names if alias.name == "json"
+            }
+            json_aliases = {
+                alias.asname or alias.name
+                for statement in tree.body
+                if isinstance(statement, ast.ImportFrom)
+                and statement.module == "json"
+                for alias in statement.names if alias.name == "loads"
+            }
+            json_unpacked = any(
+                isinstance(stmt, ast.Assign)
+                and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], (ast.Tuple, ast.List))
+                and len(stmt.targets[0].elts) == 3
+                and isinstance(stmt.value, ast.Call)
+                and (
+                    _name(stmt.value.func) in json_aliases
+                    or (isinstance(stmt.value.func, ast.Attribute)
+                        and stmt.value.func.attr == "loads"
+                        and _name(stmt.value.func.value) in json_modules)
+                )
+                and len(stmt.value.args) == 1
+                and any(
+                    isinstance(inner, ast.Call)
+                    and _name(inner.func) == "input"
+                    for inner in ast.walk(stmt.value.args[0])
+                )
+                for stmt in ast.walk(loop)
+            )
+            if not json_unpacked:
+                continue
+            separator = ","
+            input_format = "json-array"
+        else:
             continue
-        separator = next(iter(separators))
         nested = [
             call for call in ast.walk(loop)
             if isinstance(call, ast.Call)
@@ -620,7 +665,7 @@ def _protocol_profile(tree, encrypt, decrypt):
         banners = [s for s in banners if s not in prints]
         if len(banners) != 1:
             continue
-        return prompts[0], banners[0], success[0], marker, separator
+        return prompts[0], banners[0], success[0], marker, separator, input_format
     return None
 
 
@@ -754,7 +799,7 @@ def _source_profile(document):
     ciphertext_class = next(iter(output_types))
     return ReciprocalRabinOracle(
         bits, classes[ciphertext_class], protocol[0], protocol[1],
-        protocol[2], protocol[3], protocol[4],
+        protocol[2], protocol[3], protocol[4], protocol[5],
     )
 
 
@@ -939,8 +984,12 @@ class TextOracle:
         return tuple(observed[label] for label in labels)
 
     def query(self, r,s,t):
-        delimiter = self.profile.input_separator
-        self.conn.sendall(f"{r}{delimiter}{s}{delimiter}{t}\n".encode())
+        if self.profile.input_format == "json-array":
+            payload = json.dumps([r,s,t],separators=(",",":")).encode() + b"\n"
+        else:
+            delimiter = self.profile.input_separator
+            payload = f"{r}{delimiter}{s}{delimiter}{t}\n".encode()
+        self.conn.sendall(payload)
         self.probes += 1
         message = self._until_prompt()
         if self.profile.failure_marker.encode() in message:

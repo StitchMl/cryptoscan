@@ -31,9 +31,36 @@ class PolynomialGCDPrefix:
     variable: str
 
 
+def _is_int_constant(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and type(node.value) is int
+
+
+def _polynomial_binop(node: ast.BinOp, variable: str, bindings, seen) -> Poly:
+    if isinstance(node.op, ast.Pow):
+        if not (_is_int_constant(node.right) and 0 <= node.right.value <= 64):
+            raise ValueError("unsupported exponent")
+        result = _polynomial(node.left, variable, bindings, seen) ** node.right.value
+    else:
+        left = _polynomial(node.left, variable, bindings, seen)
+        right = _polynomial(node.right, variable, bindings, seen)
+        if isinstance(node.op, ast.Add):
+            result = left + right
+        elif isinstance(node.op, ast.Sub):
+            result = left - right
+        elif isinstance(node.op, ast.Mult):
+            result = left * right
+        else:
+            raise ValueError("unsupported polynomial operation")
+    if result.degree() > 64 or any(
+        abs(int(c)).bit_length() > 4096 for c in result.all_coeffs()
+    ):
+        raise ValueError("polynomial exceeds computational limits")
+    return result
+
+
 def _polynomial(node: ast.AST, variable: str, bindings=None, seen=frozenset()) -> Poly:
     """Interpret a bounded arithmetic AST, never eval arbitrary source."""
-    if isinstance(node, ast.Constant) and type(node.value) is int:
+    if _is_int_constant(node):
         if abs(node.value).bit_length() > 4096:
             raise ValueError("coefficient too large")
         return Poly(node.value, VAR, domain="ZZ")
@@ -48,52 +75,41 @@ def _polynomial(node: ast.AST, variable: str, bindings=None, seen=frozenset()) -
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
         return -_polynomial(node.operand, variable, bindings, seen)
     if isinstance(node, ast.BinOp):
-        if isinstance(node.op, ast.Pow):
-            if not (isinstance(node.right, ast.Constant)
-                    and type(node.right.value) is int
-                    and 0 <= node.right.value <= 64):
-                raise ValueError("unsupported exponent")
-            result = _polynomial(node.left, variable, bindings, seen) ** node.right.value
-        else:
-            left = _polynomial(node.left, variable, bindings, seen)
-            right = _polynomial(node.right, variable, bindings, seen)
-            if isinstance(node.op, ast.Add):
-                result = left + right
-            elif isinstance(node.op, ast.Sub):
-                result = left - right
-            elif isinstance(node.op, ast.Mult):
-                result = left * right
-            else:
-                raise ValueError("unsupported polynomial operation")
-        if result.degree() > 64 or any(
-            abs(int(c)).bit_length() > 4096 for c in result.all_coeffs()
-        ):
-            raise ValueError("polynomial exceeds computational limits")
-        return result
+        return _polynomial_binop(node, variable, bindings, seen)
     raise ValueError("not a supported polynomial expression")
+
+
+def _is_name_call(node: ast.AST, name: str) -> bool:
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == name)
+
+
+def _single_name_assign(node: ast.AST) -> bool:
+    return (isinstance(node, ast.Assign) and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name))
+
+
+def _input_prompt(value: ast.AST):
+    """Return the prompt of int(input(...)), or None when not that shape."""
+    if not (_is_name_call(value, "int") and len(value.args) == 1):
+        return None
+    call = value.args[0]
+    if not (_is_name_call(call, "input") and len(call.args) <= 1):
+        return None
+    try:
+        prompt = ast.literal_eval(call.args[0]) if call.args else ""
+    except (TypeError, SyntaxError, ValueError):
+        return None
+    return prompt if isinstance(prompt, str) and len(prompt) <= 80 else None
 
 
 def _controlled_input(tree: ast.Module):
     results = []
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Assign) and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)):
+        if not _single_name_assign(node):
             continue
-        value = node.value
-        if not (isinstance(value, ast.Call)
-                and isinstance(value.func, ast.Name)
-                and value.func.id == "int" and len(value.args) == 1):
-            continue
-        call = value.args[0]
-        if not (isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Name)
-                and call.func.id == "input" and len(call.args) <= 1):
-            continue
-        try:
-            prompt = ast.literal_eval(call.args[0]) if call.args else ""
-        except (TypeError, SyntaxError, ValueError):
-            continue
-        if isinstance(prompt, str) and len(prompt) <= 80:
+        prompt = _input_prompt(node.value)
+        if prompt is not None:
             results.append((node.targets[0].id, prompt))
     return results
 
@@ -164,6 +180,23 @@ def _prior_polynomial_bindings(tree, consumer):
     }
 
 
+def _gcd_instance(tree, node, direct, modules, variable, prompt):
+    call = node.value
+    if not (_is_math_gcd_call(call, direct, modules)
+            and _slice_is_printed(tree, node.targets[0].id)):
+        return None
+    bindings = _prior_polynomial_bindings(tree, node)
+    try:
+        left = _polynomial(call.args[0], variable, bindings)
+        right = _polynomial(call.args[1], variable, bindings)
+    except (ValueError, TypeError, ArithmeticError):
+        return None
+    if (1 <= left.degree() <= 64 and 1 <= right.degree() <= 64
+            and left.gcd(right).degree() == 0):
+        return PolynomialGCDPrefix(left, right, prompt, variable)
+    return None
+
+
 def _source_profile(document: Document):
     if len(document.text) > 1_000_000:
         return None
@@ -174,22 +207,11 @@ def _source_profile(document: Document):
     found = []
     for variable, prompt in _controlled_input(tree):
         for node in ast.walk(tree):
-            if not (isinstance(node, ast.Assign) and len(node.targets) == 1
-                    and isinstance(node.targets[0], ast.Name)):
+            if not _single_name_assign(node):
                 continue
-            call = node.value
-            if not (_is_math_gcd_call(call, direct, modules)
-                    and _slice_is_printed(tree, node.targets[0].id)):
-                continue
-            bindings = _prior_polynomial_bindings(tree, node)
-            try:
-                left = _polynomial(call.args[0], variable, bindings)
-                right = _polynomial(call.args[1], variable, bindings)
-            except (ValueError, TypeError, ArithmeticError):
-                continue
-            if (1 <= left.degree() <= 64 and 1 <= right.degree() <= 64
-                    and left.gcd(right).degree() == 0):
-                found.append(PolynomialGCDPrefix(left, right, prompt, variable))
+            item = _gcd_instance(tree, node, direct, modules, variable, prompt)
+            if item is not None:
+                found.append(item)
     return found[0] if len(found) == 1 else None
 
 
@@ -240,6 +262,30 @@ def construct_input(instance: PolynomialGCDPrefix) -> tuple[int, int]:
     return candidate, measured
 
 
+def _await_prompt(conn, prompt: bytes) -> None:
+    received = bytearray()
+    while prompt not in received:
+        chunk = conn.recv(4096)
+        if not chunk:
+            raise ConnectionError("remote GCD oracle closed before input")
+        received.extend(chunk)
+        if len(received) > 16384:
+            raise ValueError("oversized GCD oracle prompt")
+
+
+def _read_response(conn) -> bytearray:
+    chunks = bytearray()
+    while len(chunks) < 16384:
+        try:
+            block = conn.recv(4096)
+        except socket.timeout:
+            break
+        if not block:
+            break
+        chunks.extend(block)
+    return chunks
+
+
 def recover_flag(documents: Sequence[Document], host: str, port: int, *,
                  timeout: float = 30.0) -> str:
     instance = extract_instance(documents)
@@ -250,24 +296,9 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         conn.settimeout(timeout)
         prompt = instance.prompt.encode("utf-8")
         if prompt:
-            received = bytearray()
-            while prompt not in received:
-                chunk = conn.recv(4096)
-                if not chunk:
-                    raise ConnectionError("remote GCD oracle closed before input")
-                received.extend(chunk)
-                if len(received) > 16384:
-                    raise ValueError("oversized GCD oracle prompt")
+            _await_prompt(conn, prompt)
         conn.sendall(str(candidate).encode("ascii") + b"\n")
-        chunks = bytearray()
-        while len(chunks) < 16384:
-            try:
-                block = conn.recv(4096)
-            except socket.timeout:
-                break
-            if not block:
-                break
-            chunks.extend(block)
+        chunks = _read_response(conn)
     text = chunks.decode("utf-8", errors="replace")
     flags = re.findall(r"\b\w{2,32}\{[^{}\r\n]{1,256}\}", text)
     if len(flags) != 1:

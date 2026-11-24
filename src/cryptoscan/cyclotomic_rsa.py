@@ -107,17 +107,78 @@ def _geometric_ratio(node, base, degree):
 
 
 def _crypto_functions(tree):
-    """Resolve import aliases rather than the challenge's identifier names."""
+    """Resolve import aliases rather than the challenge identifier names."""
     aliases = {}
     for stmt in tree.body:
         if isinstance(stmt, ast.ImportFrom) and stmt.module in (
                 "Crypto.Util.number", "sympy"):
-            for alias in stmt.names:
-                if alias.name in ("getPrime", "isPrime", "isprime"):
-                    aliases[alias.asname or alias.name] = alias.name
-                if alias.name == "*" and stmt.module == "Crypto.Util.number":
-                    aliases.update({"getPrime": "getPrime", "isPrime": "isPrime"})
+            _collect_crypto_aliases(stmt, aliases)
     return aliases
+
+
+def _collect_crypto_aliases(stmt, aliases):
+    for alias in stmt.names:
+        if alias.name in ("getPrime", "isPrime", "isprime"):
+            aliases[alias.asname or alias.name] = alias.name
+        if alias.name == "*" and stmt.module == "Crypto.Util.number":
+            aliases.update({"getPrime": "getPrime", "isPrime": "isPrime"})
+
+
+def _is_geometric_sum(value, prime, exponent_name):
+    if not (isinstance(value, ast.Call)
+            and _name(value.func) == "sum"
+            and len(value.args) == 1
+            and isinstance(value.args[0], (ast.ListComp, ast.GeneratorExp))):
+        return False
+    comp = value.args[0]
+    if len(comp.generators) != 1:
+        return False
+    idx = _name(comp.generators[0].target)
+    return bool(idx and _sum_of_powers(value, prime, idx, exponent_name))
+
+
+def _factory_names(function, imported, formal):
+    """Find the prime variable and its correlated variable in a function."""
+    prime, correlated = None, None
+    for statement in ast.walk(function):
+        if (not isinstance(statement, ast.Assign)
+                or len(statement.targets) != 1
+                or not isinstance(statement.targets[0], ast.Name)):
+            continue
+        name = statement.targets[0].id
+        value = statement.value
+        if (isinstance(value, ast.Call)
+                and len(value.args) == 1
+                and (call := value.func)
+                and isinstance(call, ast.Name)
+                and imported.get(call.id) == "getPrime"
+                and _name(value.args[0]) == formal[0]):
+            prime = name
+        if prime and (_is_geometric_sum(value, prime, formal[1])
+                      or _geometric_ratio(value, prime, formal[1])):
+            correlated = name
+    return prime, correlated
+
+
+def _tests_primality(function, imported, correlated):
+    return any(
+        isinstance(node, ast.Call)
+        and len(node.args) == 1
+        and _name(node.args[0]) == correlated
+        and (isinstance(node.func, ast.Name)
+             and imported.get(node.func.id) in ("isPrime", "isprime"))
+        for node in ast.walk(function)
+    )
+
+
+def _returns_pair(function, prime, correlated):
+    return any(
+        isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Tuple)
+        and len(node.value.elts) == 2
+        and tuple(map(_name, node.value.elts)) == (prime, correlated)
+        for node in ast.walk(function)
+    )
 
 
 def _function_roles(tree):
@@ -130,59 +191,14 @@ def _function_roles(tree):
         formal = [arg.arg for arg in function.args.args]
         if len(formal) < 2:
             continue
-        prime, correlated = None, None
-        for statement in ast.walk(function):
-            if (not isinstance(statement, ast.Assign)
-                    or len(statement.targets) != 1
-                    or not isinstance(statement.targets[0], ast.Name)):
-                continue
-            name = statement.targets[0].id
-            value = statement.value
-            if (isinstance(value, ast.Call)
-                    and len(value.args) == 1
-                    and (call := value.func)
-                    and isinstance(call, ast.Name)
-                    and imported.get(call.id) == "getPrime"
-                    and _name(value.args[0]) == formal[0]):
-                prime = name
-            if prime:
-                geometric_sum = False
-                if (isinstance(value, ast.Call)
-                        and _name(value.func) == "sum"
-                        and len(value.args) == 1
-                        and isinstance(value.args[0],
-                                       (ast.ListComp, ast.GeneratorExp))):
-                    comp = value.args[0]
-                    if len(comp.generators) == 1:
-                        idx = _name(comp.generators[0].target)
-                        geometric_sum = bool(
-                            idx and _sum_of_powers(
-                                value, prime, idx, formal[1],
-                            )
-                        )
-                if geometric_sum or _geometric_ratio(
-                        value, prime, formal[1]):
-                    correlated = name
+        prime, correlated = _factory_names(function, imported, formal)
         if not prime or not correlated:
             continue
-        primality = any(
-            isinstance(node, ast.Call)
-            and len(node.args) == 1
-            and _name(node.args[0]) == correlated
-            and (isinstance(node.func, ast.Name)
-                 and imported.get(node.func.id) in ("isPrime", "isprime"))
-            for node in ast.walk(function)
-        )
-        returns = any(
-            isinstance(node, ast.Return)
-            and isinstance(node.value, ast.Tuple)
-            and len(node.value.elts) == 2
-            and tuple(map(_name, node.value.elts)) == (prime, correlated)
-            for node in ast.walk(function)
-        )
-        if primality and returns:
+        if (_tests_primality(function, imported, correlated)
+                and _returns_pair(function, prime, correlated)):
             candidates.append((function.name, formal[0], formal[1]))
     return candidates[0] if len(candidates) == 1 else None
+
 
 
 def _multiply_factor_names(node):
@@ -194,17 +210,8 @@ def _multiply_factor_names(node):
     return [name] if name else []
 
 
-def _source_profile(source):
-    if not source or len(source) > _SOURCE_LIMIT:
-        return None
-    tree = parse_python(Document("unknown-source", source, None))
-    if tree is None:
-        return None
-    factory = _function_roles(tree)
-    if factory is None:
-        return None
-    fn, _, _ = factory
-    constants = {
+def _int_constants(tree):
+    return {
         stmt.targets[0].id: stmt.value.value
         for stmt in tree.body
         if (isinstance(stmt, ast.Assign)
@@ -213,6 +220,9 @@ def _source_profile(source):
             and isinstance(stmt.value, ast.Constant)
             and type(stmt.value.value) is int)
     }
+
+
+def _coupled_calls(tree, fn, constants):
     coupled = []
     for statement in tree.body:
         if (isinstance(statement, ast.Assign)
@@ -228,9 +238,10 @@ def _source_profile(source):
             if (all(names) and bits is not None and degree is not None
                     and 32 <= bits <= 8192 and 2 <= degree <= 8):
                 coupled.append((names, bits, degree))
-    if len(coupled) != 1:
-        return None
-    (prime_name, other_name), bits, degree = coupled[0]
+    return coupled
+
+
+def _modulus_candidates(tree, prime_name, other_name):
     modulus_names = []
     for statement in tree.body:
         if not (isinstance(statement, ast.Assign)
@@ -242,9 +253,10 @@ def _source_profile(source):
                 and factors.count(prime_name) == 1
                 and factors.count(other_name) == 1):
             modulus_names.append(modulus_name)
-    if len(modulus_names) != 1:
-        return None
-    modulus_name = modulus_names[0]
+    return modulus_names
+
+
+def _encryption_candidates(tree, modulus_name, constants):
     encryptions = []
     for statement in ast.walk(tree):
         if not (isinstance(statement, ast.Assign)
@@ -261,10 +273,34 @@ def _source_profile(source):
         exponent = constants[exponent_name]
         if exponent > 1 and exponent % 2 == 1:
             encryptions.append((cipher_name, exponent_name, exponent))
+    return encryptions
+
+
+def _source_profile(source):
+    if not source or len(source) > _SOURCE_LIMIT:
+        return None
+    tree = parse_python(Document("unknown-source", source, None))
+    if tree is None:
+        return None
+    factory = _function_roles(tree)
+    if factory is None:
+        return None
+    fn, _, _ = factory
+    constants = _int_constants(tree)
+    coupled = _coupled_calls(tree, fn, constants)
+    if len(coupled) != 1:
+        return None
+    (prime_name, other_name), bits, degree = coupled[0]
+    modulus_names = _modulus_candidates(tree, prime_name, other_name)
+    if len(modulus_names) != 1:
+        return None
+    modulus_name = modulus_names[0]
+    encryptions = _encryption_candidates(tree, modulus_name, constants)
     if len(encryptions) != 1:
         return None
     cipher_name, exponent_name, exponent = encryptions[0]
     return modulus_name, exponent_name, cipher_name, bits, degree, exponent
+
 
 
 def _public_values(document, roles):
@@ -339,6 +375,19 @@ def extension_pow(base, exponent, polynomial, modulus):
     return result
 
 
+def _certified_factors(n, degree, result):
+    for coefficient in result[1:]:
+        p = math.gcd(coefficient, n)
+        if not 1 < p < n:
+            continue
+        q = sum(p**j for j in range(degree))
+        if q > 1 and n % (p * q) == 0:
+            r = n // (p * q)
+            if r > 1:
+                return p, q, r
+    return None
+
+
 def related_factors(n, degree, *, max_attempts=48):
     """Try independent monic extensions and validate every recovered factor."""
     if not 2 <= degree <= 8 or max_attempts < 1:
@@ -351,18 +400,13 @@ def related_factors(n, degree, *, max_attempts=48):
             continue
         element = (0, 1) + (0,) * (degree - 2)
         result = extension_pow(element, n, polynomial, n)
-        for coefficient in result[1:]:
-            p = math.gcd(coefficient, n)
-            if not 1 < p < n:
-                continue
-            q = sum(p**j for j in range(degree))
-            if q > 1 and n % (p * q) == 0:
-                r = n // (p * q)
-                if r > 1:
-                    return p, q, r, index
+        factors = _certified_factors(n, degree, result)
+        if factors is not None:
+            return (*factors, index)
     raise RuntimeError(
         "no certified cyclotomic prime factor from bounded finite-field trials"
     )
+
 
 
 def recover_details(instance: CyclotomicRSA, *, attempts=48):

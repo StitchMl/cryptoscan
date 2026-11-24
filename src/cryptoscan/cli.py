@@ -10,6 +10,7 @@ from .attack_planner import (
     AttackPlan, Strategy, build_plan, execute_plan, RecoveryExhausted,
 )
 from .crypto_hypotheses import inspect_hypotheses
+from .rsa_related_key import extract_instance as extract_related_key, recover_flag as recover_related_key_flag
 from .masked_ec_signature import extract_instance as extract_masked_ec, recover_flag as recover_masked_ec_flag
 from .affine_ec_leak import extract_instance as extract_affine_ec_leak, recover_flag as recover_affine_ec_leak_flag
 from .quaternion_equivalent_key import extract_instance as extract_quaternion_key, recover_flag as recover_quaternion_flag
@@ -133,6 +134,8 @@ def _attack_strategies(args):
                         tuple(capabilities), rank, backend, preflight)
 
     offline = (
+        strategy("RSA related inverse key material", "offline",
+                 extract_related_key, recover_related_key_flag, 2),
         strategy("Modular-noise LWE mixture linear distinguisher", "offline",
                  extract_modular_noise, recover_modular_noise_flag, 3),
         strategy("Cyclotomic related RSA finite-field factorization", "offline",

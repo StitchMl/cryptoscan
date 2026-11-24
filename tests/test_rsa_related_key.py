@@ -51,3 +51,41 @@ def test_no_inverse():
 def test_unrelated_scope():
     docs = corpus(3)
     assert extract_instance([docs[0], Document("other", docs[1].text, None, "elsewhere")]) is None
+
+
+def test_cli_large_message_and_source_only_exponent(tmp_path, capsys):
+    from sympy import nextprime
+
+    from cryptoscan.cli import main
+
+    exponent = 3
+    primes = []
+    for offset in (123, 98765):
+        prime = int(nextprime((1 << 1023) + offset))
+        while prime % exponent != 2:
+            prime = int(nextprime(prime))
+        primes.append(prime)
+    p, q = primes
+    n = p * q
+    order = (p - 1) * (q - 1)
+    private = pow(exponent, -1, order)
+    token = "TEST{" + "related" * 35 + "}"
+    message = int.from_bytes(token.encode(), "big")
+    assert message < n < message ** exponent
+    source = corpus(exponent)[0].text.replace(
+        "modulus = first * second",
+        "first = getStrongPrime(1024, e=public)\n"
+        "second = getStrongPrime(1024, e=public)\n"
+        "modulus = first * second",
+    )
+    output = (
+        f"modulus = {n}\nalpha = {pow(private, exponent, n)}\n"
+        f"beta = {pow(order, exponent, n)}\n"
+        f"gamma = {pow(message, exponent, n)}\n"
+    )
+    (tmp_path / "arbitrary.py").write_text(source, encoding="utf-8")
+    (tmp_path / "arbitrary.txt").write_text(output, encoding="utf-8")
+    assert main([str(tmp_path), "--format", "json"]) == 0
+    assert "RSA-RELATED-KEY-MATERIAL" in capsys.readouterr().out
+    assert main([str(tmp_path), "--solve"]) == 0
+    assert token in capsys.readouterr().out

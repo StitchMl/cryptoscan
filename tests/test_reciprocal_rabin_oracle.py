@@ -255,7 +255,8 @@ class SimulatedService:
         self.timeout=seconds
 
     def sendall(self,payload):
-        query=tuple(map(int,payload.strip().split(b",")))
+        delimiter=self.profile.input_separator.encode()
+        query=tuple(map(int,payload.strip().split(delimiter)))
         self.calls.append(query)
         result=_simulate(*query,self.p,self.q,self.c)
         if result is None:
@@ -614,3 +615,29 @@ def test_imported_jacobi_name_shadowed_by_local_function_is_not_verified():
     assert extract_instance([
         Document("shadowed_jacobi.py", source, None)
     ]) is None
+
+
+@pytest.mark.parametrize("separator", [";", "|", ":", " "])
+def test_source_inferred_selector_delimiters_on_mock_tcp(separator, monkeypatch):
+    import cryptoscan.reciprocal_rabin_oracle as module
+
+    source = _fresh_source().replace(
+        '.split(",")',
+        '.split()' if separator == " " else f'.split("{separator}")',
+    )
+    doc = Document("different_input_wire.py", source, None)
+    profile = extract_instance([doc])
+    assert profile is not None
+    assert profile.input_separator == separator
+    p, q, c = _gen_instance(48, seed=789)
+    secret = int.from_bytes(b"LAB{ok}", "big")
+    service = SimulatedService(profile, p, q, c, secret)
+    monkeypatch.setattr(
+        module.socket, "create_connection",
+        lambda *args, **kw: service,
+    )
+    details = recover_details(
+        [doc], "unreachable.invalid", 7337, max_queries=320,
+    )
+    assert details.secret == "LAB{ok}"
+    assert service.calls

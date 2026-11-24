@@ -52,21 +52,28 @@ def _attribute(node: ast.AST, name: str) -> bool:
             and isinstance(node.value, ast.Name) and node.value.id == "self")
 
 
+def _residue_assignment(node: ast.AST) -> tuple[str, str, str] | None:
+    if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+        return None
+    target, value = node.targets[0], node.value
+    if not isinstance(target, ast.Attribute) or not _attribute(target, target.attr):
+        return None
+    if not isinstance(value, ast.BinOp) or not isinstance(value.op, ast.Mod):
+        return None
+    left, right = value.left, value.right
+    if not isinstance(left, ast.Attribute) or not isinstance(right, ast.Attribute):
+        return None
+    if (_attribute(left, left.attr) and _attribute(right, right.attr)
+            and len({target.attr, left.attr, right.attr}) == 3):
+        return target.attr, left.attr, right.attr
+    return None
+
+
 def _public_relation(cls: ast.ClassDef) -> tuple[str, str, str] | None:
     for node in ast.walk(cls):
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target, value = node.targets[0], node.value
-        if not isinstance(target, ast.Attribute) or not _attribute(target, target.attr):
-            continue
-        if not isinstance(value, ast.BinOp) or not isinstance(value.op, ast.Mod):
-            continue
-        left, right = value.left, value.right
-        if not isinstance(left, ast.Attribute) or not isinstance(right, ast.Attribute):
-            continue
-        if (_attribute(left, left.attr) and _attribute(right, right.attr)
-                and len({target.attr, left.attr, right.attr}) == 3):
-            return target.attr, left.attr, right.attr
+        relation = _residue_assignment(node)
+        if relation is not None:
+            return relation
     return None
 
 
@@ -201,6 +208,23 @@ def _byteorder(tree: ast.Module) -> str | None:
     return next(iter(orders)) if len(orders) == 1 else None
 
 
+def _class_profiles(cls: ast.ClassDef, order: str) -> list[Profile]:
+    relation = _public_relation(cls)
+    if relation is None:
+        return []
+    methods = [node for node in cls.body if isinstance(node, ast.FunctionDef)]
+    found = []
+    for method in methods:
+        for key_attribute, key in _exchange_keys(method, relation).items():
+            if not any(_encrypts_with(encryptor, key_attribute)
+                       for encryptor in methods):
+                continue
+            powers = (key.public + key.private, key.peer)
+            if key.private and all(powers):
+                found.append(Profile(*powers, key.coefficient, order))
+    return found
+
+
 def source_profiles(document: Document) -> list[Profile]:
     if not document.path.lower().endswith(".py") or len(document.text) > MAX_SOURCE:
         return []
@@ -213,20 +237,8 @@ def source_profiles(document: Document) -> list[Profile]:
         return []
     found = []
     for cls in tree.body:
-        if not isinstance(cls, ast.ClassDef):
-            continue
-        relation = _public_relation(cls)
-        if relation is None:
-            continue
-        methods = [node for node in cls.body if isinstance(node, ast.FunctionDef)]
-        for method in methods:
-            for key_attribute, key in _exchange_keys(method, relation).items():
-                if not any(_encrypts_with(encryptor, key_attribute)
-                           for encryptor in methods):
-                    continue
-                powers = (key.public + key.private, key.peer)
-                if key.private and all(powers):
-                    found.append(Profile(*powers, key.coefficient, order))
+        if isinstance(cls, ast.ClassDef):
+            found.extend(_class_profiles(cls, order))
     return list(dict.fromkeys(found))
 
 
@@ -252,18 +264,24 @@ def _output_values(document: Document) -> tuple[int, int, int, int] | None:
     return p, public_a, public_b, ciphertext
 
 
+def _source_instances(source: Document, documents: Sequence[Document]) -> set[Instance]:
+    found = set()
+    for profile in source_profiles(source):
+        for output in documents:
+            if source.path == output.path or source.scope != output.scope:
+                continue
+            values = _output_values(output)
+            if values is not None:
+                found.add(Instance(*values, profile, source.path,
+                                   output.path, source.scope))
+    return found
+
+
 def extract_instance(documents: Sequence[Document]) -> Instance | None:
     """Join a source-verified exchange with one public transcript per scope."""
     found = set()
     for source in documents:
-        for profile in source_profiles(source):
-            for output in documents:
-                if source.path == output.path or source.scope != output.scope:
-                    continue
-                values = _output_values(output)
-                if values is not None:
-                    found.add(Instance(*values, profile, source.path,
-                                       output.path, source.scope))
+        found.update(_source_instances(source, documents))
     return next(iter(found)) if len(found) == 1 else None
 
 

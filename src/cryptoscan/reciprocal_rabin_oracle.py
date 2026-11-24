@@ -167,18 +167,55 @@ def _simple_definitions(function):
     return assignments
 
 
-def _is_inverse(node, message, modulus):
-    """Modular inverse via pow(m,-1,n), including constant -1 aliases."""
-    if not isinstance(node, ast.Call) or _name(node.func) != "pow":
+def _inverse_calls(tree):
+    """Resolve verified modular-inverse library imports and aliases.
+
+    Neither arbitrary user functions named 'inverse' nor arbitrary
+    attributes named 'invert' are trusted.
+    """
+    recognized = {
+        ("gmpy2", "invert"),
+        ("sympy", "mod_inverse"),
+        ("Crypto.Util.number", "inverse"),
+    }
+    direct = set()
+    modules = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.ImportFrom):
+            for alias in statement.names:
+                if (statement.module, alias.name) in recognized:
+                    direct.add(alias.asname or alias.name)
+        elif isinstance(statement, ast.Import):
+            for alias in statement.names:
+                if alias.name in ("gmpy2", "sympy", "Crypto.Util.number"):
+                    modules[alias.asname or alias.name] = alias.name
+    return direct, modules, recognized
+
+
+def _is_inverse(node, message, modulus, imports):
+    """Recognize modular inverses without executing user code."""
+    if not isinstance(node, ast.Call):
         return False
-    if len(node.args) != 3 or _name(node.args[0]) != message:
+    direct, modules, recognized = imports
+    if (_name(node.func) == "pow" and len(node.args) == 3
+            and _name(node.args[0]) == message):
+        exponent = node.args[1]
+        is_minus_one = (isinstance(exponent, ast.UnaryOp)
+                        and isinstance(exponent.op, ast.USub)
+                        and isinstance(exponent.operand, ast.Constant)
+                        and exponent.operand.value == 1)
+        return is_minus_one and ast.dump(node.args[2]) == ast.dump(modulus)
+    if len(node.args) != 2 or _name(node.args[0]) != message:
         return False
-    exponent = node.args[1]
-    is_minus_one = (isinstance(exponent, ast.UnaryOp)
-                    and isinstance(exponent.op, ast.USub)
-                    and isinstance(exponent.operand, ast.Constant)
-                    and exponent.operand.value == 1)
-    return is_minus_one and ast.dump(node.args[2]) == ast.dump(modulus)
+    if ast.dump(node.args[1]) != ast.dump(modulus):
+        return False
+    if _name(node.func) in direct:
+        return True
+    if isinstance(node.func, ast.Attribute):
+        base = _name(node.func.value)
+        if base in modules and (modules[base], node.func.attr) in recognized:
+            return True
+    return False
 
 
 def _reciprocal_encryption(tree):
@@ -189,6 +226,7 @@ def _reciprocal_encryption(tree):
     mandatory and must bind to the actual message and modulus.
     """
     jacobi_calls = _jacobi_call_sites(tree)
+    inversion_imports = _inverse_calls(tree)
     for fn in tree.body:
         if not isinstance(fn, ast.FunctionDef) or len(fn.args.args) < 2:
             continue
@@ -221,7 +259,7 @@ def _reciprocal_encryption(tree):
                 continue
             inverses = [
                 factor for factor in factors
-                if _is_inverse(factor, message, modulus)
+                if _is_inverse(factor, message, modulus, inversion_imports)
             ]
             if len(inverses) != 1:
                 continue

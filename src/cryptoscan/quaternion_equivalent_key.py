@@ -18,7 +18,7 @@ from .parser import Document
 
 _NAME = r"([^\W\d]\w*)"
 _QUAT = re.compile(r"\((?:\s*\d+\s*\(mod\s+\d+\)\s*,?){4}\)")
-_COMPONENT = re.compile(r"(\d+)\s*\(mod\s+(\d+)\)")
+_COMPONENT = re.compile(r"(?<!\d)(\d+)\s*\(mod\s+(\d+)\)")
 _BYTES = re.compile(r"""b(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")""")
 
 
@@ -111,58 +111,154 @@ def _has_key_digest(tree, key_name):
     return False
 
 
+def _symbol_assignments(tree):
+    assignments = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and (name := _symbol_name(node.targets[0])) is not None):
+            assignments.append((name, node.value))
+    return assignments
+
+
+def _conjugation_inputs(expression):
+    """Match `chi^-1 * alpha^-1 * chi`; return (chi, alpha) or None."""
+    terms = _multiplicative_terms(expression)
+    if len(terms) != 3:
+        return None
+    chi = _inverse_name(terms[0])
+    alpha = _inverse_name(terms[1])
+    if not chi or not alpha or _symbol_name(terms[2]) != chi:
+        return None
+    return chi, alpha
+
+
+def _power_chains(assignments, chi):
+    """Yield (gamma, delta) where gamma = chi**r and delta = gamma**s."""
+    for gamma, gamma_expression in assignments:
+        if _power_base(gamma_expression) != chi:
+            continue
+        for delta, delta_expression in assignments:
+            if _power_base(delta_expression) == gamma:
+                yield gamma, delta
+
+
+def _conjugates(assignments, name, delta):
+    outputs = []
+    for output, equation in assignments:
+        parts = _multiplicative_terms(equation)
+        if (len(parts) == 3
+                and _inverse_name(parts[0]) == delta
+                and _symbol_name(parts[1]) == name
+                and _symbol_name(parts[2]) == delta):
+            outputs.append(output)
+    return outputs
+
+
+def _masked_outputs(tree, assignments, kappa):
+    outputs = []
+    for mu, equation in assignments:
+        parts = _multiplicative_terms(equation)
+        if (len(parts) != 3
+                or _symbol_name(parts[0]) != kappa
+                or _symbol_name(parts[2]) != kappa):
+            continue
+        key_name = _symbol_name(parts[1])
+        if key_name and _has_key_digest(tree, key_name):
+            outputs.append(mu)
+    return outputs
+
+
+def _role_matches(tree, assignments, alpha, beta, gamma, delta):
+    if not _has_tuple_return(tree, (alpha, beta, gamma)):
+        return []
+    matches = []
+    for epsilon in _conjugates(assignments, alpha, delta):
+        for kappa in _conjugates(assignments, beta, delta):
+            for mu in _masked_outputs(tree, assignments, kappa):
+                if _has_ciphertext_return(tree, mu, epsilon):
+                    matches.append((alpha, beta, gamma))
+    return matches
+
+
 def _algebraic_roles(tree):
     """Extract the conjugation graph from syntax trees, not text formatting.
 
     Supports arbitrary identifiers, attributes, parenthesization, and
     multiplication association, while preserving operand order.
     """
-    assignments = []
-    for node in ast.walk(tree):
-        if (isinstance(node, ast.Assign) and len(node.targets) == 1
-                and (name := _symbol_name(node.targets[0])) is not None):
-            assignments.append((name, node.value))
+    assignments = _symbol_assignments(tree)
     candidates = []
     for beta, expression in assignments:
-        terms = _multiplicative_terms(expression)
-        if len(terms) != 3:
+        inputs = _conjugation_inputs(expression)
+        if inputs is None:
             continue
-        chi = _inverse_name(terms[0])
-        alpha = _inverse_name(terms[1])
-        if not chi or not alpha or _symbol_name(terms[2]) != chi:
-            continue
-        for gamma, gamma_expression in assignments:
-            if _power_base(gamma_expression) != chi:
-                continue
-            for delta, delta_expression in assignments:
-                if _power_base(delta_expression) != gamma:
-                    continue
-                def conjugates(name):
-                    return [
-                        output for output, equation in assignments
-                        if (lambda parts: len(parts) == 3
-                            and _inverse_name(parts[0]) == delta
-                            and _symbol_name(parts[1]) == name
-                            and _symbol_name(parts[2]) == delta)(
-                                _multiplicative_terms(equation))
-                    ]
-                for epsilon in conjugates(alpha):
-                    for kappa in conjugates(beta):
-                        for mu, equation in assignments:
-                            parts = _multiplicative_terms(equation)
-                            if (len(parts) != 3
-                                    or _symbol_name(parts[0]) != kappa
-                                    or _symbol_name(parts[2]) != kappa):
-                                continue
-                            key_name = _symbol_name(parts[1])
-                            if not key_name or not _has_key_digest(tree, key_name):
-                                continue
-                            if not _has_tuple_return(tree, (alpha, beta, gamma)):
-                                continue
-                            if not _has_ciphertext_return(tree, mu, epsilon):
-                                continue
-                            candidates.append((alpha, beta, gamma))
+        chi, alpha = inputs
+        for gamma, delta in _power_chains(assignments, chi):
+            candidates.extend(
+                _role_matches(tree, assignments, alpha, beta, gamma, delta))
     return candidates[0] if len(candidates) == 1 else None
+
+
+def _has_sha256_encode(tree):
+    return any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "sha256"
+        and node.args and isinstance(node.args[0], ast.Call)
+        and isinstance(node.args[0].func, ast.Attribute)
+        and node.args[0].func.attr == "encode"
+        for node in ast.walk(tree)
+    )
+
+
+def _algebra_classes(tree):
+    # Detect the required algebra interface by methods rather than the
+    # implementation's class name. A renamed quaternion class is equivalent.
+    return [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+        and {"__mul__", "invert", "__str__"} <= {
+            method.name for method in node.body
+            if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+    ]
+
+
+def _iv_literal(expression):
+    """Evaluate a literal IV expression without executing source; None if unsafe."""
+    try:
+        if (isinstance(expression, ast.BinOp)
+                and isinstance(expression.op, ast.Mult)
+                and isinstance(expression.left, ast.Constant)
+                and isinstance(expression.left.value, bytes)
+                and isinstance(expression.right, ast.Constant)
+                and type(expression.right.value) is int
+                and 0 <= expression.right.value <= 32):
+            return expression.left.value * expression.right.value
+        return ast.literal_eval(expression)
+    except (ValueError, TypeError, SyntaxError):
+        return None
+
+
+def _is_cbc_new_call(node):
+    return (isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "new"
+            and any(isinstance(arg, ast.Attribute) and arg.attr == "MODE_CBC"
+                    for arg in node.args))
+
+
+def _cbc_iv_values(tree):
+    iv_values = []
+    for node in ast.walk(tree):
+        if not _is_cbc_new_call(node):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "iv":
+                continue
+            value = _iv_literal(keyword.value)
+            if isinstance(value, bytes) and len(value) == 16:
+                iv_values.append(value)
+    return iv_values
 
 
 def _source_shape(source: str) -> bytes | None:
@@ -173,60 +269,14 @@ def _source_shape(source: str) -> bytes | None:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return None
-    # Detect the required algebra interface by methods rather than the
-    # implementation's class name. A renamed quaternion class is equivalent.
-    classes = [
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.ClassDef)
-        and {"__mul__", "invert", "__str__"} <= {
-            method.name for method in node.body
-            if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-    ]
-    if len(classes) != 1:
+    if len(_algebra_classes(tree)) != 1:
         return None
-    if not any(
-        isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "sha256"
-        and node.args and isinstance(node.args[0], ast.Call)
-        and isinstance(node.args[0].func, ast.Attribute)
-        and node.args[0].func.attr == "encode"
-        for node in ast.walk(tree)
-    ):
+    if not _has_sha256_encode(tree):
         return None
     if _algebraic_roles(tree) is None:
         return None
     # Extract the CBC IV without executing input source.
-    iv_values = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        if not isinstance(node.func, ast.Attribute) or node.func.attr != "new":
-            continue
-        if not any(
-            isinstance(arg, ast.Attribute) and arg.attr == "MODE_CBC"
-            for arg in node.args
-        ):
-            continue
-        for keyword in node.keywords:
-            if keyword.arg != "iv":
-                continue
-            expression = keyword.value
-            try:
-                if (isinstance(expression, ast.BinOp)
-                        and isinstance(expression.op, ast.Mult)
-                        and isinstance(expression.left, ast.Constant)
-                        and isinstance(expression.left.value, bytes)
-                        and isinstance(expression.right, ast.Constant)
-                        and type(expression.right.value) is int
-                        and 0 <= expression.right.value <= 32):
-                    value = expression.left.value * expression.right.value
-                else:
-                    value = ast.literal_eval(expression)
-            except (ValueError, TypeError, SyntaxError):
-                continue
-            if isinstance(value, bytes) and len(value) == 16:
-                iv_values.append(value)
+    iv_values = _cbc_iv_values(tree)
     return iv_values[0] if len(iv_values) == 1 else None
 
 
@@ -236,6 +286,48 @@ def _parse_quaternion(text: str, modulus: int) -> tuple[int, ...] | None:
         return None
     coords = tuple(int(value) for value, _ in fields)
     return coords if all(0 <= value < modulus for value in coords) else None
+
+
+def _public_candidate(line, position, quaternions):
+    prefix = line.split(quaternions[0], 1)[0]
+    modulus_match = re.search(r"(?<!\d)(\d+)\s*,\s*$", prefix)
+    if modulus_match is None:
+        return None
+    modulus = int(modulus_match.group(1))
+    if not 16 <= modulus.bit_length() <= 8192 or modulus % 2 == 0:
+        return None
+    parsed = [_parse_quaternion(q, modulus) for q in quaternions]
+    if all(item is not None for item in parsed):
+        return position, modulus, tuple(parsed)
+    return None
+
+
+def _encrypted_candidate(line, position, quaternions):
+    prefix = line.split(quaternions[0], 1)[0]
+    encoded = _BYTES.search(prefix)
+    if encoded is None:
+        return None
+    try:
+        ciphertext = ast.literal_eval(encoded.group())
+    except (ValueError, SyntaxError):
+        return None
+    if (isinstance(ciphertext, bytes) and ciphertext
+            and len(ciphertext) % 16 == 0):
+        return position, quaternions, ciphertext
+    return None
+
+
+def _pair_candidates(public_candidates, encrypted_candidates):
+    candidates = []
+    for public_index, modulus, public in public_candidates:
+        for encrypted_index, quaternions, ciphertext in encrypted_candidates:
+            if public_index == encrypted_index:
+                continue
+            masked = _parse_quaternion(quaternions[0], modulus)
+            observed = _parse_quaternion(quaternions[1], modulus)
+            if masked is not None and observed is not None:
+                candidates.append((modulus, public, ciphertext, masked, observed))
+    return candidates
 
 
 def _parse_output(text: str):
@@ -254,37 +346,14 @@ def _parse_output(text: str):
     for position, line in enumerate(lines):
         quaternions = _QUAT.findall(line)
         if len(quaternions) == 3:
-            prefix = line.split(quaternions[0], 1)[0]
-            modulus_match = re.search(r"(\d+)\s*,\s*$", prefix)
-            if modulus_match is None:
-                continue
-            modulus = int(modulus_match.group(1))
-            if not 16 <= modulus.bit_length() <= 8192 or modulus % 2 == 0:
-                continue
-            parsed = [_parse_quaternion(q, modulus) for q in quaternions]
-            if all(item is not None for item in parsed):
-                public_candidates.append((position, modulus, tuple(parsed)))
+            public = _public_candidate(line, position, quaternions)
+            if public is not None:
+                public_candidates.append(public)
         elif len(quaternions) == 2:
-            prefix = line.split(quaternions[0], 1)[0]
-            encoded = _BYTES.search(prefix)
-            if encoded is None:
-                continue
-            try:
-                ciphertext = ast.literal_eval(encoded.group())
-            except (ValueError, SyntaxError):
-                continue
-            if (isinstance(ciphertext, bytes) and ciphertext
-                    and len(ciphertext) % 16 == 0):
-                encrypted_candidates.append((position, quaternions, ciphertext))
-    candidates = []
-    for public_index, modulus, public in public_candidates:
-        for encrypted_index, quaternions, ciphertext in encrypted_candidates:
-            if public_index == encrypted_index:
-                continue
-            masked = _parse_quaternion(quaternions[0], modulus)
-            observed = _parse_quaternion(quaternions[1], modulus)
-            if masked is not None and observed is not None:
-                candidates.append((modulus, public, ciphertext, masked, observed))
+            encrypted = _encrypted_candidate(line, position, quaternions)
+            if encrypted is not None:
+                encrypted_candidates.append(encrypted)
+    candidates = _pair_candidates(public_candidates, encrypted_candidates)
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -419,7 +488,7 @@ def recover_flag(documents: Sequence[Document]) -> str:
             .decrypt(instance.ciphertext), 16,
         )
         decoded = plaintext.decode("utf-8")
-    except (ValueError, UnicodeError) as exc:
+    except ValueError as exc:
         raise RuntimeError("equivalent key did not decrypt valid UTF-8/PKCS7") from exc
     if not re.search(r"\w{2,32}\{[^{}\r\n]{1,256}\}", decoded):
         raise RuntimeError("decryption did not yield independently recognizable plaintext")

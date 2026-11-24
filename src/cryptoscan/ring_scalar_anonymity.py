@@ -27,6 +27,20 @@ class RingScalarLeak:
     key_slice: tuple[int, int]
 
 
+def _power_of_two_exponent(argument):
+    """Exponent of `1 << n` or `2 ** n` with a literal n in 1..1024."""
+    if not (isinstance(argument, ast.BinOp)
+            and isinstance(argument.left, ast.Constant)
+            and isinstance(argument.right, ast.Constant)):
+        return None
+    base = {ast.LShift: 1, ast.Pow: 2}.get(type(argument.op))
+    exponent = argument.right.value
+    if (base is not None and argument.left.value == base
+            and type(exponent) is int and 1 <= exponent <= 1024):
+        return exponent
+    return None
+
+
 def _random_scalar_width(call):
     """Infer an upper-bound bit width without executing random APIs."""
     if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
@@ -39,22 +53,7 @@ def _random_scalar_width(call):
         if isinstance(argument, ast.Constant) and type(argument.value) is int:
             return argument.value if 1 <= argument.value <= 1024 else None
     if name in ("randbelow", "randrange"):
-        if (isinstance(argument, ast.BinOp)
-                and isinstance(argument.op, ast.LShift)
-                and isinstance(argument.left, ast.Constant)
-                and argument.left.value == 1
-                and isinstance(argument.right, ast.Constant)
-                and type(argument.right.value) is int
-                and 1 <= argument.right.value <= 1024):
-            return argument.right.value
-        if (isinstance(argument, ast.BinOp)
-                and isinstance(argument.op, ast.Pow)
-                and isinstance(argument.left, ast.Constant)
-                and argument.left.value == 2
-                and isinstance(argument.right, ast.Constant)
-                and type(argument.right.value) is int
-                and 1 <= argument.right.value <= 1024):
-            return argument.right.value
+        return _power_of_two_exponent(argument)
     return None
 
 
@@ -106,14 +105,8 @@ def _sampler_width(node, generators):
     return _random_scalar_width(node)
 
 
-def _simulated_response_arrays(function, generators):
-    """Conservative local def-use check: PRNG values flow into responses."""
+def _name_widths(assignments, generators):
     values = {}
-    arrays = {}
-    assignments = [
-        node for node in ast.walk(function)
-        if isinstance(node, ast.Assign) and len(node.targets) == 1
-    ]
     for _ in range(3):
         for assignment in assignments:
             target, value = assignment.targets[0], assignment.value
@@ -123,32 +116,41 @@ def _simulated_response_arrays(function, generators):
                     width = values.get(value.id)
                 if width is not None:
                     values[target.id] = width
-    for assignment in assignments:
-        target, value = assignment.targets[0], assignment.value
-        if isinstance(target, ast.Name):
-            if isinstance(value, (ast.ListComp, ast.GeneratorExp)):
-                width = _sampler_width(value.elt, generators)
-                if width is not None:
-                    arrays[target.id] = width
-        elif (isinstance(target, ast.Subscript)
-              and isinstance(target.value, ast.Name)):
-            width = _sampler_width(value, generators)
-            if width is None and isinstance(value, ast.Name):
-                width = values.get(value.id)
+    return values
+
+
+def _record_array_width(arrays, target, value, values, generators):
+    if isinstance(target, ast.Name):
+        if isinstance(value, (ast.ListComp, ast.GeneratorExp)):
+            width = _sampler_width(value.elt, generators)
             if width is not None:
-                arrays[target.value.id] = max(
-                    arrays.get(target.value.id, 0), width,
-                )
+                arrays[target.id] = width
+    elif (isinstance(target, ast.Subscript)
+          and isinstance(target.value, ast.Name)):
+        width = _sampler_width(value, generators)
+        if width is None and isinstance(value, ast.Name):
+            width = values.get(value.id)
+        if width is not None:
+            arrays[target.value.id] = max(
+                arrays.get(target.value.id, 0), width,
+            )
+
+
+def _simulated_response_arrays(function, generators):
+    """Conservative local def-use check: PRNG values flow into responses."""
+    arrays = {}
+    assignments = [
+        node for node in ast.walk(function)
+        if isinstance(node, ast.Assign) and len(node.targets) == 1
+    ]
+    values = _name_widths(assignments, generators)
+    for assignment in assignments:
+        _record_array_width(
+            arrays, assignment.targets[0], assignment.value, values, generators)
     return arrays
 
 
-def _source_profile(source):
-    if len(source) > 1_000_000:
-        return None
-    tree = parse_python(Document("candidate.py", source, None))
-    if tree is None:
-        return None
-    generators = _scalar_sampler_functions(tree, 128)
+def _linked_orders(tree, generators):
     linked = {}
     for function in (node for node in ast.walk(tree)
                      if isinstance(node, ast.FunctionDef)):
@@ -163,19 +165,21 @@ def _source_profile(source):
                 linked.setdefault(order_name, set()).add(
                     min(sampled_arrays[name] for name in response_arrays)
                 )
-    if len(linked) != 1:
-        return None
-    symbols = set(linked)
-    simulated_bits = max(next(iter(linked.values())))
-    if not any(
+    return linked
+
+
+def _uses_cbc(tree):
+    return any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "new"
         and any(isinstance(arg, ast.Attribute) and arg.attr == "MODE_CBC"
                 for arg in node.args)
         for node in ast.walk(tree)
-    ):
-        return None
+    )
+
+
+def _key_slices(tree):
     slices = set()
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Subscript)
@@ -189,36 +193,60 @@ def _source_profile(source):
         if (type(start) is int and type(end) is int and
                 0 <= start < end <= 64 and (end - start) % 2 == 0):
             slices.add((start, end))
-    if len(slices) != 1 or not any(
+    return slices
+
+
+def _calls_fromhex(tree):
+    return any(
         isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         and node.func.attr == "fromhex" for node in ast.walk(tree)
-    ):
+    )
+
+
+def _source_profile(source):
+    if len(source) > 1_000_000:
+        return None
+    tree = parse_python(Document("candidate.py", source, None))
+    if tree is None:
+        return None
+    generators = _scalar_sampler_functions(tree, 128)
+    linked = _linked_orders(tree, generators)
+    if len(linked) != 1:
+        return None
+    symbols = set(linked)
+    simulated_bits = max(next(iter(linked.values())))
+    if not _uses_cbc(tree):
+        return None
+    slices = _key_slices(tree)
+    if len(slices) != 1 or not _calls_fromhex(tree):
         return None
     return slices.pop(), symbols.pop(), simulated_bits
+
+
+def _constant_order(node):
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return node.value
+    if isinstance(node, ast.BinOp):
+        left, right = _constant_order(node.left), _constant_order(node.right)
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Pow) and 0 <= right <= 1024:
+            return left ** right
+    raise ValueError("nonconstant group order")
 
 
 def _order(source, symbol):
     tree = parse_python(Document("curve.py", source, None))
     if tree is None:
         return None
-    def constant(node):
-        if isinstance(node, ast.Constant) and type(node.value) is int:
-            return node.value
-        if isinstance(node, ast.BinOp):
-            left, right = constant(node.left), constant(node.right)
-            if isinstance(node.op, ast.Add):
-                return left + right
-            if isinstance(node.op, ast.Sub):
-                return left - right
-            if isinstance(node.op, ast.Pow) and 0 <= right <= 1024:
-                return left ** right
-        raise ValueError("nonconstant group order")
     for node in tree.body:
         if (isinstance(node, ast.Assign) and len(node.targets) == 1
                 and isinstance(node.targets[0], ast.Name)
                 and node.targets[0].id == symbol):
             try:
-                value = constant(node.value)
+                value = _constant_order(node.value)
             except ValueError:
                 return None
             return value if 2**127 < value < 2**520 else None
@@ -269,15 +297,7 @@ def _ring_record(record):
     }
 
 
-def _corpus(document):
-    """Identify the payload from its nested types, not JSON field names."""
-    try:
-        data = (document.data if isinstance(document.data, dict)
-                else json.loads(document.text))
-    except (ValueError, TypeError, AttributeError):
-        return None
-    if not isinstance(data, dict):
-        return None
+def _ring_levels(data):
     possible_levels = []
     for value in data.values():
         if not isinstance(value, list) or not 1 <= len(value) <= 128:
@@ -285,9 +305,10 @@ def _corpus(document):
         parsed = [_ring_record(record) for record in value]
         if all(record is not None for record in parsed):
             possible_levels.append(tuple(parsed))
-    if len(possible_levels) != 1:
-        return None
-    levels = possible_levels[0]
+    return possible_levels[0] if len(possible_levels) == 1 else None
+
+
+def _iv_and_ciphertext(data):
     # The public ciphertext and IV are identified by their CBC byte shapes.
     # Known field names are only a disambiguation aid, not a requirement.
     byte_fields = [
@@ -317,31 +338,54 @@ def _corpus(document):
     ciphertext = ct_candidates[0][1]
     if iv == ciphertext and iv_candidates[0][0] == ct_candidates[0][0]:
         return None
-    return levels, iv, ciphertext
+    return iv, ciphertext
+
+
+def _corpus(document):
+    """Identify the payload from its nested types, not JSON field names."""
+    try:
+        data = (document.data if isinstance(document.data, dict)
+                else json.loads(document.text))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    levels = _ring_levels(data)
+    if levels is None:
+        return None
+    shapes = _iv_and_ciphertext(data)
+    if shapes is None:
+        return None
+    return levels, *shapes
+
+
+def _source_leaks(documents, source, profile):
+    key_slice, symbol, simulated_bits = profile
+    found = []
+    for helper in documents:
+        if helper.scope != source.scope:
+            continue
+        order = _order(helper.text, symbol)
+        # With uniform modulo-order scalar sampling there is no
+        # distinguishing information in the scalar magnitude.
+        if order is None or simulated_bits <= order.bit_length():
+            continue
+        for data_document in documents:
+            if (data_document.scope != source.scope
+                    or data_document.path in (source.path, helper.path)):
+                continue
+            corpus = _corpus(data_document)
+            if corpus is not None:
+                found.append(RingScalarLeak(order, *corpus, key_slice))
+    return found
 
 
 def extract_instance(documents: Sequence[Document]) -> RingScalarLeak | None:
     candidates = []
     for source in documents:
         profile = _source_profile(source.text)
-        if profile is None:
-            continue
-        key_slice, symbol, simulated_bits = profile
-        for helper in documents:
-            if helper.scope != source.scope:
-                continue
-            order = _order(helper.text, symbol)
-            # With uniform modulo-order scalar sampling there is no
-            # distinguishing information in the scalar magnitude.
-            if order is None or simulated_bits <= order.bit_length():
-                continue
-            for data_document in documents:
-                if (data_document.scope != source.scope
-                        or data_document.path in (source.path, helper.path)):
-                    continue
-                corpus = _corpus(data_document)
-                if corpus is not None:
-                    candidates.append(RingScalarLeak(order, *corpus, key_slice))
+        if profile is not None:
+            candidates.extend(_source_leaks(documents, source, profile))
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -352,13 +396,7 @@ def signer_candidates(level, order):
     ) if c < order and r < order]
 
 
-def recover_flag(documents: Sequence[Document]) -> str:
-    instance = extract_instance(documents)
-    if instance is None:
-        raise ValueError("no supported source-verified ring scalar anonymity leak")
-    from Crypto.Cipher import AES
-    from Crypto.Util.Padding import unpad
-
+def _signer_choices(instance):
     choices = [signer_candidates(level, instance.order)
                for level in instance.levels]
     if any(not candidates for candidates in choices):
@@ -368,30 +406,45 @@ def recover_flag(documents: Sequence[Document]) -> str:
         combinations *= len(candidates)
         if combinations > 2_000_000:
             raise RuntimeError("ambiguous signer search exceeds safety bound")
+    return choices
+
+
+def _collect_flags(material, instance, verified, aes, unpad):
+    try:
+        key = bytes.fromhex(material)
+        if len(key) not in (16, 24, 32):
+            return
+        plaintext = aes.new(
+            key, aes.MODE_CBC, iv=instance.iv
+        ).decrypt(instance.ciphertext)
+        try:
+            unpadded = unpad(plaintext, 16)
+        except ValueError:
+            unpadded = plaintext
+        possible = (plaintext, unpadded)
+        for candidate in possible:
+            decoded = candidate.decode("utf-8")
+            if re.fullmatch(r"\w{2,32}\{[^{}\r\n]{1,256}\}", decoded):
+                verified.add(decoded)
+    except ValueError:
+        return
+
+
+def recover_flag(documents: Sequence[Document]) -> str:
+    instance = extract_instance(documents)
+    if instance is None:
+        raise ValueError("no supported source-verified ring scalar anonymity leak")
+    from Crypto.Cipher import AES
+    from Crypto.Util.Padding import unpad
+
+    choices = _signer_choices(instance)
     start, end = instance.key_slice
     verified = set()
     for indices in itertools.product(*choices):
         material = "".join(level["public_keys"][index][start:end]
                            for level, index in zip(
                                instance.levels, indices, strict=True))
-        try:
-            key = bytes.fromhex(material)
-            if len(key) not in (16, 24, 32):
-                continue
-            plaintext = AES.new(
-                key, AES.MODE_CBC, iv=instance.iv
-            ).decrypt(instance.ciphertext)
-            try:
-                unpadded = unpad(plaintext, 16)
-            except ValueError:
-                unpadded = plaintext
-            possible = (plaintext, unpadded)
-            for candidate in possible:
-                decoded = candidate.decode("utf-8")
-                if re.fullmatch(r"\w{2,32}\{[^{}\r\n]{1,256}\}", decoded):
-                    verified.add(decoded)
-        except (ValueError, UnicodeError):
-            continue
+        _collect_flags(material, instance, verified, AES, unpad)
     if len(verified) != 1:
         raise RuntimeError("no unique, verified flag from ring signer candidates")
     return verified.pop()

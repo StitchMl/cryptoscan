@@ -114,65 +114,140 @@ def _jacobi_call_sites(tree):
     return jacobi_calls
 
 
+def _flatten_binop(node, operation):
+    if isinstance(node, ast.BinOp) and isinstance(node.op, operation):
+        return (_flatten_binop(node.left, operation)
+                + _flatten_binop(node.right, operation))
+    return [node]
+
+
+def _resolved(node, definitions, *, seen=frozenset(), limit=12):
+    """Bounded symbolic expansion of simple expression aliases.
+
+    Only AST assignments are inspected; no user source is evaluated.
+    Reject cycles and ambiguous reassignments instead of guessing.
+    """
+    if limit <= 0:
+        return node
+    if isinstance(node, ast.Name) and node.id in definitions:
+        if node.id in seen or definitions[node.id] is None:
+            return node
+        return _resolved(definitions[node.id], definitions,
+                         seen=seen | {node.id}, limit=limit-1)
+    if isinstance(node, ast.BinOp):
+        return ast.BinOp(
+            left=_resolved(node.left, definitions, seen=seen, limit=limit-1),
+            op=node.op,
+            right=_resolved(node.right, definitions, seen=seen, limit=limit-1),
+        )
+    if isinstance(node, ast.Call):
+        return ast.Call(
+            func=node.func,
+            args=[_resolved(arg, definitions, seen=seen, limit=limit-1)
+                  for arg in node.args],
+            keywords=node.keywords,
+        )
+    return node
+
+
+def _simple_definitions(function):
+    assignments = {}
+    for statement in function.body:
+        if (isinstance(statement, ast.Assign)
+                and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name)):
+            name = statement.targets[0].id
+            if name in assignments:
+                assignments[name] = None
+            else:
+                assignments[name] = statement.value
+        elif isinstance(statement, ast.AugAssign) and isinstance(
+                statement.target, ast.Name):
+            assignments[statement.target.id] = None
+    return assignments
+
+
+def _is_inverse(node, message, modulus):
+    """Modular inverse via pow(m,-1,n), including constant -1 aliases."""
+    if not isinstance(node, ast.Call) or _name(node.func) != "pow":
+        return False
+    if len(node.args) != 3 or _name(node.args[0]) != message:
+        return False
+    exponent = node.args[1]
+    is_minus_one = (isinstance(exponent, ast.UnaryOp)
+                    and isinstance(exponent.op, ast.USub)
+                    and isinstance(exponent.operand, ast.Constant)
+                    and exponent.operand.value == 1)
+    return is_minus_one and ast.dump(node.args[2]) == ast.dump(modulus)
+
+
 def _reciprocal_encryption(tree):
-    """Recognize m+c*m^-1 mod n with Jacobi and ordering disambiguation."""
+    """Recognize algebraically equivalent reciprocal encryption expressions.
+
+    Normalize bounded temporary assignments and associativity/commutation
+    in additions and products. The Jacobi and order-bit evidence remains
+    mandatory and must bind to the actual message and modulus.
+    """
     jacobi_calls = _jacobi_call_sites(tree)
     for fn in tree.body:
         if not isinstance(fn, ast.FunctionDef) or len(fn.args.args) < 2:
             continue
         message = fn.args.args[0].arg
-        modulus, constant = None, None
-        for expression in ast.walk(fn):
+        defs = _simple_definitions(fn)
+        expressions = [
+            _resolved(node, defs)
+            for node in ast.walk(fn)
+            if isinstance(node, (ast.BinOp, ast.Name))
+        ]
+        for expression in expressions:
             if not (isinstance(expression, ast.BinOp)
-                    and isinstance(expression.op, ast.Mod)
-                    and isinstance(expression.left, ast.BinOp)
-                    and isinstance(expression.left.op, ast.Add)):
+                    and isinstance(expression.op, ast.Mod)):
                 continue
-            parts = (expression.left.left, expression.left.right)
-            if _name(parts[0]) == message:
-                reciprocal = parts[1]
-            elif _name(parts[1]) == message:
-                reciprocal = parts[0]
+            modulus = expression.right
+            n_field = _member(modulus)
+            if n_field is None:
+                continue
+            additions = _flatten_binop(expression.left, ast.Add)
+            if len(additions) != 2:
+                continue
+            if _name(additions[0]) == message:
+                reciprocal = additions[1]
+            elif _name(additions[1]) == message:
+                reciprocal = additions[0]
             else:
                 continue
-            if not (isinstance(reciprocal, ast.BinOp)
-                    and isinstance(reciprocal.op, ast.Mult)):
+            factors = _flatten_binop(reciprocal, ast.Mult)
+            if len(factors) != 2:
                 continue
-            inv = next(
-                (part for part in (reciprocal.left, reciprocal.right)
-                 if isinstance(part, ast.Call)
-                 and _name(part.func) == "pow"
-                 and len(part.args) == 3
-                 and _name(part.args[0]) == message
-                 and isinstance(part.args[1], ast.UnaryOp)
-                 and isinstance(part.args[1].op, ast.USub)
-                 and isinstance(part.args[1].operand, ast.Constant)
-                 and part.args[1].operand.value == 1),
-                None,
-            )
-            if inv is None or ast.dump(inv.args[2]) != ast.dump(expression.right):
+            inverses = [
+                factor for factor in factors
+                if _is_inverse(factor, message, modulus)
+            ]
+            if len(inverses) != 1:
                 continue
-            other = reciprocal.left if reciprocal.right is inv else reciprocal.right
-            constant = _member(other)
-            modulus = _member(expression.right)
-            if not constant or not modulus or constant[0] != modulus[0]:
+            constant = next(factor for factor in factors
+                            if factor is not inverses[0])
+            c_field = _member(constant)
+            if c_field is None or c_field[0] != n_field[0]:
                 continue
             if not any(
-                len(call.args) == 2
-                and _name(call.args[0]) == message
-                and ast.dump(call.args[1]) == ast.dump(expression.right)
+                _name(call.args[0]) == message
+                and ast.dump(call.args[1]) == ast.dump(modulus)
                 for call in jacobi_calls(fn)
             ):
                 continue
+            # The companion bit must distinguish a comparison involving
+            # the message; the inverse expression may be a temporary.
             if not any(
                 isinstance(node, ast.Compare)
-                and any(isinstance(op, ast.Lt) for op in node.ops)
-                and any(_name(x) == message for x in
-                        [node.left, *node.comparators])
+                and any(isinstance(op, (ast.Lt, ast.Gt))
+                        for op in node.ops)
+                and any(_name(x) == message
+                        for x in [node.left, *node.comparators])
                 for node in ast.walk(fn)
             ):
                 continue
-            return fn.name, modulus[1], constant[1]
+            return fn.name, n_field[1], c_field[1]
     return None
 
 

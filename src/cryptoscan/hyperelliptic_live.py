@@ -56,6 +56,41 @@ def _word_format(model):
     return ("<" if model.byte_order == "little" else ">") + model.coefficient_encoding
 
 
+class _FactorSearch:
+    """Bounded enumeration of monic degree-g products of modular factors."""
+
+    def __init__(self, components, genus, prime, variable, max_factors):
+        self.components = components
+        self.genus = genus
+        self.prime = prime
+        self.variable = variable
+        self.max_factors = max_factors
+        self.explored = 0
+        self.count = 0
+
+    def visit(self, index, degree, current):
+        from sympy import Poly
+
+        if index == len(self.components):
+            if degree == self.genus:
+                self.count += 1
+                if self.count > self.max_factors:
+                    raise RuntimeError("too many candidate Mumford divisors")
+                yield current.monic()
+            return
+        factor, multiplicity = self.components[index]
+        power = Poly(1, self.variable, modulus=self.prime)
+        for used in range(multiplicity + 1):
+            if degree + used*factor.degree() > self.genus:
+                break
+            self.explored += 1
+            if self.explored > self.max_factors*64:
+                raise RuntimeError("factor-combination budget exceeded")
+            yield from self.visit(index+1, degree+used*factor.degree(),
+                                  current*power)
+            power *= factor
+
+
 def _degree_divisors(polynomial, prime, genus, *, max_factors=1024):
     """Enumerate bounded monic degree-g factors over the source field.
 
@@ -69,34 +104,58 @@ def _degree_divisors(polynomial, prime, genus, *, max_factors=1024):
     _, factor_list = Poly(expr, x, modulus=prime).factor_list()
     components = [(factor.monic(), int(power))
                   for factor, power in factor_list]
-    explored = 0
-    count = 0
-
-    def visit(index, degree, current):
-        nonlocal explored, count
-        if index == len(components):
-            if degree == genus:
-                count += 1
-                if count > max_factors:
-                    raise RuntimeError("too many candidate Mumford divisors")
-                yield current.monic()
-            return
-        factor, multiplicity = components[index]
-        power = Poly(1, x, modulus=prime)
-        for used in range(multiplicity + 1):
-            if degree + used*factor.degree() > genus:
-                break
-            explored += 1
-            if explored > max_factors*64:
-                raise RuntimeError("factor-combination budget exceeded")
-            yield from visit(index+1, degree+used*factor.degree(),
-                             current*power)
-            power *= factor
-
+    search = _FactorSearch(components, genus, prime, x, max_factors)
     yield from (
         tuple(int(poly.nth(i)) % prime for i in range(genus)) + (1,)
-        for poly in visit(0, 0, Poly(1, x, modulus=prime))
+        for poly in search.visit(0, 0, Poly(1, x, modulus=prime))
     )
+
+
+def _disclosed_v(ciphertext, model, secret_size):
+    """Return (v, disclosed, reason); reason explains why v is unavailable."""
+    suffix = model.known_plaintext_suffix
+    genus = model.genus
+    word = model.coefficient_bytes
+    v_start, v_end = genus*word, genus*2*word
+    if secret_size > v_start or len(ciphertext) < v_end:
+        return None, None, ("the disclosed suffix does not expose the full "
+                            "first Mumford v polynomial; more algebraic "
+                            "constraints needed")
+    disclosed = {
+        secret_size+i: ciphertext[secret_size+i] ^ value
+        for i, value in enumerate(suffix)
+    }
+    if not all(i in disclosed for i in range(v_start, v_end)):
+        return None, None, ("known suffix does not include all first-state "
+                            "v coefficients")
+    word_format = _word_format(model)
+    fmt = word_format[0] + word_format[1]*genus
+    v = struct.unpack(
+        fmt, bytes(disclosed[i] for i in range(v_start, v_end))
+    )
+    if any(x >= model.prime for x in v):
+        return None, None, ("known plaintext produces out-of-field "
+                            "Jacobian coefficients")
+    return v, disclosed, None
+
+
+def _state_plaintext(state, disclosed, ciphertext, suffix, secret_size):
+    if any(state[i] != byte for i, byte in disclosed.items()
+           if i < len(state)):
+        return None
+    plaintext = bytes(
+        c ^ state[i] for i, c in enumerate(ciphertext[:secret_size])
+    )
+    if not _TOKEN.fullmatch(plaintext):
+        return None
+    # Only first-state bytes are reconstructed here. Later stream
+    # states may also contain known plaintext, but cannot be checked
+    # against this state's Mumford divisor.
+    if any((ciphertext[i] ^ state[i]) != suffix[i-secret_size]
+           for i in range(secret_size,
+                          min(len(ciphertext), len(state)))):
+        return None
+    return plaintext.decode("ascii")
 
 
 def derive_flag_candidates(ciphertext, polynomial, model, *, max_factors=1024):
@@ -114,24 +173,11 @@ def derive_flag_candidates(ciphertext, polynomial, model, *, max_factors=1024):
     if secret_size < 1:
         raise ValueError("empty secret")
     genus = model.genus
-    word = model.coefficient_bytes
-    v_start, v_end = genus*word, genus*2*word
-    if secret_size > v_start or len(ciphertext) < v_end:
-        return (), ("the disclosed suffix does not expose the full first "
-                    "Mumford v polynomial; more algebraic constraints needed")
-    disclosed = {
-        secret_size+i: ciphertext[secret_size+i] ^ value
-        for i, value in enumerate(suffix)
-    }
-    if not all(i in disclosed for i in range(v_start, v_end)):
-        return (), "known suffix does not include all first-state v coefficients"
+    v, disclosed, reason = _disclosed_v(ciphertext, model, secret_size)
+    if v is None:
+        return (), reason
     word_format = _word_format(model)
     fmt = word_format[0] + word_format[1]*genus
-    v = struct.unpack(
-        fmt, bytes(disclosed[i] for i in range(v_start, v_end))
-    )
-    if any(x >= model.prime for x in v):
-        return (), "known plaintext produces out-of-field Jacobian coefficients"
     square = [0]*(2*genus-1)
     for i, left in enumerate(v):
         for j, right in enumerate(v):
@@ -148,22 +194,10 @@ def derive_flag_candidates(ciphertext, polynomial, model, *, max_factors=1024):
         state = struct.pack(fmt.replace(word_format[1]*genus,
                                         word_format[1]*(2*genus)),
                             *u[:-1], *v)
-        if any(state[i] != byte for i, byte in disclosed.items()
-               if i < len(state)):
-            continue
-        plaintext = bytes(
-            c ^ state[i] for i, c in enumerate(ciphertext[:secret_size])
-        )
-        if not _TOKEN.fullmatch(plaintext):
-            continue
-        # Only first-state bytes are reconstructed here. Later stream
-        # states may also contain known plaintext, but cannot be checked
-        # against this state's Mumford divisor.
-        if any((ciphertext[i] ^ state[i]) != suffix[i-secret_size]
-               for i in range(secret_size,
-                              min(len(ciphertext), len(state)))):
-            continue
-        found.add(plaintext.decode("ascii"))
+        plaintext = _state_plaintext(
+            state, disclosed, ciphertext, suffix, secret_size)
+        if plaintext is not None:
+            found.add(plaintext)
     return tuple(sorted(found)), (
         "verified candidate Mumford factors of f-v² against every "
         "known plaintext byte in the reconstructed first state"

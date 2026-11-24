@@ -25,89 +25,93 @@ class AttackHypothesis:
     source_count: int
 
 
+_SIGNATURE_PATTERNS = (
+    (re.compile(r"\b(?:EllipticCurve|EccPoint|Ed448|Ed25519)\b"), "elliptic_curve"),
+    (re.compile(r"\bHyperellipticCurve\s*\("), "hyperelliptic_curve"),
+    (re.compile(r"\.jacobian\s*\("), "jacobian_construction"),
+    (re.compile(r"\bstruct\.pack\s*\("), "binary_coefficient_serialization"),
+    (re.compile(r"\b(?:secrets\.randbelow|randrange|randint)\s*\("), "random_scalar"),
+    (re.compile(r"\b(?:shuffle|sample)\s*\("), "shuffle"),
+    (re.compile(r"\b(?:AES\.MODE_CTR|MODE_CTR|ChaCha20)\b"), "stream_encryption"),
+    (re.compile(r"\b(?:bcrypt\.kdf|scrypt|pbkdf2_hmac|HKDF)\s*\("), "key_derivation"),
+    (re.compile(r"\b(?:Groth16|SNARK|R1CS|Poseidon)\b"), "zkp"),
+    (re.compile(r"\b(?:ate_pairing|weil_pairing|tate_pairing)\b"), "pairing"),
+    (re.compile(r"\b(?:getPrime|RSA\.generate|rsa\.generate)\s*\("), "rsa"),
+    (re.compile(r"\b(?:GF|PolynomialRing|quotient_ring|Zmod)\s*\("), "finite_algebra"),
+    (re.compile(r"\b(?:signature|sign|verify|proof)\b", re.I), "authentication"),
+    (re.compile(r"\b(?:oracle|PoW|input)\s*\(", re.I), "interaction"),
+    (re.compile(r"\b(?:xor|operator\.xor)\b"), "xor"),
+    (re.compile(r"\b(?:nonce|IV|counter)\b", re.I), "nonce"),
+)
+
+
 def _signatures(source: str) -> set[str]:
-    features: set[str] = set()
-    if re.search(r"\b(?:EllipticCurve|EccPoint|Ed448|Ed25519)\b", source):
-        features.add("elliptic_curve")
-    if re.search(r"\bHyperellipticCurve\s*\(", source):
-        features.add("hyperelliptic_curve")
-    if re.search(r"\.jacobian\s*\(", source):
-        features.add("jacobian_construction")
-    if re.search(r"\bstruct\.pack\s*\(", source):
-        features.add("binary_coefficient_serialization")
-    if re.search(r"\b(?:secrets\.randbelow|randrange|randint)\s*\(", source):
-        features.add("random_scalar")
-    if re.search(r"\b(?:shuffle|sample)\s*\(", source):
-        features.add("shuffle")
-    if re.search(r"\b(?:AES\.MODE_CTR|MODE_CTR|ChaCha20)\b", source):
-        features.add("stream_encryption")
-    if re.search(r"\b(?:bcrypt\.kdf|scrypt|pbkdf2_hmac|HKDF)\s*\(", source):
-        features.add("key_derivation")
-    if re.search(r"\b(?:Groth16|SNARK|R1CS|Poseidon)\b", source):
-        features.add("zkp")
-    if re.search(r"\b(?:ate_pairing|weil_pairing|tate_pairing)\b", source):
-        features.add("pairing")
-    if re.search(r"\b(?:getPrime|RSA\.generate|rsa\.generate)\s*\(", source):
-        features.add("rsa")
-    if re.search(r"\b(?:GF|PolynomialRing|quotient_ring|Zmod)\s*\(", source):
-        features.add("finite_algebra")
-    if re.search(r"\b(?:signature|sign|verify|proof)\b", source, flags=re.I):
-        features.add("authentication")
-    if re.search(r"\b(?:oracle|PoW|input)\s*\(", source, flags=re.I):
-        features.add("interaction")
-    if re.search(r"\b(?:xor|operator\.xor)\b", source):
-        features.add("xor")
-    if re.search(r"\b(?:nonce|IV|counter)\b", source, flags=re.I):
-        features.add("nonce")
-    return features
+    return {name for pattern, name in _SIGNATURE_PATTERNS
+            if pattern.search(source)}
 
 
-def _syntactic_signals(tree: ast.Module | None) -> set[str]:
-    if tree is None:
-        return set()
-    result = set()
-    has_modular_power = any(
+def _calls_named(node, names):
+    return isinstance(node, ast.Call) and (
+        (isinstance(node.func, ast.Name) and node.func.id in names)
+        or (isinstance(node.func, ast.Attribute) and node.func.attr in names)
+    )
+
+
+def _has_modular_power(nodes):
+    return any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name) and node.func.id == "pow"
         and len(node.args) == 3
-        for node in ast.walk(tree)
+        for node in nodes
     )
-    if has_modular_power:
-        result.add("modular_power")
-    if any(
+
+
+def _has_xor_operator(nodes):
+    return any(
         isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitXor)
-        for node in ast.walk(tree)
-    ):
-        result.add("xor_operator")
-    if any(
+        for node in nodes
+    )
+
+
+def _has_shuffle_call(nodes):
+    return any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute) and node.func.attr == "shuffle"
-        for node in ast.walk(tree)
-    ):
-        result.add("shuffle")
-    nodes = list(ast.walk(tree))
-    if any(isinstance(node, ast.Call)
-           and (isinstance(node.func, ast.Name) and node.func.id == "gcd"
-                or isinstance(node.func, ast.Attribute)
-                and node.func.attr == "gcd")
-           and len(node.args) == 2 for node in nodes):
-        result.add("gcd_operation")
-    if any(
+        for node in nodes
+    )
+
+
+def _has_gcd_operation(nodes):
+    return any(
+        _calls_named(node, {"gcd"}) and len(node.args) == 2
+        for node in nodes
+    )
+
+
+def _has_computed_output_slice(nodes):
+    return any(
         isinstance(node, ast.Subscript)
         and isinstance(node.slice, ast.Slice)
         and node.slice.upper is not None
         and not isinstance(node.slice.upper, ast.Constant)
         for node in nodes
-    ):
-        result.add("computed_output_slice")
-    if any(
+    )
+
+
+def _has_indexed_modular_reduction(nodes):
+    return any(
         isinstance(node, ast.Assign)
         and any(isinstance(target, ast.Subscript) for target in node.targets)
         and isinstance(node.value, ast.BinOp)
         and isinstance(node.value.op, ast.Mod)
         for node in nodes
-    ):
-        result.add("indexed_modular_reduction")
+    )
+
+
+_RANDOM_SCALAR_NAMES = {"getrandbits", "randbits", "randbelow", "randrange"}
+
+
+def _random_imports(tree):
     random_names = set()
     random_modules = set()
     for imported in tree.body:
@@ -115,27 +119,40 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
                 and imported.module in {"secrets", "random"}):
             random_names.update(
                 alias.asname or alias.name for alias in imported.names
-                if alias.name in {"getrandbits", "randbits", "randbelow", "randrange"}
+                if alias.name in _RANDOM_SCALAR_NAMES
             )
         elif isinstance(imported, ast.Import):
             random_modules.update(
                 alias.asname or alias.name for alias in imported.names
                 if alias.name in {"secrets", "random"}
             )
-    if any(
-        isinstance(node, ast.Call)
-        and (
-            isinstance(node.func, ast.Name) and node.func.id in random_names
-            or isinstance(node.func, ast.Attribute)
-            and node.func.attr in {"getrandbits", "randbits", "randbelow", "randrange"}
-            and (isinstance(node.func.value, ast.Name)
-                 and node.func.value.id in random_modules
-                 or isinstance(node.func.value, ast.Call))
-        )
+    return random_names, random_modules
+
+
+def _is_random_scalar_call(node, random_names, random_modules):
+    if not isinstance(node, ast.Call):
+        return False
+    if isinstance(node.func, ast.Name):
+        return node.func.id in random_names
+    return (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr in _RANDOM_SCALAR_NAMES
+        and (isinstance(node.func.value, ast.Name)
+             and node.func.value.id in random_modules
+             or isinstance(node.func.value, ast.Call))
+    )
+
+
+def _has_sampled_random_scalars(tree, nodes):
+    random_names, random_modules = _random_imports(tree)
+    return any(
+        _is_random_scalar_call(node, random_names, random_modules)
         for node in nodes
-    ):
-        result.add("sampled_random_scalars")
-    if any(
+    )
+
+
+def _has_inverse_conjugation(nodes):
+    return any(
         isinstance(node, ast.BinOp)
         and isinstance(node.op, ast.Pow)
         and isinstance(node.right, ast.UnaryOp)
@@ -146,48 +163,51 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
     ) and any(
         isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult)
         for node in nodes
-    ):
-        result.add("inverse_conjugation")
-    if any(
+    )
+
+
+def _has_sum_of_scaled_terms(nodes):
+    return any(
         isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)
         and isinstance(node.left, ast.BinOp)
         and isinstance(node.left.op, ast.Mult)
         and isinstance(node.right, ast.BinOp)
         and isinstance(node.right.op, ast.Mult)
         for node in nodes
-    ):
-        result.add("sum_of_scaled_terms")
-    if (any(isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in {"sha256", "sha512", "blake2b"}
-            for node in nodes)
+    )
+
+
+def _has_hash_key_material(nodes):
+    return (any(isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"sha256", "sha512", "blake2b"}
+                for node in nodes)
             and any(isinstance(node, ast.Attribute)
                     and node.attr in {"MODE_CBC", "MODE_CTR", "MODE_GCM"}
-                    for node in nodes)):
-        result.add("hash_key_material")
-    if any(
-        isinstance(node, ast.Call) and len(node.args) >= 1
-        and ((isinstance(node.func, ast.Name)
-              and node.func.id in {"getRandomRange", "randbelow", "randrange"})
-             or (isinstance(node.func, ast.Attribute)
-                 and node.func.attr in {"getRandomRange", "randbelow", "randrange"}))
+                    for node in nodes))
+
+
+def _has_restricted_polynomial_sampler(nodes):
+    return any(
+        _calls_named(node, {"getRandomRange", "randbelow", "randrange"})
+        and len(node.args) >= 1
         and isinstance(node.args[-1], ast.BinOp)
         and isinstance(node.args[-1].op, ast.Sub)
         and isinstance(node.args[-1].right, ast.Constant)
         and type(node.args[-1].right.value) is int
         and node.args[-1].right.value > 0
         for node in nodes
-    ):
-        result.add("restricted_polynomial_sampler")
-    if any(
-        isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        and node.func.id == "pow" and len(node.args) == 3
-        for node in nodes
-    ) and any(
+    )
+
+
+def _has_modular_polynomial_evaluation(nodes):
+    return _has_modular_power(nodes) and any(
         isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod)
         for node in nodes
-    ):
-        result.add("modular_polynomial_evaluation")
+    )
+
+
+def _has_polynomially_related_primes(nodes):
     # Related prime polynomials may imply nontrivial subgroup orders.
     prime_related = set()
     for assignment in nodes:
@@ -201,48 +221,56 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
                     for term in ast.walk(assignment.value)
                 )):
             prime_related.add(assignment.targets[0].id)
-    if any(
-        isinstance(node, ast.Call) and len(node.args) == 1
+    return any(
+        _calls_named(node, {"isPrime", "isprime"}) and len(node.args) == 1
         and isinstance(node.args[0], ast.Name)
         and node.args[0].id in prime_related
-        and ((isinstance(node.func, ast.Name)
-              and node.func.id in ("isPrime", "isprime"))
-             or (isinstance(node.func, ast.Attribute)
-                 and node.func.attr in ("isPrime", "isprime")))
         for node in nodes
-    ):
-        result.add("polynomially_related_primes")
-    if any(
-        isinstance(node, (ast.BinOp, ast.AugAssign))
-        and isinstance(node.op, ast.LShift)
-        and isinstance(node.value if isinstance(node, ast.AugAssign)
-                       else node.right, ast.Constant)
-        and type((node.value if isinstance(node, ast.AugAssign)
-                  else node.right).value) is int
-        and (node.value if isinstance(node, ast.AugAssign)
-             else node.right).value > 0
+    )
+
+
+def _shift_amount(node):
+    if not isinstance(node, (ast.BinOp, ast.AugAssign)):
+        return None
+    if not isinstance(node.op, ast.LShift):
+        return None
+    operand = node.value if isinstance(node, ast.AugAssign) else node.right
+    if isinstance(operand, ast.Constant) and type(operand.value) is int:
+        return operand.value
+    return None
+
+
+def _has_shifted_noise_support(nodes):
+    return any(
+        (amount := _shift_amount(node)) is not None and amount > 0
         for node in nodes
-    ):
-        result.add("shifted_noise_support")
-    if any(
+    )
+
+
+def _has_linear_observation(nodes):
+    return any(
         isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         and node.func.id == "sum" and len(node.args) == 1
         and isinstance(node.args[0], (ast.GeneratorExp, ast.ListComp))
         and isinstance(node.args[0].elt, ast.BinOp)
         and isinstance(node.args[0].elt.op, ast.Mult)
         for node in nodes
-    ):
-        result.add("linear_observation")
-    if any(
+    )
+
+
+def _has_power_two_modulus(nodes):
+    return any(
         isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod)
         and isinstance(node.right, ast.Constant)
         and type(node.right.value) is int
         and node.right.value >= 4
         and node.right.value & (node.right.value - 1) == 0
         for node in nodes
-    ):
-        result.add("power_two_modulus")
-    if any(
+    )
+
+
+def _has_projective_x_scalar_arithmetic(nodes):
+    return any(
         isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         and node.func.id == "pow" and len(node.args) == 3
         and isinstance(node.args[1], ast.UnaryOp)
@@ -254,52 +282,83 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
     ) and any(
         isinstance(node, ast.BinOp) and isinstance(node.op, ast.RShift)
         for node in nodes
-    ):
-        result.add("projective_x_scalar_arithmetic")
-    if any(
+    )
+
+
+def _has_interactive_chosen_coordinate(nodes):
+    return any(
         isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         and node.func.id == "input"
         for node in nodes
     ) and any(
         isinstance(node, ast.While) for node in nodes
-    ):
-        result.add("interactive_chosen_coordinate")
+    )
+
+
+def _has_factorwise_crt(tree, crt_combiners):
+    # This recognizes repeated calls into a factor-wise computation
+    # without assuming the specific root extraction algorithm.
+    for function in tree.body:
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        all_calls = [
+            node for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+        ]
+        by_function = {}
+        for call in all_calls:
+            if call.func.id not in crt_combiners:
+                by_function.setdefault(call.func.id, []).append(call)
+        if not any(
+            len(invocations) >= 2
+            and len({
+                (arg.value.id, arg.attr)
+                for call in invocations for arg in call.args
+                if isinstance(arg, ast.Attribute)
+                and isinstance(arg.value, ast.Name)
+            }) >= 2
+            for invocations in by_function.values()
+        ):
+            continue
+        if any(call.func.id in crt_combiners for call in all_calls):
+            return True
+    return False
+
+
+_NODE_SIGNALS = (
+    ("modular_power", _has_modular_power),
+    ("xor_operator", _has_xor_operator),
+    ("shuffle", _has_shuffle_call),
+    ("gcd_operation", _has_gcd_operation),
+    ("computed_output_slice", _has_computed_output_slice),
+    ("indexed_modular_reduction", _has_indexed_modular_reduction),
+    ("inverse_conjugation", _has_inverse_conjugation),
+    ("sum_of_scaled_terms", _has_sum_of_scaled_terms),
+    ("hash_key_material", _has_hash_key_material),
+    ("restricted_polynomial_sampler", _has_restricted_polynomial_sampler),
+    ("modular_polynomial_evaluation", _has_modular_polynomial_evaluation),
+    ("polynomially_related_primes", _has_polynomially_related_primes),
+    ("shifted_noise_support", _has_shifted_noise_support),
+    ("linear_observation", _has_linear_observation),
+    ("power_two_modulus", _has_power_two_modulus),
+    ("projective_x_scalar_arithmetic", _has_projective_x_scalar_arithmetic),
+    ("interactive_chosen_coordinate", _has_interactive_chosen_coordinate),
+)
+
+
+def _syntactic_signals(tree: ast.Module | None) -> set[str]:
+    if tree is None:
+        return set()
+    nodes = list(ast.walk(tree))
+    result = {name for name, predicate in _NODE_SIGNALS if predicate(nodes)}
+    if _has_sampled_random_scalars(tree, nodes):
+        result.add("sampled_random_scalars")
     crt_combiners = _crt_functions(tree)
     if crt_combiners:
         result.add("crt_residue_recombination")
-        # This recognizes repeated calls into a factor-wise computation
-        # without assuming the specific root extraction algorithm.
-        for function in tree.body:
-            if not isinstance(function, ast.FunctionDef):
-                continue
-            all_calls = [
-                node for node in ast.walk(function)
-                if isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-            ]
-            by_function = {}
-            for call in all_calls:
-                if call.func.id not in crt_combiners:
-                    by_function.setdefault(call.func.id, []).append(call)
-            if not any(
-                len(invocations) >= 2
-                and len({
-                    (arg.value.id, arg.attr)
-                    for call in invocations for arg in call.args
-                    if isinstance(arg, ast.Attribute)
-                    and isinstance(arg.value, ast.Name)
-                }) >= 2
-                for invocations in by_function.values()
-            ):
-                continue
-            if any(
-                isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Name)
-                and call.func.id in crt_combiners
-                for call in all_calls
-            ):
-                result.add("factorwise_crt_computation")
-                break
+        if _has_factorwise_crt(tree, crt_combiners):
+            result.add("factorwise_crt_computation")
     return result
 
 
@@ -402,6 +461,13 @@ HYPOTHESIS_RULES = (
 )
 
 
+def _document_features(document: Document) -> set[str]:
+    parsed = parse_python(document)
+    if parsed is None and "HyperellipticCurve" in document.text:
+        parsed = _sage_tree(document.text)
+    return _signatures(document.text) | _syntactic_signals(parsed)
+
+
 def inspect_hypotheses(documents: Sequence[Document]) -> list[AttackHypothesis]:
     """Generate scoped, unverified avenues of investigation from actual code."""
     by_scope: dict[str, list[Document]] = {}
@@ -416,11 +482,7 @@ def inspect_hypotheses(documents: Sequence[Document]) -> list[AttackHypothesis]:
     for docs in groups:
         features = set()
         for document in docs:
-            features |= _signatures(document.text)
-            parsed = parse_python(document)
-            if parsed is None and "HyperellipticCurve" in document.text:
-                parsed = _sage_tree(document.text)
-            features |= _syntactic_signals(parsed)
+            features |= _document_features(document)
         for required, family, scenario, checks in HYPOTHESIS_RULES:
             if required <= features:
                 unique.setdefault(family, AttackHypothesis(

@@ -21,7 +21,7 @@ from .parser import Document
 from .source_units import parse_python
 
 _MAX_SOURCE = 300000
-_FLAG = re.compile(r"[A-Za-z][A-Za-z0-9_]{1,31}\{[ -~]{1,256}\}")
+_FLAG = re.compile(r"[A-Za-z]\w{1,31}\{[ -~]{1,256}\}", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,20 @@ def _name(node):
     return node.id if isinstance(node, ast.Name) else None
 
 
+def _apply_operator(op, left, right):
+    if isinstance(op, ast.Pow) and 0 <= right <= 256 and 0 <= left <= 65536:
+        return left ** right
+    if isinstance(op, ast.Add):
+        return left + right
+    if isinstance(op, ast.Sub):
+        return left - right
+    if isinstance(op, ast.Mult):
+        return left * right
+    if isinstance(op, ast.LShift) and 0 <= right <= 256:
+        return left << right
+    return None
+
+
 def _constant(node, definitions=None, seen=frozenset()):
     if isinstance(node, ast.Constant) and type(node.value) is int:
         return node.value
@@ -52,27 +66,14 @@ def _constant(node, definitions=None, seen=frozenset()):
     right = _constant(node.right, definitions, seen)
     if left is None or right is None:
         return None
-    if isinstance(node.op, ast.Pow) and 0 <= right <= 256 and 0 <= left <= 65536:
-        value = left ** right
-    elif isinstance(node.op, ast.Add):
-        value = left + right
-    elif isinstance(node.op, ast.Sub):
-        value = left - right
-    elif isinstance(node.op, ast.Mult):
-        value = left * right
-    elif isinstance(node.op, ast.LShift) and 0 <= right <= 256:
-        value = left << right
-    else:
+    value = _apply_operator(node.op, left, right)
+    if value is None:
         return None
     return value if abs(value).bit_length() <= 2048 else None
 
 
-def _x_only_source(tree):
-    """Find an x/z scalar-multiplication oracle, rather than a generic EC call."""
-    functions = {
-        fn.name: fn for fn in tree.body if isinstance(fn, ast.FunctionDef)
-    }
-    ladders = {
+def _ladder_names(functions):
+    return {
         name for name, fn in functions.items()
         if any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                and n.func.id in functions and n.func.id != name
@@ -80,65 +81,164 @@ def _x_only_source(tree):
         and any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.RShift)
                 for n in ast.walk(fn))
     }
+
+
+def _unit_pair_targets(fn, first_argument):
+    pairs = set()
+    for n in ast.walk(fn):
+        if (isinstance(n, ast.Assign) and len(n.targets) == 1
+                and (target := _name(n.targets[0])) is not None
+                and isinstance(n.value, ast.Tuple)
+                and len(n.value.elts) == 2
+                and _name(n.value.elts[0]) == first_argument
+                and isinstance(n.value.elts[1], ast.Constant)
+                and n.value.elts[1].value == 1):
+            pairs.add(target)
+    return pairs
+
+
+def _is_inverse_pow(call):
+    return (isinstance(call, ast.Call) and _name(call.func) == "pow"
+            and len(call.args) == 3
+            and isinstance(call.args[1], ast.UnaryOp)
+            and isinstance(call.args[1].op, ast.USub)
+            and isinstance(call.args[1].operand, ast.Constant)
+            and call.args[1].operand.value == 1)
+
+
+def _is_x_only_wrapper(fn, ladders):
+    if len(fn.args.args) < 2:
+        return False
+    arguments = [arg.arg for arg in fn.args.args]
+    pairs = _unit_pair_targets(fn, arguments[0])
+    if not pairs:
+        return False
+    if not any(
+        isinstance(n, ast.Call) and _name(n.func) in ladders
+        and len(n.args) == 2 and _name(n.args[0]) in pairs
+        and _name(n.args[1]) == arguments[1]
+        for n in ast.walk(fn)
+    ):
+        return False
+    return any(
+        isinstance(n, ast.Return)
+        and any(_is_inverse_pow(c) for c in ast.walk(n))
+        for n in ast.walk(fn)
+    )
+
+
+def _x_only_source(tree):
+    """Find an x/z scalar-multiplication oracle, rather than a generic EC call."""
+    functions = {
+        fn.name: fn for fn in tree.body if isinstance(fn, ast.FunctionDef)
+    }
+    ladders = _ladder_names(functions)
     if not ladders:
         return None
     for fn in functions.values():
-        if len(fn.args.args) < 2:
-            continue
-        arguments = [arg.arg for arg in fn.args.args]
-        pairs = set()
-        for n in ast.walk(fn):
-            if (isinstance(n, ast.Assign) and len(n.targets) == 1
-                    and (target := _name(n.targets[0])) is not None
-                    and isinstance(n.value, ast.Tuple)
-                    and len(n.value.elts) == 2
-                    and _name(n.value.elts[0]) == arguments[0]
-                    and isinstance(n.value.elts[1], ast.Constant)
-                    and n.value.elts[1].value == 1):
-                pairs.add(target)
-        if not pairs:
-            continue
-        if not any(
-            isinstance(n, ast.Call) and _name(n.func) in ladders
-            and len(n.args) == 2 and _name(n.args[0]) in pairs
-            and _name(n.args[1]) == arguments[1]
-            for n in ast.walk(fn)
-        ):
-            continue
-        if any(
-            isinstance(n, ast.Return)
-            and any(isinstance(c, ast.Call) and _name(c.func) == "pow"
-                    and len(c.args) == 3
-                    and isinstance(c.args[1], ast.UnaryOp)
-                    and isinstance(c.args[1].op, ast.USub)
-                    and isinstance(c.args[1].operand, ast.Constant)
-                    and c.args[1].operand.value == 1
-                    for c in ast.walk(n))
-            for n in ast.walk(fn)
-        ):
+        if _is_x_only_wrapper(fn, ladders):
             return fn.name
     return None
 
 
-def _source_profile(document):
-    source = document.text
-    if not source or len(source) > _MAX_SOURCE:
-        return None
-    tree = parse_python(document)
-    if tree is None:
-        return None
+def _first_coefficient_names(operations, curve_constants):
+    # Identify a in (X**2 - a*Z**2), not in an enclosing square.
+    names = set()
+    for operation in operations:
+        for expression in ast.walk(operation):
+            if (isinstance(expression, ast.BinOp)
+                    and isinstance(expression.op, ast.Sub)
+                    and isinstance(expression.left, ast.BinOp)
+                    and isinstance(expression.left.op, ast.Pow)
+                    and isinstance(expression.left.left, ast.Name)
+                    and isinstance(expression.right, ast.BinOp)
+                    and isinstance(expression.right.op, ast.Mult)):
+                names.update(
+                    child.id for child in ast.walk(expression.right)
+                    if isinstance(child, ast.Name)
+                    and child.id in curve_constants
+                )
+    return names
+
+
+def _loop_inputs(loop):
+    return {
+        _name(stmt.targets[0])
+        for stmt in ast.walk(loop)
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+        and isinstance(stmt.value, ast.Call)
+        and _name(stmt.value.func) == "int"
+        and any(isinstance(n, ast.Call) and _name(n.func) == "input"
+                for n in ast.walk(stmt.value))
+    }
+
+
+def _uses_name(node, names):
+    return any(isinstance(n, ast.Name) and n.id in names
+               for n in ast.walk(node))
+
+
+def _guards_input(loop, inputs):
+    # Fail closed when an input-dependent guard can reject the
+    # coordinate before multiplication. A positive finding requires
+    # evidence of unvalidated input, not merely an EC implementation.
+    return any(
+        isinstance(stmt, ast.If)
+        and _uses_name(stmt.test, inputs)
+        and any(isinstance(n, (ast.Continue, ast.Break, ast.Raise,
+                               ast.Return))
+                for n in stmt.body)
+        for stmt in ast.walk(loop)
+    ) or any(
+        isinstance(stmt, ast.Assert) and _uses_name(stmt.test, inputs)
+        for stmt in ast.walk(loop)
+    )
+
+
+def _is_interactive(tree, wrapper):
+    # The adversarial coordinate must reach the same scalar wrapper.
+    for loop in ast.walk(tree):
+        if not isinstance(loop, ast.While):
+            continue
+        inputs = _loop_inputs(loop)
+        if _guards_input(loop, inputs):
+            continue
+        if any(isinstance(n, ast.Call) and _name(n.func) == wrapper
+               and n.args and _name(n.args[0]) in inputs
+               for n in ast.walk(loop)):
+            return True
+    return False
+
+
+def _flag_prefix(tree):
+    prefix = None
+    for fn in tree.body:
+        if isinstance(fn, ast.FunctionDef):
+            for expression in ast.walk(fn):
+                if (isinstance(expression, ast.Call)
+                        and isinstance(expression.func, ast.Attribute)
+                        and expression.func.attr in ("removeprefix", "lstrip")
+                        and len(expression.args) == 1
+                        and isinstance(expression.args[0], ast.Constant)
+                        and isinstance(expression.args[0].value, str)
+                        and expression.args[0].value.endswith("{")):
+                    prefix = expression.args[0].value
+    return prefix
+
+
+def _module_constants(tree):
     assignments = {
         stmt.targets[0].id: stmt.value for stmt in tree.body
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
         and isinstance(stmt.targets[0], ast.Name)
     }
-    constants = {
+    return {
         name: _constant(value, assignments)
         for name, value in assignments.items()
     }
-    wrapper = _x_only_source(tree)
-    if wrapper is None:
-        return None
+
+
+def _field_prime(tree, wrapper, constants):
     fn = next(
         node for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == wrapper
@@ -154,9 +254,10 @@ def _source_profile(document):
         if name in moduli and value is not None
         and 16 <= value.bit_length() <= 512 and value % 2 == 1
     ]
-    if len(primes) != 1:
-        return None
-    modulus_name, q = primes[0]
+    return primes[0] if len(primes) == 1 else None
+
+
+def _curve_coefficients(tree, constants, modulus_name, q):
     operations = [
         fn for fn in tree.body if isinstance(fn, ast.FunctionDef)
         and any(isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow)
@@ -173,22 +274,7 @@ def _source_profile(document):
     }
     if len(curve_constants) != 2:
         return None
-    # Identify a in (X**2 - a*Z**2), not in an enclosing square.
-    first_coefficient = set()
-    for operation in operations:
-        for expression in ast.walk(operation):
-            if (isinstance(expression, ast.BinOp)
-                    and isinstance(expression.op, ast.Sub)
-                    and isinstance(expression.left, ast.BinOp)
-                    and isinstance(expression.left.op, ast.Pow)
-                    and isinstance(expression.left.left, ast.Name)
-                    and isinstance(expression.right, ast.BinOp)
-                    and isinstance(expression.right.op, ast.Mult)):
-                first_coefficient.update(
-                    child.id for child in ast.walk(expression.right)
-                    if isinstance(child, ast.Name)
-                    and child.id in curve_constants
-                )
+    first_coefficient = _first_coefficient_names(operations, curve_constants)
     if len(first_coefficient) != 1:
         return None
     a_name = next(iter(first_coefficient))
@@ -197,53 +283,42 @@ def _source_profile(document):
              if name != a_name)
     if (4 * a**3 + 27 * b**2) % q == 0:
         return None
-    prompts = {
+    return a, b
+
+
+def _input_prompts(tree):
+    return {
         node.args[0].value for node in ast.walk(tree)
         if isinstance(node, ast.Call) and _name(node.func) == "input"
         and len(node.args) == 1
         and isinstance(node.args[0], ast.Constant)
         and isinstance(node.args[0].value, str)
     }
+
+
+def _source_profile(document):
+    source = document.text
+    if not source or len(source) > _MAX_SOURCE:
+        return None
+    tree = parse_python(document)
+    if tree is None:
+        return None
+    constants = _module_constants(tree)
+    wrapper = _x_only_source(tree)
+    if wrapper is None:
+        return None
+    prime = _field_prime(tree, wrapper, constants)
+    if prime is None:
+        return None
+    modulus_name, q = prime
+    coefficients = _curve_coefficients(tree, constants, modulus_name, q)
+    if coefficients is None:
+        return None
+    a, b = coefficients
+    prompts = _input_prompts(tree)
     if len(prompts) != 1:
         return None
-    # The adversarial coordinate must reach the same scalar wrapper.
-    interactive = False
-    for loop in ast.walk(tree):
-        if not isinstance(loop, ast.While):
-            continue
-        inputs = {
-            _name(stmt.targets[0])
-            for stmt in ast.walk(loop)
-            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
-            and isinstance(stmt.value, ast.Call)
-            and _name(stmt.value.func) == "int"
-            and any(isinstance(n, ast.Call) and _name(n.func) == "input"
-                    for n in ast.walk(stmt.value))
-        }
-        # Fail closed when an input-dependent guard can reject the
-        # coordinate before multiplication. A positive finding requires
-        # evidence of unvalidated input, not merely an EC implementation.
-        guarded = any(
-            isinstance(stmt, ast.If)
-            and any(isinstance(n, ast.Name) and n.id in inputs
-                    for n in ast.walk(stmt.test))
-            and any(isinstance(n, (ast.Continue, ast.Break, ast.Raise,
-                                   ast.Return))
-                    for n in stmt.body)
-            for stmt in ast.walk(loop)
-        ) or any(
-            isinstance(stmt, ast.Assert)
-            and any(isinstance(n, ast.Name) and n.id in inputs
-                    for n in ast.walk(stmt.test))
-            for stmt in ast.walk(loop)
-        )
-        if guarded:
-            continue
-        if any(isinstance(n, ast.Call) and _name(n.func) == wrapper
-               and n.args and _name(n.args[0]) in inputs
-               for n in ast.walk(loop)):
-            interactive = True
-    if not interactive:
+    if not _is_interactive(tree, wrapper):
         return None
     # An order published in a source docstring is optional information;
     # without it the analyzer still reports the issue but solving needs
@@ -253,18 +328,7 @@ def _source_profile(document):
         source,
     )
     order = int(orders[0]) if len(orders) == 1 else None
-    prefix = None
-    for fn in tree.body:
-        if isinstance(fn, ast.FunctionDef):
-            for expression in ast.walk(fn):
-                if (isinstance(expression, ast.Call)
-                        and isinstance(expression.func, ast.Attribute)
-                        and expression.func.attr in ("removeprefix", "lstrip")
-                        and len(expression.args) == 1
-                        and isinstance(expression.args[0], ast.Constant)
-                        and isinstance(expression.args[0].value, str)
-                        and expression.args[0].value.endswith("{")):
-                    prefix = expression.args[0].value
+    prefix = _flag_prefix(tree)
     return TwistOracle(q, a, b, order, next(iter(prompts)), prefix, "}")
 
 
@@ -286,17 +350,17 @@ class Curve:
     def neg(self, point):
         return None if point is None else (point[0], -point[1] % self.p)
 
-    def add(self, P, Q):
-        if P is None:
-            return Q
-        if Q is None:
-            return P
+    def add(self, left, right):
+        if left is None:
+            return right
+        if right is None:
+            return left
         p = self.p
-        x, y = P
-        xx, yy = Q
+        x, y = left
+        xx, yy = right
         if x == xx and (y + yy) % p == 0:
             return None
-        if P == Q:
+        if left == right:
             if y == 0:
                 return None
             slope = (3*x*x + self.a) * pow(2*y, -1, p) % p
@@ -470,26 +534,31 @@ def recover_residue(model, oracle_x, *, max_bsgs_steps=500_000):
     return residue, modulus, input_x
 
 
+def _texts_for_length(representative, modulus, length, max_lifts):
+    max_value = 1 << (8*length)
+    if representative >= max_value:
+        return
+    count = (max_value-1-representative)//modulus+1
+    if count > max_lifts:
+        return
+    for k in range(count):
+        value = representative+k*modulus
+        if value.bit_length() > 8*length:
+            break
+        raw = value.to_bytes(length, "big")
+        if raw[0] == 0 or not all(32 <= c <= 126 for c in raw):
+            continue
+        yield raw.decode("ascii")
+
+
 def candidate_texts(residue, modulus, prefix, suffix,
                     *, max_length=24, max_lifts=500_000):
     """Enumerate only bounded representatives; never guess missing bits."""
     candidates = set()
-    for representative in set((residue, -residue % modulus)):
+    for representative in {residue, -residue % modulus}:
         for length in range(1, max_length+1):
-            max_value = 1 << (8*length)
-            if representative >= max_value:
-                continue
-            count = (max_value-1-representative)//modulus+1
-            if count > max_lifts:
-                continue
-            for k in range(count):
-                value = representative+k*modulus
-                if value.bit_length() > 8*length:
-                    break
-                raw = value.to_bytes(length, "big")
-                if raw[0] == 0 or not all(32 <= c <= 126 for c in raw):
-                    continue
-                decoded = raw.decode("ascii")
+            for decoded in _texts_for_length(
+                    representative, modulus, length, max_lifts):
                 wrapped = (prefix or "") + decoded + suffix
                 if _FLAG.fullmatch(wrapped):
                     candidates.add(wrapped)

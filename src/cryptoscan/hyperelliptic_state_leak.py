@@ -59,7 +59,6 @@ def _sage_tree(text):
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(normalized).readline))
         transformed = []
-        cursor = 0
         for index, token in enumerate(tokens):
             if token.type == tokenize.OP and token.string == "^":
                 # Consecutive '^' tokens in Sage represent XOR; leave
@@ -88,6 +87,16 @@ def _call(node, name):
     )
 
 
+def _combine_integers(op, a, b):
+    if isinstance(op, ast.Add):
+        return a + b
+    if isinstance(op, ast.Sub):
+        return a - b
+    if isinstance(op, ast.Pow) and 0 <= b <= 256:
+        return a**b
+    return None
+
+
 def _integer(node, assignments, seen=frozenset()):
     if isinstance(node, ast.Constant) and type(node.value) is int:
         return node.value
@@ -99,12 +108,7 @@ def _integer(node, assignments, seen=frozenset()):
         b = _integer(node.right, assignments, seen)
         if a is None or b is None:
             return None
-        if isinstance(node.op, ast.Add):
-            return a + b
-        if isinstance(node.op, ast.Sub):
-            return a - b
-        if isinstance(node.op, ast.Pow) and 0 <= b <= 256:
-            return a**b
+        return _combine_integers(node.op, a, b)
     return None
 
 
@@ -144,9 +148,8 @@ def _poly_degree(node, ring_generator, assignments):
     return width - 1
 
 
-def _secret_and_chosen_xor(tree):
-    """Verify two plaintext uses of a generator, with attacker-controlled bytes."""
-    xor_generators = []
+def _xor_generators(tree):
+    found = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.GeneratorExp, ast.ListComp)):
             continue
@@ -163,10 +166,12 @@ def _secret_and_chosen_xor(tree):
         ctor = _name(iterator.func)
         if ctor is None:
             continue
-        xor_generators.append((ctor, iterator, plaintext))
-    if len(xor_generators) < 2:
-        return None
-    chosen_names = {
+        found.append((ctor, iterator, plaintext))
+    return found
+
+
+def _chosen_input_names(tree):
+    return {
         node.targets[0].id
         for node in ast.walk(tree)
         if isinstance(node, ast.Assign) and len(node.targets) == 1
@@ -174,6 +179,30 @@ def _secret_and_chosen_xor(tree):
         and any(_call(sub, "input") for sub in ast.walk(node.value))
         and any(_call(sub, "fromhex") for sub in ast.walk(node.value))
     }
+
+
+def _fixed_seed_of(ctor_call):
+    if len(ctor_call.args) == 1 and isinstance(ctor_call.args[0], ast.Constant):
+        if type(ctor_call.args[0].value) is int:
+            return ctor_call.args[0].value
+    return None
+
+
+def _known_suffix_of(arg):
+    suffix = None
+    if isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add):
+        for value in (arg.left, arg.right):
+            if isinstance(value, ast.Constant) and isinstance(value.value, bytes):
+                suffix = value.value
+    return suffix
+
+
+def _secret_and_chosen_xor(tree):
+    """Verify two plaintext uses of a generator, with attacker-controlled bytes."""
+    xor_generators = _xor_generators(tree)
+    if len(xor_generators) < 2:
+        return None
+    chosen_names = _chosen_input_names(tree)
     chosen = [
         (ctor, ctor_call) for ctor, ctor_call, arg in xor_generators
         if _name(arg) in chosen_names and not ctor_call.args
@@ -183,48 +212,34 @@ def _secret_and_chosen_xor(tree):
     for ctor, ctor_call, arg in xor_generators:
         if ctor != chosen[0][0] or not ctor_call.args:
             continue
-        fixed_seed = None
-        if len(ctor_call.args) == 1 and isinstance(ctor_call.args[0], ast.Constant):
-            if type(ctor_call.args[0].value) is int:
-                fixed_seed = ctor_call.args[0].value
-        suffix = None
-        if isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add):
-            for value in (arg.left, arg.right):
-                if isinstance(value, ast.Constant) and isinstance(value.value, bytes):
-                    suffix = value.value
+        suffix = _known_suffix_of(arg)
         if suffix is not None:
-            return ctor, fixed_seed, suffix
+            return ctor, _fixed_seed_of(ctor_call), suffix
     return None
 
 
-def _source_profile(document):
-    tree = _sage_tree(document.text)
-    if tree is None:
-        return None
-    assignments = {
-        target.id: stmt.value
-        for stmt in tree.body if isinstance(stmt, ast.Assign)
-        for target in stmt.targets if isinstance(target, ast.Name)
-    }
+def _gf_prime(expr, assignments):
+    if _call(expr, "GF") and len(expr.args) == 1:
+        p = _integer(expr.args[0], assignments)
+        if p and p > 3 and p.bit_length() <= 128:
+            return p
+    return None
+
+
+def _field_ring_primes(assignments):
     field_rings = {}
     for name, expr in assignments.items():
-        if _call(expr, "GF") and len(expr.args) == 1:
-            p = _integer(expr.args[0], assignments)
-            if p and p > 3 and p.bit_length() <= 128:
+        p = _gf_prime(expr, assignments)
+        if p is not None:
+            field_rings[name] = p
+        if isinstance(expr, ast.Subscript):
+            p = _gf_prime(expr.value, assignments)
+            if p is not None:
                 field_rings[name] = p
-        if (isinstance(expr, ast.Subscript)
-                and _call(expr.value, "GF")
-                and len(expr.value.args) == 1):
-            p = _integer(expr.value.args[0], assignments)
-            if p and p > 3 and p.bit_length() <= 128:
-                field_rings[name] = p
-    if len(field_rings) != 1:
-        return None
-    ring, prime = next(iter(field_rings.items()))
-    generators = {
-        match.group(2): match.group(3)
-        for match in _SAGE_RING.finditer(document.text)
-    }
+    return field_rings
+
+
+def _polynomial_candidates(assignments, generators, field_rings):
     poly = []
     for name, expr in assignments.items():
         for ring_name, variable in generators.items():
@@ -233,11 +248,10 @@ def _source_profile(document):
             degree = _poly_degree(expr, variable, assignments)
             if degree is not None:
                 poly.append((name, degree))
-    if len(poly) != 1:
-        return None
-    polynomial, degree = poly[0]
-    if degree % 2 != 1 or degree < 5:
-        return None
+    return poly
+
+
+def _jacobian_names(assignments, polynomial):
     curve_names = {
         name for name, expr in assignments.items()
         if _call(expr, "HyperellipticCurve") and expr.args
@@ -246,26 +260,20 @@ def _source_profile(document):
     if len(curve_names) != 1:
         return None
     curve = next(iter(curve_names))
-    jacobians = {
+    return {
         name for name, expr in assignments.items()
         if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute)
         and expr.func.attr == "jacobian" and _name(expr.func.value) == curve
     }
-    if not jacobians:
-        return None
-    plaintext_uses = _secret_and_chosen_xor(tree)
-    if plaintext_uses is None:
-        return None
-    rng_name, fixed_seed, suffix = plaintext_uses
+
+
+def _rng_class(tree, rng_name, jacobians):
     classes = {
         node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
     }
     if rng_name not in classes:
         return None
     rng = classes[rng_name]
-    funcs = {
-        node.name: node for node in rng.body if isinstance(node, ast.FunctionDef)
-    }
     # Trace scalar multiplication through a state update and require an
     # initializer that derives a point from the constructed Jacobian.
     initialized = any(
@@ -279,40 +287,57 @@ def _source_profile(document):
     )
     if not initialized or not scalar_state:
         return None
-    serialized = []
-    for fn in funcs.values():
-        for call in ast.walk(fn):
-            if not _call(call, "pack") or len(call.args) < 2:
-                continue
-            fmt = call.args[0]
-            # Sage often constructs struct formats via concatenation.
-            if not isinstance(fmt, ast.BinOp) or not isinstance(fmt.op, ast.Add):
-                continue
-            left, right = fmt.left, fmt.right
-            if not (isinstance(left, ast.Constant)
-                    and isinstance(left.value, str)
-                    and left.value in ("<", ">")):
-                continue
-            if not (isinstance(right, ast.BinOp)
-                    and isinstance(right.op, ast.Mult)):
-                continue
-            if not (isinstance(right.left, ast.Constant)
-                    and right.left.value in ("Q", "I", "H", "B")
-                    and isinstance(right.right, ast.Call)
-                    and _call(right.right, "len")):
-                continue
-            # Extract u,v coefficient output by tracing a two-list
-            # concatenation rather than requiring variable identifiers.
-            output_vars = []
-            for arg in call.args[1:]:
-                if isinstance(arg, ast.Starred):
-                    output_vars.append(_name(arg.value))
-            if len(output_vars) != 1 or output_vars[0] is None:
-                continue
-            serialized.append((left.value, right.left.value, output_vars[0]))
-    if len(serialized) != 1:
+    return rng
+
+
+def _pack_signature(call):
+    if not _call(call, "pack") or len(call.args) < 2:
         return None
-    order, primitive, output_name = serialized[0]
+    fmt = call.args[0]
+    # Sage often constructs struct formats via concatenation.
+    if not isinstance(fmt, ast.BinOp) or not isinstance(fmt.op, ast.Add):
+        return None
+    left, right = fmt.left, fmt.right
+    if not (isinstance(left, ast.Constant)
+            and isinstance(left.value, str)
+            and left.value in ("<", ">")):
+        return None
+    if not (isinstance(right, ast.BinOp)
+            and isinstance(right.op, ast.Mult)):
+        return None
+    if not (isinstance(right.left, ast.Constant)
+            and right.left.value in ("Q", "I", "H", "B")
+            and isinstance(right.right, ast.Call)
+            and _call(right.right, "len")):
+        return None
+    # Extract u,v coefficient output by tracing a two-list
+    # concatenation rather than requiring variable identifiers.
+    output_vars = [_name(arg.value) for arg in call.args[1:]
+                   if isinstance(arg, ast.Starred)]
+    if len(output_vars) != 1 or output_vars[0] is None:
+        return None
+    return (left.value, right.left.value, output_vars[0])
+
+
+def _serialized_signature(rng):
+    funcs = [node for node in rng.body if isinstance(node, ast.FunctionDef)]
+    serialized = [
+        signature for fn in funcs for call in ast.walk(fn)
+        if (signature := _pack_signature(call)) is not None
+    ]
+    return serialized[0] if len(serialized) == 1 else None
+
+
+def _list_range(node, assignments):
+    if len(node.generators) != 1:
+        return None
+    loop = node.generators[0]
+    if not _call(loop.iter, "range") or len(loop.iter.args) != 1:
+        return None
+    return _integer(loop.iter.args[0], assignments)
+
+
+def _coefficient_widths_match(rng, output_name, genus, assignments):
     coeff_lists = [
         stmt for stmt in ast.walk(rng)
         if isinstance(stmt, ast.Assign)
@@ -324,18 +349,51 @@ def _source_profile(document):
         and isinstance(stmt.value.right, ast.ListComp)
     ]
     if len(coeff_lists) != 1:
+        return False
+    width = _list_range(coeff_lists[0].value.left, assignments)
+    width2 = _list_range(coeff_lists[0].value.right, assignments)
+    return width == genus and width2 == genus
+
+
+def _source_profile(document):
+    tree = _sage_tree(document.text)
+    if tree is None:
         return None
-    def list_range(node):
-        if len(node.generators) != 1:
-            return None
-        loop = node.generators[0]
-        if not _call(loop.iter, "range") or len(loop.iter.args) != 1:
-            return None
-        return _integer(loop.iter.args[0], assignments)
-    width = list_range(coeff_lists[0].value.left)
-    width2 = list_range(coeff_lists[0].value.right)
+    assignments = {
+        target.id: stmt.value
+        for stmt in tree.body if isinstance(stmt, ast.Assign)
+        for target in stmt.targets if isinstance(target, ast.Name)
+    }
+    field_rings = _field_ring_primes(assignments)
+    if len(field_rings) != 1:
+        return None
+    _, prime = next(iter(field_rings.items()))
+    generators = {
+        match.group(2): match.group(3)
+        for match in _SAGE_RING.finditer(document.text)
+    }
+    poly = _polynomial_candidates(assignments, generators, field_rings)
+    if len(poly) != 1:
+        return None
+    polynomial, degree = poly[0]
+    if degree % 2 != 1 or degree < 5:
+        return None
+    jacobians = _jacobian_names(assignments, polynomial)
+    if not jacobians:
+        return None
+    plaintext_uses = _secret_and_chosen_xor(tree)
+    if plaintext_uses is None:
+        return None
+    rng_name, fixed_seed, suffix = plaintext_uses
+    rng = _rng_class(tree, rng_name, jacobians)
+    if rng is None:
+        return None
+    signature = _serialized_signature(rng)
+    if signature is None:
+        return None
+    order, primitive, output_name = signature
     genus = (degree - 1)//2
-    if width != genus or width2 != genus:
+    if not _coefficient_widths_match(rng, output_name, genus, assignments):
         return None
     return HyperellipticStreamLeak(
         prime=prime, polynomial_degree_bound=degree,
@@ -391,12 +449,7 @@ def _polynomial_remainder(polynomial, divisor, p):
     ]
 
 
-def curve_from_divisors(observations, model: HyperellipticStreamLeak):
-    """Reconstruct f in y²=f(x) from f≡v² (mod u), with consistency check.
-
-    Observations can come from independent chosen-plaintext sessions.
-    Rank-deficient systems return a clear error, not arbitrary free vars.
-    """
+def _divisor_equations(observations, model):
     p = model.prime
     degree = model.polynomial_degree_bound
     genus = model.genus
@@ -417,9 +470,10 @@ def curve_from_divisors(observations, model: HyperellipticStreamLeak):
             equations.append([
                 basis[j][index] for j in range(degree+1)
             ] + [residue[index]])
-    unknowns = degree+1
-    if len(equations) < unknowns:
-        raise ValueError("too few independent coefficient constraints")
+    return equations
+
+
+def _reduce_equations(equations, unknowns, p):
     rank = 0
     for column in range(unknowns):
         pivot = next((i for i in range(rank, len(equations))
@@ -441,6 +495,21 @@ def curve_from_divisors(observations, model: HyperellipticStreamLeak):
                     for current,lead in zip(equations[row], equations[rank])
                 ]
         rank += 1
+    return rank
+
+
+def curve_from_divisors(observations, model: HyperellipticStreamLeak):
+    """Reconstruct f in y²=f(x) from f≡v² (mod u), with consistency check.
+
+    Observations can come from independent chosen-plaintext sessions.
+    Rank-deficient systems return a clear error, not arbitrary free vars.
+    """
+    p = model.prime
+    equations = _divisor_equations(observations, model)
+    unknowns = model.polynomial_degree_bound+1
+    if len(equations) < unknowns:
+        raise ValueError("too few independent coefficient constraints")
+    rank = _reduce_equations(equations, unknowns, p)
     if any(
         not any(row[:unknowns]) and row[unknowns] % p
         for row in equations[rank:]

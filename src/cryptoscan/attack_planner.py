@@ -87,6 +87,28 @@ class RecoveryExhausted(RuntimeError):
         super().__init__("all applicable recovery strategies failed: " + details)
 
 
+def _assess(strategy: Strategy, documents: Sequence[Any],
+            capabilities: frozenset[str]) -> tuple[Any, str | None]:
+    """Return (evidence, None) when applicable, else (None, rejection reason)."""
+    missing = sorted(set(strategy.capabilities) - capabilities)
+    if missing:
+        return None, "missing capabilities: " + ", ".join(missing)
+    try:
+        evidence = strategy.recognize(documents)
+    except _RECOVERABLE as exc:
+        return None, "recognition error: " + str(exc)[:200]
+    if evidence is None or evidence is False or evidence == () or evidence == []:
+        return None, "source preconditions not established"
+    if strategy.preflight is not None:
+        try:
+            verified = strategy.preflight(evidence)
+        except _RECOVERABLE as exc:
+            return None, "mathematical preflight failed: " + str(exc)[:200]
+        if not verified:
+            return None, "mathematical preconditions not established"
+    return evidence, None
+
+
 def build_plan(strategies: Iterable[Strategy], documents: Sequence[Any], *,
                mode: str, capabilities: frozenset[str] = frozenset(),
                scope: str = "."
@@ -100,37 +122,10 @@ def build_plan(strategies: Iterable[Strategy], documents: Sequence[Any], *,
     for strategy in strategies:
         if strategy.mode != mode:
             continue
-        missing = sorted(set(strategy.capabilities) - capabilities)
-        if missing:
-            plan.rejected.append(Rejected(
-                strategy.name, "missing capabilities: " + ", ".join(missing),
-            ))
+        evidence, reason = _assess(strategy, documents, capabilities)
+        if reason is not None:
+            plan.rejected.append(Rejected(strategy.name, reason))
             continue
-        try:
-            evidence = strategy.recognize(documents)
-        except _RECOVERABLE as exc:
-            plan.rejected.append(Rejected(
-                strategy.name, "recognition error: " + str(exc)[:200],
-            ))
-            continue
-        if evidence is None or evidence is False or evidence == () or evidence == []:
-            plan.rejected.append(Rejected(
-                strategy.name, "source preconditions not established",
-            ))
-            continue
-        if strategy.preflight is not None:
-            try:
-                verified = strategy.preflight(evidence)
-            except _RECOVERABLE as exc:
-                plan.rejected.append(Rejected(
-                    strategy.name, "mathematical preflight failed: " + str(exc)[:200],
-                ))
-                continue
-            if not verified:
-                plan.rejected.append(Rejected(
-                    strategy.name, "mathematical preconditions not established",
-                ))
-                continue
         plan.candidates.append(Candidate(strategy, evidence, scope=scope))
     plan.candidates.sort(key=lambda item: (
         item.strategy.rank, item.strategy.name,

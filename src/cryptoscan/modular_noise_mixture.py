@@ -63,6 +63,36 @@ def _key_generation(function):
     return None
 
 
+def _accumulator_shift(loop, acc):
+    if not isinstance(loop, ast.For) or not loop.body:
+        return None
+    tail = loop.body[-1]
+    if not (isinstance(tail, ast.AugAssign) and _name(tail.target) == acc
+            and isinstance(tail.op, ast.LShift)
+            and (shift := _const(tail.value)) is not None
+            and 1 <= shift <= 4):
+        return None
+    if not any(
+        isinstance(node, ast.AugAssign) and _name(node.target) == acc
+        and isinstance(node.op, ast.BitOr)
+        for node in loop.body[:-1]
+    ):
+        return None
+    return shift
+
+
+def _returns_accumulator(function, loop, acc):
+    try:
+        following = function.body[function.body.index(loop) + 1:]
+    except ValueError:
+        return False
+    # Do not infer a divisible error if the accumulator changes
+    # between the final shift and the returned value.
+    return (len(following) == 1
+            and isinstance(following[0], ast.Return)
+            and _name(following[0].value) == acc)
+
+
 def _noise_trailing_zero_bits(function):
     if not isinstance(function, ast.FunctionDef):
         return None
@@ -72,29 +102,8 @@ def _noise_trailing_zero_bits(function):
                 and _const(start.value) == 0):
             continue
         for loop in function.body:
-            if not isinstance(loop, ast.For) or not loop.body:
-                continue
-            tail = loop.body[-1]
-            if not (isinstance(tail, ast.AugAssign) and _name(tail.target) == acc
-                    and isinstance(tail.op, ast.LShift)
-                    and (shift := _const(tail.value)) is not None
-                    and 1 <= shift <= 4):
-                continue
-            if not any(
-                isinstance(node, ast.AugAssign) and _name(node.target) == acc
-                and isinstance(node.op, ast.BitOr)
-                for node in loop.body[:-1]
-            ):
-                continue
-            try:
-                following = function.body[function.body.index(loop) + 1:]
-            except ValueError:
-                continue
-            # Do not infer a divisible error if the accumulator changes
-            # between the final shift and the returned value.
-            if (len(following) == 1
-                    and isinstance(following[0], ast.Return)
-                    and _name(following[0].value) == acc):
+            shift = _accumulator_shift(loop, acc)
+            if shift is not None and _returns_accumulator(function, loop, acc):
                 return shift
     return None
 
@@ -126,6 +135,54 @@ def _linear_dot(function):
     return False
 
 
+def _is_power_of_two_modulus(modulus):
+    return modulus is not None and modulus >= 4 and modulus & (modulus - 1) == 0
+
+
+def _real_role(added, vecname, key, dots, noises, assignments, modulus):
+    for linear, noise in ((added.left, added.right), (added.right, added.left)):
+        if not (isinstance(linear, ast.Call)
+                and _name(linear.func) in dots and len(linear.args) == 2
+                and [_name(x) for x in linear.args] == [vecname, key]):
+            continue
+        noise_value = assignments.get(_name(noise)) if isinstance(noise, ast.Name) else noise
+        offset = 0
+        if (isinstance(noise_value, ast.BinOp)
+                and isinstance(noise_value.op, ast.Sub)
+                and (sub := _const(noise_value.right)) is not None):
+            offset = sub
+            noise_value = noise_value.left
+        if (isinstance(noise_value, ast.Call)
+                and (noise_name := _name(noise_value.func)) in noises
+                and offset % (1 << noises[noise_name]) == 0):
+            return ("real", modulus, noises[noise_name])
+    return None
+
+
+def _sampler_role(node, key, assignments, dots, noises):
+    if not (isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple)
+            and len(node.value.elts) == 2):
+        return None
+    vec, value = node.value.elts
+    vecname = _name(vec)
+    if vecname not in assignments or not _call(assignments[vecname], "token_bytes"):
+        return None
+    vecsource = assignments[vecname]
+    if len(vecsource.args) != 1 or not _is_len_key(vecsource.args[0], key):
+        return None
+    if _call(value, "randbelow") and len(value.args) == 1:
+        modulus = _const(value.args[0])
+        if modulus and _is_power_of_two_modulus(modulus):
+            return ("decoy", modulus, None)
+    if not (isinstance(value, ast.BinOp) and isinstance(value.op, ast.Mod)
+            and _is_power_of_two_modulus(modulus := _const(value.right))):
+        return None
+    added = value.left
+    if not (isinstance(added, ast.BinOp) and isinstance(added.op, ast.Add)):
+        return None
+    return _real_role(added, vecname, key, dots, noises, assignments, modulus)
+
+
 def _tuple_sampler(function, dots, noises):
     if not isinstance(function, ast.FunctionDef) or len(function.args.args) != 1:
         return None
@@ -137,43 +194,9 @@ def _tuple_sampler(function, dots, noises):
         and isinstance(stmt.targets[0], ast.Name)
     }
     for node in function.body:
-        if not (isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple)
-                and len(node.value.elts) == 2):
-            continue
-        vec, value = node.value.elts
-        vecname = _name(vec)
-        if vecname not in assignments or not _call(assignments[vecname], "token_bytes"):
-            continue
-        vecsource = assignments[vecname]
-        if len(vecsource.args) != 1 or not _is_len_key(vecsource.args[0], key):
-            continue
-        if _call(value, "randbelow") and len(value.args) == 1:
-            modulus = _const(value.args[0])
-            if modulus and modulus >= 4 and modulus & (modulus - 1) == 0:
-                return ("decoy", modulus, None)
-        if not (isinstance(value, ast.BinOp) and isinstance(value.op, ast.Mod)
-                and (modulus := _const(value.right)) is not None
-                and modulus >= 4 and modulus & (modulus - 1) == 0):
-            continue
-        added = value.left
-        if not (isinstance(added, ast.BinOp) and isinstance(added.op, ast.Add)):
-            continue
-        for linear, noise in ((added.left, added.right), (added.right, added.left)):
-            if not (isinstance(linear, ast.Call)
-                    and _name(linear.func) in dots and len(linear.args) == 2
-                    and [_name(x) for x in linear.args] == [vecname, key]):
-                continue
-            noise_value = assignments.get(_name(noise)) if isinstance(noise, ast.Name) else noise
-            offset = 0
-            if (isinstance(noise_value, ast.BinOp)
-                    and isinstance(noise_value.op, ast.Sub)
-                    and (sub := _const(noise_value.right)) is not None):
-                offset = sub
-                noise_value = noise_value.left
-            if (isinstance(noise_value, ast.Call)
-                    and (noise_name := _name(noise_value.func)) in noises
-                    and offset % (1 << noises[noise_name]) == 0):
-                return ("real", modulus, noises[noise_name])
+        role = _sampler_role(node, key, assignments, dots, noises)
+        if role is not None:
+            return role
     return None
 
 
@@ -220,38 +243,109 @@ def _key_initialized_before(tree, bit_loop, key_arg, generators):
     return False
 
 
+def _subscript_relation(expression, authentic, decoy):
+    index = _name(expression.slice)
+    if index is None:
+        return None
+    if isinstance(expression.value, (ast.List, ast.Tuple)):
+        names = [_name(item) for item in expression.value.elts]
+        if len(names) == 2 and set(names) == {authentic, decoy}:
+            return index, names.index(authentic)
+    if isinstance(expression.value, ast.Dict):
+        values = {
+            _const(key): _name(value)
+            for key, value in zip(expression.value.keys,
+                                  expression.value.values)
+        }
+        if set(values) == {0, 1} and set(values.values()) == {
+                authentic, decoy}:
+            return index, next(bit for bit in values
+                               if values[bit] == authentic)
+    return None
+
+
+def _conditional_relation(expression, authentic, decoy):
+    condition = expression.test
+    if (isinstance(condition, ast.Compare)
+            and len(condition.ops) == 1
+            and isinstance(condition.ops[0], ast.Eq)
+            and len(condition.comparators) == 1
+            and (index := _name(condition.left)) is not None
+            and (branch := _const(condition.comparators[0])) in (0, 1)):
+        yes, no = _name(expression.body), _name(expression.orelse)
+        if {yes, no} == {authentic, decoy}:
+            return index, branch if yes == authentic else 1 - branch
+    return None
+
+
 def _selector_relation(expression, authentic, decoy):
     """Identify authentic selector bit across equivalent dispatch syntax."""
     if isinstance(expression, ast.Subscript):
-        index = _name(expression.slice)
-        if index is None:
-            return None
-        if isinstance(expression.value, (ast.List, ast.Tuple)):
-            names = [_name(item) for item in expression.value.elts]
-            if len(names) == 2 and set(names) == {authentic, decoy}:
-                return index, names.index(authentic)
-        if isinstance(expression.value, ast.Dict):
-            values = {
-                _const(key): _name(value)
-                for key, value in zip(expression.value.keys,
-                                      expression.value.values)
-            }
-            if set(values) == {0, 1} and set(values.values()) == {
-                    authentic, decoy}:
-                return index, next(bit for bit in values
-                                   if values[bit] == authentic)
+        relation = _subscript_relation(expression, authentic, decoy)
+        if relation is not None:
+            return relation
     if isinstance(expression, ast.IfExp):
-        condition = expression.test
-        if (isinstance(condition, ast.Compare)
-                and len(condition.ops) == 1
-                and isinstance(condition.ops[0], ast.Eq)
-                and len(condition.comparators) == 1
-                and (index := _name(condition.left)) is not None
-                and (branch := _const(condition.comparators[0])) in (0, 1)):
-            yes, no = _name(expression.body), _name(expression.orelse)
-            if {yes, no} == {authentic, decoy}:
-                return index, branch if yes == authentic else 1 - branch
+        return _conditional_relation(expression, authentic, decoy)
     return None
+
+
+def _sample_count(node):
+    loop = node.generators[0].iter
+    if not (_call(loop, "range") and len(loop.args) == 1):
+        return None
+    samples = _const(loop.args[0])
+    if samples is None or not 2 <= samples <= 32:
+        return None
+    return samples
+
+
+def _selector_loops(tree, node, bit_functions, selector_name):
+    return [
+        parent for parent in ast.walk(tree)
+        if isinstance(parent, ast.For)
+        and node is not parent
+        and any(child is node for child in ast.walk(parent))
+        and isinstance(parent.iter, ast.Call)
+        and _name(parent.iter.func) in bit_functions
+        and _name(parent.target) == selector_name
+    ]
+
+
+def _candidate_profile(tree, node, roles, bit_functions, keys):
+    real_name, real, decoy_name = roles
+    if not (isinstance(node, ast.ListComp) and len(node.generators) == 1
+            and isinstance(node.elt, ast.Call)
+            and len(node.elt.args) == 1):
+        return None
+    relation = _selector_relation(node.elt.func, real_name, decoy_name)
+    if relation is None:
+        return None
+    selector_name, real_bit = relation
+    samples = _sample_count(node)
+    if samples is None:
+        return None
+    parents = _selector_loops(tree, node, bit_functions, selector_name)
+    key_arg = _name(node.elt.args[0])
+    if key_arg is not None and any(
+        _key_initialized_before(tree, parent, key_arg, keys)
+        for parent in parents
+    ):
+        return (next(iter(keys.values())), real[1], real[2], samples, real_bit)
+    return None
+
+
+def _sampler_roles(functions, dots, noises):
+    roles = {name: role for name, fn in functions.items()
+             if (role := _tuple_sampler(fn, dots, noises)) is not None}
+    reals = [(name, role) for name, role in roles.items() if role[0] == "real"]
+    decoys = [(name, role) for name, role in roles.items() if role[0] == "decoy"]
+    if len(reals) != 1 or len(decoys) != 1:
+        return None
+    real_name, real = reals[0]
+    decoy_name, decoy = decoys[0]
+    if real[1] != decoy[1] or real[2] > real[1].bit_length() - 1:
+        return None
+    return real_name, real, decoy_name
 
 
 def _source_profile(source):
@@ -268,54 +362,38 @@ def _source_profile(source):
     dots = {name for name, fn in functions.items() if _linear_dot(fn)}
     if len(keys) != 1 or not noises or not dots:
         return None
-    roles = {name: role for name, fn in functions.items()
-             if (role := _tuple_sampler(fn, dots, noises)) is not None}
-    reals = [(name, role) for name, role in roles.items() if role[0] == "real"]
-    decoys = [(name, role) for name, role in roles.items() if role[0] == "decoy"]
-    if len(reals) != 1 or len(decoys) != 1:
-        return None
-    real_name, real = reals[0]
-    decoy_name, decoy = decoys[0]
-    if real[1] != decoy[1] or real[2] > real[1].bit_length() - 1:
+    roles = _sampler_roles(functions, dots, noises)
+    if roles is None:
         return None
     bit_functions = {
         name for name, fn in functions.items() if _flag_bits(fn)
     }
     if not bit_functions:
         return None
-    candidates = []
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.ListComp) and len(node.generators) == 1
-                and isinstance(node.elt, ast.Call)
-                and len(node.elt.args) == 1):
-            continue
-        relation = _selector_relation(node.elt.func, real_name, decoy_name)
-        if relation is None:
-            continue
-        selector_name, real_bit = relation
-        loop = node.generators[0].iter
-        if not (_call(loop, "range") and len(loop.args) == 1):
-            continue
-        samples = _const(loop.args[0])
-        if samples is None or not 2 <= samples <= 32:
-            continue
-        parents = [
-            parent for parent in ast.walk(tree)
-            if isinstance(parent, ast.For)
-            and node is not parent
-            and any(child is node for child in ast.walk(parent))
-            and isinstance(parent.iter, ast.Call)
-            and _name(parent.iter.func) in bit_functions
-            and _name(parent.target) == selector_name
-        ]
-        key_arg = _name(node.elt.args[0])
-        if key_arg is not None and any(
-            _key_initialized_before(tree, parent, key_arg, keys)
-            for parent in parents
-        ):
-            candidates.append((next(iter(keys.values())), real[1], real[2],
-                               samples, real_bit))
+    candidates = [
+        profile for node in ast.walk(tree)
+        if (profile := _candidate_profile(
+            tree, node, roles, bit_functions, keys)) is not None
+    ]
     return candidates[0] if len(candidates) == 1 else None
+
+
+def _transcript_block(line, size, modulus, count):
+    try:
+        block = ast.literal_eval(line)
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return None
+    if not isinstance(block, list) or len(block) != count:
+        return None
+    observed = []
+    for item in block:
+        if (not isinstance(item, (tuple, list)) or len(item) != 2
+                or not isinstance(item[0], bytes)
+                or len(item[0]) != size or type(item[1]) is not int
+                or not 0 <= item[1] < modulus):
+            return None
+        observed.append((item[0], item[1]))
+    return tuple(observed)
 
 
 def _transcript(document, size, modulus, count):
@@ -327,21 +405,10 @@ def _transcript(document, size, modulus, count):
             continue
         if len(line) > 10000:
             return None
-        try:
-            block = ast.literal_eval(line)
-        except (SyntaxError, ValueError, MemoryError, RecursionError):
+        observed = _transcript_block(line, size, modulus, count)
+        if observed is None:
             return None
-        if not isinstance(block, list) or len(block) != count:
-            return None
-        observed = []
-        for item in block:
-            if (not isinstance(item, (tuple, list)) or len(item) != 2
-                    or not isinstance(item[0], bytes)
-                    or len(item[0]) != size or type(item[1]) is not int
-                    or not 0 <= item[1] < modulus):
-                return None
-            observed.append((item[0], item[1]))
-        groups.append(tuple(observed))
+        groups.append(observed)
     if len(groups) < 32 or len(groups) % 8:
         return None
     return tuple(groups)
@@ -397,6 +464,39 @@ def _consistent(group, key_digits, modulus):
     )
 
 
+def _layer_equations(groups, selected, digits, layer):
+    equations = []
+    for index in selected:
+        for vector, value in groups[index]:
+            mask = sum((int(a) & 1) << j for j, a in enumerate(vector))
+            digit = ((value - sum(a * s for a, s in zip(vector, digits))) >> layer) & 1
+            equations.append((mask, digit))
+    return equations
+
+
+def _lift_layer(groups, candidates, digits, layer, size, minimum, trials, rnd):
+    best_key, best_score = None, -1
+    for _ in range(trials):
+        selected = rnd.sample(candidates, minimum)
+        solved = _gf2_solve(_layer_equations(groups, selected, digits, layer), size)
+        if solved is None:
+            continue
+        hypothetical = [
+            digits[j] + (((solved >> j) & 1) << layer)
+            for j in range(size)
+        ]
+        modulus = 1 << (layer + 1)
+        score = sum(
+            _consistent(groups[idx], hypothetical, modulus)
+            for idx in candidates
+        )
+        if score > best_score:
+            best_key, best_score = hypothetical, score
+        if score > .40 * len(candidates):
+            break
+    return best_key, best_score
+
+
 def _recover_key(model, *, trials=4096):
     size, t = model.key_bytes, model.noise_bits
     groups = model.groups
@@ -411,31 +511,8 @@ def _recover_key(model, *, trials=4096):
         minimum = (size + 2 + model.samples_per_bit - 1) // model.samples_per_bit
         if len(candidates) < minimum:
             raise RuntimeError("not enough consistent samples for modular-noise recovery")
-        best_key, best_score = None, -1
-        for _ in range(trials):
-            selected = rnd.sample(candidates, minimum)
-            equations = []
-            for index in selected:
-                for vector, value in groups[index]:
-                    mask = sum((int(a) & 1) << j for j, a in enumerate(vector))
-                    digit = ((value - sum(a * s for a, s in zip(vector, digits))) >> layer) & 1
-                    equations.append((mask, digit))
-            solved = _gf2_solve(equations, size)
-            if solved is None:
-                continue
-            hypothetical = [
-                digits[j] + (((solved >> j) & 1) << layer)
-                for j in range(size)
-            ]
-            modulus = 1 << (layer + 1)
-            score = sum(
-                _consistent(groups[idx], hypothetical, modulus)
-                for idx in candidates
-            )
-            if score > best_score:
-                best_key, best_score = hypothetical, score
-            if score > .40 * len(candidates):
-                break
+        best_key, best_score = _lift_layer(
+            groups, candidates, digits, layer, size, minimum, trials, rnd)
         expected_decoy_matches = len(candidates) / (2 ** model.samples_per_bit)
         if best_key is None or best_score < max(8, 6 * expected_decoy_matches):
             raise RuntimeError("no statistically distinguishable linear secret recovered")

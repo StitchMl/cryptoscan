@@ -13,6 +13,35 @@ from sage.all import EllipticCurve, GF, ZZ, proof
 from sage.groups.generic import discrete_log
 
 
+def _parse_row(row, prime, curve):
+    if len(row) != 3 or len(row[2]) != 3:
+        raise ValueError("malformed EC point combination")
+    u, v = int(row[0]), int(row[1])
+    x, y, z = map(int, row[2])
+    if any(not 0 <= w < prime for w in (x, y, z)):
+        raise ValueError("out-of-field projective point coordinate")
+    return (u, v, curve([x, y, z]))
+
+
+def _invert_pair(samples, group_order):
+    # Invert a 2-by-2 public scalar matrix in the entire EC group.
+    # A unit determinant modulo the group order gives unique P and Q.
+    for index, (u, v, point) in enumerate(samples[:-1]):
+        for w, z, other in samples[index + 1:]:
+            determinant = (u * z - w * v) % group_order
+            if math.gcd(determinant, group_order) != 1:
+                continue
+            inverse = pow(determinant, -1, group_order)
+            base = inverse * (z * point - v * other)
+            hidden = inverse * (u * other - w * point)
+            if base.is_zero():
+                continue
+            if all(u0 * base + v0 * hidden == observed
+                   for u0, v0, observed in samples):
+                return (base, hidden)
+    return None
+
+
 def _recover(message):
     prime = int(message["prime"])
     a = int(message["a"])
@@ -26,37 +55,11 @@ def _recover(message):
         raise ValueError("expected multiple public affine point combinations")
     proof.arithmetic(False)
     curve = EllipticCurve(GF(prime), [a, b])
-    samples = []
-    for row in rows:
-        if len(row) != 3 or len(row[2]) != 3:
-            raise ValueError("malformed EC point combination")
-        u, v = int(row[0]), int(row[1])
-        x, y, z = map(int, row[2])
-        if any(not 0 <= w < prime for w in (x, y, z)):
-            raise ValueError("out-of-field projective point coordinate")
-        samples.append((u, v, curve([x, y, z])))
+    samples = [_parse_row(row, prime, curve) for row in rows]
     group_order = int(curve.cardinality())
     if group_order <= 1:
         raise ValueError("invalid elliptic curve group order")
-    # Invert a 2-by-2 public scalar matrix in the entire EC group.
-    # A unit determinant modulo the group order gives unique P and Q.
-    recovered = None
-    for index, (u, v, point) in enumerate(samples[:-1]):
-        for w, z, other in samples[index + 1:]:
-            determinant = (u * z - w * v) % group_order
-            if math.gcd(determinant, group_order) != 1:
-                continue
-            inverse = pow(determinant, -1, group_order)
-            base = inverse * (z * point - v * other)
-            hidden = inverse * (u * other - w * point)
-            if base.is_zero():
-                continue
-            if all(u0 * base + v0 * hidden == observed
-                   for u0, v0, observed in samples):
-                recovered = (base, hidden)
-                break
-        if recovered is not None:
-            break
+    recovered = _invert_pair(samples, group_order)
     if recovered is None:
         raise ValueError("no invertible pair of public affine point combinations")
     base, hidden = recovered

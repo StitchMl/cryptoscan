@@ -561,3 +561,35 @@ def test_partial_selector_failures_still_expose_factor_differences():
     # return a result only with at least two independent compatible samples.
     if _recover_constant(records, factors) is not None:
         assert _recover_constant(records, factors) == c
+
+
+@pytest.mark.parametrize("import_line,call", [
+    ("from sympy import mod_inverse as inverse_alias",
+     "inverse_alias(message,public.mod)"),
+    ("from gmpy2 import invert as inverse_alias",
+     "inverse_alias(message,public.mod)"),
+    ("from Crypto.Util.number import inverse as inverse_alias",
+     "inverse_alias(message,public.mod)"),
+])
+def test_trusted_modular_inverse_apis(import_line, call):
+    source = _fresh_source()
+    source = import_line + "\n" + source.replace(
+        "pow(message,-1,public.mod)", call,
+    )
+    assert extract_instance([
+        Document("other_modular_inverse_api.py", source, None)
+    ]) is not None
+
+
+def test_user_defined_inverse_stub_never_establishes_reciprocal_formula():
+    source = _fresh_source()
+    source = source.replace(
+        "pow(message,-1,public.mod)", "inverse_alias(message,public.mod)",
+    )
+    source = (
+        "def inverse_alias(message,modulus):\n"
+        "    return 42\n" + source
+    )
+    assert extract_instance([
+        Document("bad_inverse_stub.py", source, None)
+    ]) is None

@@ -1,5 +1,26 @@
 # cryptoscan
 
+## Recursive Cantor pairing of byte sequences
+
+CryptoScan recognizes Python source that recursively combines byte values
+with Cantor's pairing function, using the source's half-length split. A
+published decimal integer can appear as a numeric comment in the source,
+in a separate plain-text file, or in an output assignment. The solver does
+not execute the challenge source. It uses integer square roots to undo each
+pairing, tries byte lengths from 2 to 256, checks a printable CTF flag
+shape, and re-encodes the result to verify the exact published integer.
+Ambiguous or unsupported inputs do not produce a flag.
+
+```powershell
+cryptoscan challenge.py --plan-attacks
+cryptoscan challenge.py --solve
+cryptoscan generator.py output.txt --solve
+```
+
+The source and output must be in the same challenge scope. The method
+applies only to a source-verified recursive Cantor encoder over bytes;
+an arbitrary large integer alone is insufficient evidence.
+
 
 ## Weak-seeded RSA and partial CRT recovery
 

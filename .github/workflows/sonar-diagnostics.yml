@@ -22,6 +22,8 @@ on:
       - "tests/test_groth16_ticket.py"
       - "src/cryptoscan/source_units.py"
       - "src/cryptoscan/crypto_hypotheses.py"
+      - "src/cryptoscan/rsa_related_key.py"
+      - "tests/test_rsa_related_key.py"
       - "tests/test_source_units.py"
       - "src/cryptoscan/masked_ec_signature.py"
       - "tests/test_masked_ec_signature.py"

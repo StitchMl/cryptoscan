@@ -56,6 +56,21 @@ def _power(node):
     return None
 
 
+def _inverse_expression(node):
+    """Normalize common modular-inverse spellings to pow(base, -1, modulus)."""
+    power = _power(node)
+    if power is not None:
+        return power
+    match node:
+        case ast.Call(func=ast.Name(id=name), args=[base, modulus], keywords=[]):
+            if name in {"inverse", "invert", "mod_inverse"}:
+                return base, ast.UnaryOp(op=ast.USub(), operand=ast.Constant(value=1)), modulus
+        case ast.Call(func=ast.Attribute(attr=name), args=[base, modulus], keywords=[]):
+            if name in {"inverse", "invert", "mod_inverse"}:
+                return base, ast.UnaryOp(op=ast.USub(), operand=ast.Constant(value=1)), modulus
+    return None
+
+
 def _same(left, right):
     return ast.dump(left) == ast.dump(right)
 
@@ -102,8 +117,10 @@ def source_profiles(document: Document) -> list[Profile]:
         return []
     bindings = _bindings(tree)
     result = []
-    for name, power in _cipher_groups(bindings):
-        result.extend(_profile_inverse(name, power, bindings))
+    for name, value in bindings.items():
+        inverse = _inverse_expression(value)
+        if inverse is not None:
+            result.extend(_profile_inverse(name, inverse, bindings))
     return result
 
 

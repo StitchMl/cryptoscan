@@ -268,8 +268,11 @@ lines, dataclass-style repr records, or JSON/dictionary records.
 Missing or repeated fields are rejected. The probe collector uses any
 two distinct successful selector responses, even if another selector
 returns an error. Input delimiters parsed from source include commas,
-semicolons, colons, pipes and whitespace. JSON *requests* and generic
-binary protocols remain out of scope for this particular adapter.
+semicolons, colons, pipes and whitespace. The adapter also supports
+JSON-array requests when the source directly unpacks three elements
+from `json.loads(input(...))`. JSON-object inputs, arbitrary schema
+transformations and generic binary protocols remain out of scope until
+a source-verified adapter is available.
 
 ```powershell
 cryptoscan server.py

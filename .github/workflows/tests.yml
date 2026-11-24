@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install -e . pytest pytest-cov pycryptodome python-flint
+      - run: python -m pip install -e . pytest pytest-cov pycryptodome python-flint complexipy
       - run: python -c "from flint import fmpz_mat; print(fmpz_mat([[11,17],[13,19]]).lll())"
       - name: Pytest and XML coverage report
         run: python -m pytest -q --cov=cryptoscan --cov-report=xml:coverage.xml --cov-report=term-missing

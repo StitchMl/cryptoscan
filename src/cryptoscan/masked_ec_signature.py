@@ -58,21 +58,31 @@ def _assignments(tree: ast.AST):
     }
 
 
+_STATIC_ARITHMETIC = {
+    ast.Mult: lambda left, right: left * right,
+    ast.Add: lambda left, right: left + right,
+    ast.Sub: lambda left, right: left - right,
+}
+
+
+def _static_power(node):
+    # Sage preparser writes exponentiation with ^; never execute source.
+    base, exponent = _static_integer(node.left), _static_integer(node.right)
+    if 0 <= exponent <= 2048 and 0 <= base <= 2**1024:
+        return base ** exponent
+    raise ValueError("unsupported static integer expression")
+
+
 def _static_integer(node):
     if isinstance(node, ast.Constant) and type(node.value) is int:
         return node.value
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
         return -_static_integer(node.operand)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Mult, ast.Add, ast.Sub)):
+    if isinstance(node, ast.BinOp) and type(node.op) in _STATIC_ARITHMETIC:
         left, right = _static_integer(node.left), _static_integer(node.right)
-        if isinstance(node.op, ast.Mult):
-            return left * right
-        return left + right if isinstance(node.op, ast.Add) else left - right
+        return _STATIC_ARITHMETIC[type(node.op)](left, right)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitXor):
-        # Sage preparser writes exponentiation with ^; never execute source.
-        base, exponent = _static_integer(node.left), _static_integer(node.right)
-        if 0 <= exponent <= 2048 and 0 <= base <= 2**1024:
-            return base ** exponent
+        return _static_power(node)
     raise ValueError("unsupported static integer expression")
 
 
@@ -87,6 +97,14 @@ def _literal_call(node, func: str):
         return None
 
 
+_FIELD_ARITHMETIC = {
+    ast.Add: lambda left, right, p: (left + right) % p,
+    ast.Sub: lambda left, right, p: (left - right) % p,
+    ast.Mult: lambda left, right, p: (left * right) % p,
+    ast.Div: lambda left, right, p: (left * pow(right, -1, p)) % p,
+}
+
+
 def _field_eval(node, values, p):
     if isinstance(node, ast.Constant) and type(node.value) is int:
         return node.value % p
@@ -97,14 +115,9 @@ def _field_eval(node, values, p):
     if isinstance(node, ast.BinOp):
         left = _field_eval(node.left, values, p)
         right = _field_eval(node.right, values, p)
-        if isinstance(node.op, ast.Add):
-            return (left + right) % p
-        if isinstance(node.op, ast.Sub):
-            return (left - right) % p
-        if isinstance(node.op, ast.Mult):
-            return (left * right) % p
-        if isinstance(node.op, ast.Div):
-            return (left * pow(right, -1, p)) % p
+        operation = _FIELD_ARITHMETIC.get(type(node.op))
+        if operation is not None:
+            return operation(left, right, p)
     raise ValueError("unsupported coordinate transformation")
 
 

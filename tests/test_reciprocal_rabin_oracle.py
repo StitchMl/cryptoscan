@@ -680,3 +680,17 @@ def test_json_object_input_is_not_guessed_to_be_json_array():
     assert extract_instance([
         Document("unknown_json_object_protocol.py", source, None)
     ]) is None
+
+
+@pytest.mark.parametrize("replacement", [
+    "return Sealed(123, parity, ordering)",
+    "return Sealed(z, 1, ordering)",
+    "return Sealed(z, parity, 0)",
+])
+def test_crypto_operations_must_flow_to_all_ciphertext_fields(replacement):
+    source = _fresh_source().replace(
+        "return Sealed(z, parity, ordering)", replacement,
+    )
+    assert extract_instance([
+        Document("unrelated_crypto_calculation.py", source, None)
+    ]) is None

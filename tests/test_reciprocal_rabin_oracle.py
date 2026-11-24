@@ -469,3 +469,35 @@ class UnrelatedRecord:
     ])
     assert profile is not None
     assert profile.ciphertext_labels == ("alpha", "beta", "gamma")
+
+
+@pytest.mark.parametrize("encrypted_expression", [
+    "inverse = pow(message,-1,public.mod)\n"
+    "    contribution = inverse * public.multiplier\n"
+    "    z = (message + contribution) % public.mod",
+    "inverse = pow(message,-1,public.mod)\n"
+    "    contribution = public.multiplier * inverse\n"
+    "    z = (contribution + message) % public.mod",
+    "q = message + public.multiplier * pow(message,-1,public.mod)\n"
+    "    z = q % public.mod",
+])
+def test_reciprocal_arithmetic_uses_temporary_variables(encrypted_expression):
+    source = _fresh_source().replace(
+        "z = (message + public.multiplier * pow(message,-1,public.mod)) % public.mod",
+        encrypted_expression,
+    )
+    assert extract_instance([
+        Document("independently_refactored_encryptor.py", source, None)
+    ]) is not None
+
+
+def test_reassigned_reciprocal_temporary_does_not_get_trusted():
+    source = _fresh_source().replace(
+        "z = (message + public.multiplier * pow(message,-1,public.mod)) % public.mod",
+        "inverse = pow(message,-1,public.mod)\n"
+        "    inverse = message\n"
+        "    z = (message + public.multiplier * inverse) % public.mod",
+    )
+    assert extract_instance([
+        Document("reassigned_alias.py", source, None)
+    ]) is None

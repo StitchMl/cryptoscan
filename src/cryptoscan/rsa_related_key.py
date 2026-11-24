@@ -50,6 +50,11 @@ def _bindings(tree):
 
 
 def _power(node):
+    # int() preserves the representative produced by pow(..., ..., n).
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "int" and len(node.args) == 1
+            and not node.keywords):
+        node = node.args[0]
     match node:
         case ast.Call(func=ast.Name(id="pow"), args=[base, exponent, modulus], keywords=[]):
             return base, exponent, modulus
@@ -76,11 +81,28 @@ def _same(left, right):
 
 
 def _exponent(node, bindings):
-    if isinstance(node, ast.Name):
+    seen = set()
+    while isinstance(node, ast.Name):
+        if node.id in seen:
+            return None
+        seen.add(node.id)
         node = bindings.get(node.id)
     if isinstance(node, ast.Constant) and type(node.value) is int:
         return node.value
     return None
+
+
+def _origin_name(node, bindings):
+    """Follow straight-line aliases, rejecting cycles and reassigned names."""
+    if not isinstance(node, ast.Name):
+        return None
+    seen = set()
+    while node.id in bindings and isinstance(bindings[node.id], ast.Name):
+        if node.id in seen:
+            return None
+        seen.add(node.id)
+        node = bindings[node.id]
+    return node.id
 
 
 def _cipher_groups(bindings):
@@ -104,8 +126,10 @@ def _profile_inverse(inverse_name, inverse, bindings):
         if isinstance(modulus, ast.Name) and _exponent(power, bindings) == exponent:
             groups.setdefault(modulus.id, []).append((name, base))
     for modulus, entries in groups.items():
-        inverse_ciphers = [name for name, base in entries if isinstance(base, ast.Name) and base.id == inverse_name]
-        order_ciphers = [name for name, base in entries if isinstance(base, ast.Name) and base.id == order.id]
+        inverse_ciphers = [name for name, base in entries
+                           if _origin_name(base, bindings) == inverse_name]
+        order_ciphers = [name for name, base in entries
+                         if _origin_name(base, bindings) == _origin_name(order, bindings)]
         other = [name for name, _ in entries if name not in inverse_ciphers + order_ciphers]
         if len(inverse_ciphers) == len(order_ciphers) == len(other) == 1:
             yield Profile(exponent, modulus, inverse_ciphers[0], order_ciphers[0], other[0])
@@ -231,3 +255,5 @@ def recover_flag(documents: Sequence[Document]) -> str:
     if instance is None:
         raise ValueError("no unambiguous related RSA ciphertexts")
     return recover_message(instance).decode("utf-8")
+
+

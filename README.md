@@ -1,5 +1,30 @@
 # cryptoscan
 
+## Public-residue multiplicative exchange
+
+Some key-exchange-like CTF ciphers publish a private value modulo a
+public modulus and later use that private value only inside a multiplication
+reduced modulo the same modulus. CryptoScan parses the Python source to
+prove the residue relation, derive the shared-key monomial from the
+exchange statements, and confirm that encryption multiplies the message
+by that key as an ordinary integer (without ciphertext reduction).
+
+The solver joins the source to a same-scope transcript containing the
+modulus, two public residues and ciphertext. It reconstructs the shared
+key, requires exact integer divisibility, decodes the source's byte order,
+and checks a flag-shaped plaintext with a ciphertext round trip. Variable
+names and multiplicative coefficients in the exchange can differ; no
+challenge-specific key or plaintext is stored in the solver.
+
+```powershell
+cryptoscan chall.py output.txt --plan-attacks
+cryptoscan chall.py output.txt --solve
+```
+
+The recognizer rejects ambiguous transcripts, unsupported formulas and
+modular ciphertext encryption. A transcript without source evidence is
+insufficient.
+
 ## Recursive Cantor pairing of byte sequences
 
 CryptoScan recognizes Python source that recursively combines byte values

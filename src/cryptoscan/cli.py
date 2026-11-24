@@ -10,6 +10,7 @@ from .attack_planner import (
     AttackPlan, Strategy, build_plan, execute_plan, RecoveryExhausted,
 )
 from .cantor_pairing import extract_instance as extract_cantor_pairing, recover_flag as recover_cantor_flag
+from .public_residue_exchange import extract_instance as extract_public_residue, recover_flag as recover_public_residue_flag
 from .crypto_hypotheses import inspect_hypotheses
 from .rsa_related_key import extract_instance as extract_related_key, recover_flag as recover_related_key_flag
 from .rotated_quadratic_rsa import extract_instance as extract_rotated_rsa, recover_flag as recover_rotated_rsa_flag
@@ -136,6 +137,8 @@ def _attack_strategies(args):
                         tuple(capabilities), rank, backend, preflight)
 
     offline = (
+        strategy("Public-residue multiplicative exchange", "offline",
+                 extract_public_residue, recover_public_residue_flag, 1),
         strategy("Recursive Cantor pairing of byte sequence", "offline",
                  extract_cantor_pairing, recover_cantor_flag, 1),
         strategy("Rotated quadratic RSA representations", "offline",
@@ -386,6 +389,10 @@ def _report_supported_protocols(args, documents) -> None:
 
 
 def _report_algebraic_protocols(documents) -> None:
+    if extract_public_residue(documents) is not None:
+        print("Detected: multiplicative shared key derives from published "
+              "private residues; exact ciphertext division and plaintext "
+              "verification available offline.")
     if extract_cantor_pairing(documents) is not None:
         print("Detected: recursive Cantor pairing encodes a byte sequence "
               "as one public integer; bounded inverse and round-trip "

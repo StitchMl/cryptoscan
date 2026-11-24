@@ -255,8 +255,11 @@ class SimulatedService:
         self.timeout=seconds
 
     def sendall(self,payload):
-        delimiter=self.profile.input_separator.encode()
-        query=tuple(map(int,payload.strip().split(delimiter)))
+        if self.profile.input_format == "json-array":
+            query=tuple(json.loads(payload.decode()))
+        else:
+            delimiter=self.profile.input_separator.encode()
+            query=tuple(map(int,payload.strip().split(delimiter)))
         self.calls.append(query)
         result=_simulate(*query,self.p,self.q,self.c)
         if result is None:
@@ -641,3 +644,39 @@ def test_source_inferred_selector_delimiters_on_mock_tcp(separator, monkeypatch)
     )
     assert details.secret == "LAB{ok}"
     assert service.calls
+
+
+def test_json_array_input_source_is_recognized_and_solved(monkeypatch):
+    import cryptoscan.reciprocal_rabin_oracle as module
+
+    source = _fresh_source()
+    source = "import json\n" + source.replace(
+        'v1,v2,v3 = map(int,input("please give three integers: ").split(","))',
+        'v1,v2,v3 = json.loads(input("please give three integers: "))',
+    )
+    doc = Document("new_json_protocol.py", source, None)
+    profile = extract_instance([doc])
+    assert profile is not None
+    assert profile.input_format == "json-array"
+    p, q, c = _gen_instance(48, seed=789)
+    secret = int.from_bytes(b"LAB{ok}", "big")
+    oracle = SimulatedService(profile, p, q, c, secret)
+    monkeypatch.setattr(
+        module.socket, "create_connection", lambda *a, **k: oracle,
+    )
+    solved = recover_details(
+        [doc], "example.invalid", 5555, max_queries=320,
+    )
+    assert solved.secret == "LAB{ok}"
+    assert oracle.calls
+
+
+def test_json_object_input_is_not_guessed_to_be_json_array():
+    source = "import json\n" + _fresh_source().replace(
+        'v1,v2,v3 = map(int,input("please give three integers: ").split(","))',
+        'payload = json.loads(input("please give three integers: "))\n'
+        '        v1,v2,v3 = payload["r"],payload["s"],payload["t"]',
+    )
+    assert extract_instance([
+        Document("unknown_json_object_protocol.py", source, None)
+    ]) is None

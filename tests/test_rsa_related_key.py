@@ -171,3 +171,22 @@ enc_flag = 240336889107168136313340593495978359780664378742759781491979470482663
     assert plaintext.startswith(b"HackTM{")
     assert plaintext.endswith(b"}")
     assert len(plaintext) == 255
+
+
+@pytest.mark.parametrize(
+    "inverse_expression",
+    [
+        "inverse(public, order)",
+        "mod_inverse(public, order)",
+        "number.inverse(public, order)",
+        "sympy.mod_inverse(public, order)",
+    ],
+)
+def test_common_inverse_call_spellings(inverse_expression):
+    source = corpus(3)[0].text.replace(
+        "pow(public, -1, order)",
+        inverse_expression,
+    )
+    profiles = source_profiles(Document("alternate_inverse.py", source, None))
+    assert len(profiles) == 1
+    assert profiles[0].exponent == 3

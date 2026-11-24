@@ -322,6 +322,34 @@ def _reciprocal_encryption(tree):
                 for node in ast.walk(fn)
             ):
                 continue
+            # The arithmetic must actually feed the returned ciphertext.
+            # An unrelated/unreachable modular formula is not evidence.
+            encoded = [
+                ret.value for ret in fn.body
+                if isinstance(ret, ast.Return)
+                and isinstance(ret.value, ast.Call)
+                and len(ret.value.args) == 3
+            ]
+            if not any(
+                ast.dump(_resolved(call.args[0], defs)) == ast.dump(expression)
+                and any(
+                    isinstance(j, ast.Call)
+                    and len(j.args) == 2
+                    and _name(j.args[0]) == message
+                    and ast.dump(j.args[1]) == ast.dump(modulus)
+                    for j in jacobi_calls(_resolved(call.args[1], defs))
+                )
+                and any(
+                    isinstance(cmp, ast.Compare)
+                    and any(isinstance(op, (ast.Lt, ast.Gt))
+                            for op in cmp.ops)
+                    and any(_name(part) == message
+                            for part in [cmp.left, *cmp.comparators])
+                    for cmp in ast.walk(_resolved(call.args[2], defs))
+                )
+                for call in encoded
+            ):
+                continue
             return fn.name, n_field[1], c_field[1]
     return None
 

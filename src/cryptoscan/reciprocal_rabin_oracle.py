@@ -35,7 +35,7 @@ _MAX_SOURCE = 500_000
 _TRIPLE = re.compile(
     rb"(?m)^[ \t]*([A-Za-z_]\w*)\s*=\s*([+-]?\d+)\s*$"
 )
-_FLAG = re.compile(rb"^[A-Za-z][A-Za-z0-9_]{1,39}\{[^{}\r\n]{1,256}\}")
+_FLAG = re.compile(rb"^[A-Za-z]\w{1,39}\{[^{}\r\n]{1,256}\}", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -79,6 +79,59 @@ def _calls(node, name):
     ]
 
 
+_JACOBI_NAMES = {"gmpy2": "jacobi", "sympy": "jacobi_symbol"}
+
+
+def _jacobi_from_names(statement):
+    if statement.module not in ("gmpy2", "sympy"):
+        return set()
+    canonical = _JACOBI_NAMES[statement.module]
+    return {
+        alias.asname or alias.name for alias in statement.names
+        if alias.name == canonical
+    }
+
+
+def _jacobi_imports(tree):
+    functions = set()
+    modules = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.ImportFrom):
+            functions.update(_jacobi_from_names(statement))
+        elif isinstance(statement, ast.Import):
+            for alias in statement.names:
+                if alias.name in ("gmpy2", "sympy"):
+                    modules[alias.asname or alias.name] = alias.name
+    return functions, modules
+
+
+def _rebound_names(tree, *, annotated):
+    rebound = set()
+    for statement in ast.walk(tree):
+        if isinstance(statement, (ast.FunctionDef, ast.ClassDef)):
+            rebound.add(statement.name)
+        elif isinstance(statement, ast.Assign):
+            rebound.update(
+                node.id for target in statement.targets
+                for node in ast.walk(target) if isinstance(node, ast.Name)
+            )
+        elif (annotated and isinstance(statement, ast.AnnAssign)
+              and isinstance(statement.target, ast.Name)):
+            rebound.add(statement.target.id)
+    return rebound
+
+
+def _is_jacobi_call(call, functions, modules):
+    if not isinstance(call, ast.Call) or len(call.args) != 2:
+        return False
+    if _name(call.func) in functions:
+        return True
+    if isinstance(call.func, ast.Attribute):
+        actual = modules.get(_name(call.func.value))
+        return bool(actual) and call.func.attr == _JACOBI_NAMES.get(actual)
+    return False
+
+
 def _jacobi_call_sites(tree):
     """Accept genuine Jacobi routines through resolved library imports.
 
@@ -86,30 +139,8 @@ def _jacobi_call_sites(tree):
     Its name is not evidence of the disambiguation bit. Resolve either
     gmpy2.jacobi or sympy.jacobi_symbol (including import aliases).
     """
-    functions = set()
-    modules = {}
-    for statement in tree.body:
-        if isinstance(statement, ast.ImportFrom):
-            if statement.module not in ("gmpy2", "sympy"):
-                continue
-            canonical = "jacobi" if statement.module == "gmpy2" else "jacobi_symbol"
-            for alias in statement.names:
-                if alias.name == canonical:
-                    functions.add(alias.asname or alias.name)
-        elif isinstance(statement, ast.Import):
-            for alias in statement.names:
-                if alias.name in ("gmpy2", "sympy"):
-                    modules[alias.asname or alias.name] = alias.name
-
-    rebound = set()
-    for stmt in ast.walk(tree):
-        if isinstance(stmt, (ast.FunctionDef, ast.ClassDef)):
-            rebound.add(stmt.name)
-        elif isinstance(stmt, ast.Assign):
-            rebound.update(
-                node.id for target in stmt.targets
-                for node in ast.walk(target) if isinstance(node, ast.Name)
-            )
+    functions, modules = _jacobi_imports(tree)
+    rebound = _rebound_names(tree, annotated=False)
     functions -= rebound
     modules = {
         alias: library for alias, library in modules.items()
@@ -118,17 +149,8 @@ def _jacobi_call_sites(tree):
 
     def jacobi_calls(section):
         for call in ast.walk(section):
-            if not isinstance(call, ast.Call) or len(call.args) != 2:
-                continue
-            if _name(call.func) in functions:
+            if _is_jacobi_call(call, functions, modules):
                 yield call
-            elif isinstance(call.func, ast.Attribute):
-                base = _name(call.func.value)
-                actual = modules.get(base)
-                expected = ("jacobi" if actual == "gmpy2"
-                            else "jacobi_symbol" if actual == "sympy" else None)
-                if actual and call.func.attr == expected:
-                    yield call
     return jacobi_calls
 
 
@@ -185,6 +207,27 @@ def _simple_definitions(function):
     return assignments
 
 
+_INVERSE_MODULES = ("gmpy2", "sympy", "Crypto.Util.number")
+
+
+def _inverse_imports(tree, recognized):
+    direct = set()
+    modules = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.ImportFrom):
+            direct.update(
+                alias.asname or alias.name for alias in statement.names
+                if (statement.module, alias.name) in recognized
+            )
+        elif isinstance(statement, ast.Import):
+            modules.update(
+                (alias.asname or alias.name, alias.name)
+                for alias in statement.names
+                if alias.name in _INVERSE_MODULES
+            )
+    return direct, modules
+
+
 def _inverse_calls(tree):
     """Resolve verified modular-inverse library imports and aliases.
 
@@ -196,31 +239,10 @@ def _inverse_calls(tree):
         ("sympy", "mod_inverse"),
         ("Crypto.Util.number", "inverse"),
     }
-    direct = set()
-    modules = {}
-    for statement in tree.body:
-        if isinstance(statement, ast.ImportFrom):
-            for alias in statement.names:
-                if (statement.module, alias.name) in recognized:
-                    direct.add(alias.asname or alias.name)
-        elif isinstance(statement, ast.Import):
-            for alias in statement.names:
-                if alias.name in ("gmpy2", "sympy", "Crypto.Util.number"):
-                    modules[alias.asname or alias.name] = alias.name
+    direct, modules = _inverse_imports(tree, recognized)
     # Imported helpers can be rebound later in the source. A name that
     # is overwritten is not a proof of a mathematical library operation.
-    rebound = set()
-    for statement in ast.walk(tree):
-        if isinstance(statement, (ast.FunctionDef, ast.ClassDef)):
-            rebound.add(statement.name)
-        elif isinstance(statement, ast.Assign):
-            rebound.update(
-                node.id for target in statement.targets
-                for node in ast.walk(target) if isinstance(node, ast.Name)
-            )
-        elif isinstance(statement, ast.AnnAssign) and isinstance(
-                statement.target, ast.Name):
-            rebound.add(statement.target.id)
+    rebound = _rebound_names(tree, annotated=True)
     direct -= rebound
     modules = {
         alias: actual for alias, actual in modules.items()
@@ -255,6 +277,98 @@ def _is_inverse(node, message, modulus, imports):
     return False
 
 
+def _reciprocal_term(expression, message):
+    additions = _flatten_binop(expression, ast.Add)
+    if len(additions) != 2:
+        return None
+    if _name(additions[0]) == message:
+        return additions[1]
+    if _name(additions[1]) == message:
+        return additions[0]
+    return None
+
+
+def _constant_factor(reciprocal, message, modulus, imports):
+    factors = _flatten_binop(reciprocal, ast.Mult)
+    if len(factors) != 2:
+        return None
+    inverses = [
+        factor for factor in factors
+        if _is_inverse(factor, message, modulus, imports)
+    ]
+    if len(inverses) != 1:
+        return None
+    return next(factor for factor in factors if factor is not inverses[0])
+
+
+def _binds_jacobi(calls, message, modulus):
+    return any(
+        isinstance(call, ast.Call)
+        and len(call.args) == 2
+        and _name(call.args[0]) == message
+        and ast.dump(call.args[1]) == ast.dump(modulus)
+        for call in calls
+    )
+
+
+def _compares_message(root, message):
+    return any(
+        isinstance(node, ast.Compare)
+        and any(isinstance(op, (ast.Lt, ast.Gt)) for op in node.ops)
+        and any(_name(part) == message
+                for part in [node.left, *node.comparators])
+        for node in ast.walk(root)
+    )
+
+
+def _feeds_ciphertext(fn, expression, defs, message, modulus, jacobi_calls):
+    # The arithmetic must actually feed the returned ciphertext.
+    # An unrelated/unreachable modular formula is not evidence.
+    encoded = [
+        ret.value for ret in fn.body
+        if isinstance(ret, ast.Return)
+        and isinstance(ret.value, ast.Call)
+        and len(ret.value.args) == 3
+    ]
+    return any(
+        ast.dump(_resolved(call.args[0], defs)) == ast.dump(expression)
+        and _binds_jacobi(jacobi_calls(_resolved(call.args[1], defs)),
+                          message, modulus)
+        and _compares_message(_resolved(call.args[2], defs), message)
+        for call in encoded
+    )
+
+
+def _encryption_match(fn, expression, defs, jacobi_calls, imports):
+    message = fn.args.args[0].arg
+    if not (isinstance(expression, ast.BinOp)
+            and isinstance(expression.op, ast.Mod)):
+        return None
+    modulus = expression.right
+    n_field = _member(modulus)
+    if n_field is None:
+        return None
+    reciprocal = _reciprocal_term(expression.left, message)
+    if reciprocal is None:
+        return None
+    constant = _constant_factor(reciprocal, message, modulus, imports)
+    if constant is None:
+        return None
+    c_field = _member(constant)
+    if c_field is None or c_field[0] != n_field[0]:
+        return None
+    if not _binds_jacobi(jacobi_calls(fn), message, modulus):
+        return None
+    # The companion bit must distinguish a comparison involving
+    # the message; the inverse expression may be a temporary.
+    if not _compares_message(fn, message):
+        return None
+    if not _feeds_ciphertext(fn, expression, defs, message, modulus,
+                             jacobi_calls):
+        return None
+    return fn.name, n_field[1], c_field[1]
+
+
 def _reciprocal_encryption(tree):
     """Recognize algebraically equivalent reciprocal encryption expressions.
 
@@ -267,7 +381,6 @@ def _reciprocal_encryption(tree):
     for fn in tree.body:
         if not isinstance(fn, ast.FunctionDef) or len(fn.args.args) < 2:
             continue
-        message = fn.args.args[0].arg
         defs = _simple_definitions(fn)
         expressions = [
             _resolved(node, defs)
@@ -275,83 +388,64 @@ def _reciprocal_encryption(tree):
             if isinstance(node, (ast.BinOp, ast.Name))
         ]
         for expression in expressions:
-            if not (isinstance(expression, ast.BinOp)
-                    and isinstance(expression.op, ast.Mod)):
-                continue
-            modulus = expression.right
-            n_field = _member(modulus)
-            if n_field is None:
-                continue
-            additions = _flatten_binop(expression.left, ast.Add)
-            if len(additions) != 2:
-                continue
-            if _name(additions[0]) == message:
-                reciprocal = additions[1]
-            elif _name(additions[1]) == message:
-                reciprocal = additions[0]
-            else:
-                continue
-            factors = _flatten_binop(reciprocal, ast.Mult)
-            if len(factors) != 2:
-                continue
-            inverses = [
-                factor for factor in factors
-                if _is_inverse(factor, message, modulus, inversion_imports)
-            ]
-            if len(inverses) != 1:
-                continue
-            constant = next(factor for factor in factors
-                            if factor is not inverses[0])
-            c_field = _member(constant)
-            if c_field is None or c_field[0] != n_field[0]:
-                continue
-            if not any(
-                _name(call.args[0]) == message
-                and ast.dump(call.args[1]) == ast.dump(modulus)
-                for call in jacobi_calls(fn)
-            ):
-                continue
-            # The companion bit must distinguish a comparison involving
-            # the message; the inverse expression may be a temporary.
-            if not any(
-                isinstance(node, ast.Compare)
-                and any(isinstance(op, (ast.Lt, ast.Gt))
-                        for op in node.ops)
-                and any(_name(x) == message
-                        for x in [node.left, *node.comparators])
-                for node in ast.walk(fn)
-            ):
-                continue
-            # The arithmetic must actually feed the returned ciphertext.
-            # An unrelated/unreachable modular formula is not evidence.
-            encoded = [
-                ret.value for ret in fn.body
-                if isinstance(ret, ast.Return)
-                and isinstance(ret.value, ast.Call)
-                and len(ret.value.args) == 3
-            ]
-            if not any(
-                ast.dump(_resolved(call.args[0], defs)) == ast.dump(expression)
-                and any(
-                    isinstance(j, ast.Call)
-                    and len(j.args) == 2
-                    and _name(j.args[0]) == message
-                    and ast.dump(j.args[1]) == ast.dump(modulus)
-                    for j in jacobi_calls(_resolved(call.args[1], defs))
-                )
-                and any(
-                    isinstance(cmp, ast.Compare)
-                    and any(isinstance(op, (ast.Lt, ast.Gt))
-                            for op in cmp.ops)
-                    and any(_name(part) == message
-                            for part in [cmp.left, *cmp.comparators])
-                    for cmp in ast.walk(_resolved(call.args[2], defs))
-                )
-                for call in encoded
-            ):
-                continue
-            return fn.name, n_field[1], c_field[1]
+            match = _encryption_match(fn, expression, defs, jacobi_calls,
+                                      inversion_imports)
+            if match is not None:
+                return match
     return None
+
+
+def _is_constant(node, value):
+    return isinstance(node, ast.Constant) and node.value == value
+
+
+def _is_minus_one(node):
+    return (isinstance(node, ast.UnaryOp)
+            and isinstance(node.op, ast.USub)
+            and _is_constant(node.operand, 1))
+
+
+def _crt_moduli(node, args):
+    if not (isinstance(node, ast.BinOp)
+            and isinstance(node.op, ast.Mod)
+            and isinstance(node.right, ast.BinOp)
+            and isinstance(node.right.op, ast.Mult)):
+        return None
+    left_mod = _name(node.right.left)
+    right_mod = _name(node.right.right)
+    if left_mod in args and right_mod in args and left_mod != right_mod:
+        return left_mod, right_mod
+    return None
+
+
+def _combines_inverse(fn):
+    return any(
+        isinstance(call, ast.Call)
+        and ((isinstance(call.func, ast.Attribute)
+              and call.func.attr == "gcdext")
+             or (_name(call.func) == "pow"
+                 and len(call.args) == 3
+                 and _is_minus_one(call.args[1])))
+        for call in ast.walk(fn)
+    )
+
+
+def _is_crt_function(fn):
+    if not isinstance(fn, ast.FunctionDef) or len(fn.args.args) != 4:
+        return False
+    args = {arg.arg for arg in fn.args.args}
+    for node in ast.walk(fn):
+        moduli = _crt_moduli(node, args)
+        if moduli is None:
+            continue
+        residues = args - set(moduli)
+        numerator_names = {
+            child.id for child in ast.walk(node.left)
+            if isinstance(child, ast.Name)
+        }
+        if residues.issubset(numerator_names) and _combines_inverse(fn):
+            return True
+    return False
 
 
 def _crt_functions(tree):
@@ -362,102 +456,43 @@ def _crt_functions(tree):
     use extended GCD or a modular inverse to combine congruences.
     This recognizes standard arithmetic variants without using names.
     """
-    result = set()
-    for fn in tree.body:
-        if not isinstance(fn, ast.FunctionDef) or len(fn.args.args) != 4:
-            continue
-        args = {arg.arg for arg in fn.args.args}
-        for node in ast.walk(fn):
-            if not (
-                isinstance(node, ast.BinOp)
-                and isinstance(node.op, ast.Mod)
-                and isinstance(node.right, ast.BinOp)
-                and isinstance(node.right.op, ast.Mult)
-                and (left_mod := _name(node.right.left)) in args
-                and (right_mod := _name(node.right.right)) in args
-                and left_mod != right_mod
-            ):
-                continue
-            residues = args - {left_mod, right_mod}
-            numerator_names = {
-                child.id for child in ast.walk(node.left)
-                if isinstance(child, ast.Name)
-            }
-            if not residues.issubset(numerator_names):
-                continue
-            inverse = any(
-                (isinstance(call, ast.Call)
-                 and isinstance(call.func, ast.Attribute)
-                 and call.func.attr == "gcdext")
-                or (isinstance(call, ast.Call)
-                    and _name(call.func) == "pow"
-                    and len(call.args) == 3
-                    and isinstance(call.args[1], ast.UnaryOp)
-                    and isinstance(call.args[1].op, ast.USub)
-                    and isinstance(call.args[1].operand, ast.Constant)
-                    and call.args[1].operand.value == 1)
-                for call in ast.walk(fn)
-            )
-            if inverse:
-                result.add(fn.name)
-    return result
+    return {fn.name for fn in tree.body if _is_crt_function(fn)}
 
 
-def _quotient_quadratic_solver(fn):
-    """Source-proof the specific root extraction identity used by the fault.
-
-    Do not confuse any modular inverse and two-value return with an
-    implementation of a quadratic solver. The faulty extraction computes
-    x = -(v[0]-1)/v[1] modulo p after exponentiation by (p-1)//2 in the
-    polynomial quotient, and returns x alongside the complementary r-x.
-    The surrounding code must also use both polynomial parameters in
-    arithmetic. Other root algorithms require separate recognizers.
-    """
-    if not isinstance(fn, ast.FunctionDef) or len(fn.args.args) < 3:
-        return False
-    r, c, p = (arg.arg for arg in fn.args.args[:3])
-    calls = [
+def _inverse_coefficient_calls(fn, p):
+    return [
         node for node in ast.walk(fn)
         if isinstance(node, ast.Call) and _name(node.func) == "pow"
         and len(node.args) == 3 and _name(node.args[2]) == p
-        and isinstance(node.args[1], ast.UnaryOp)
-        and isinstance(node.args[1].op, ast.USub)
-        and isinstance(node.args[1].operand, ast.Constant)
-        and node.args[1].operand.value == 1
+        and _is_minus_one(node.args[1])
         and isinstance(node.args[0], ast.Subscript)
         and isinstance(node.args[0].value, ast.Name)
-        and isinstance(node.args[0].slice, ast.Constant)
-        and node.args[0].slice.value == 1
+        and _is_constant(node.args[0].slice, 1)
     ]
-    if len(calls) != 1:
-        return False
-    state_name = node_name = _name(calls[0].args[0].value)
-    power = any(
+
+
+def _has_half_power(fn, p):
+    return any(
         isinstance(node, ast.BinOp) and isinstance(node.op, ast.FloorDiv)
         and isinstance(node.left, ast.BinOp)
         and isinstance(node.left.op, ast.Sub)
         and _name(node.left.left) == p
-        and isinstance(node.left.right, ast.Constant)
-        and node.left.right.value == 1
-        and isinstance(node.right, ast.Constant)
-        and node.right.value == 2
+        and _is_constant(node.left.right, 1)
+        and _is_constant(node.right, 2)
         for node in ast.walk(fn)
     )
-    if not power:
-        return False
-    # Require the same quotient-ring coefficient vector in the numerator
-    # of the root formula and in its inverse denominator.
-    coefficient_zero = any(
+
+
+def _indexes_zero(fn, state_name):
+    return any(
         isinstance(node, ast.Subscript)
         and _name(node.value) == state_name
-        and isinstance(node.slice, ast.Constant)
-        and node.slice.value == 0
+        and _is_constant(node.slice, 0)
         for node in ast.walk(fn)
     )
-    if not coefficient_zero:
-        return False
-    # Reject unrelated modular inverse routines by checking the root-sum
-    # relationship in both the returned pair and the function's equations.
+
+
+def _returned_pair(fn):
     final_return = [
         node for node in fn.body
         if isinstance(node, ast.Return)
@@ -466,8 +501,25 @@ def _quotient_quadratic_solver(fn):
         and all(isinstance(item, ast.Name) for item in node.value.elts)
     ]
     if len(final_return) != 1:
-        return False
-    root, complement = (_name(item) for item in final_return[0].value.elts)
+        return None
+    return tuple(_name(item) for item in final_return[0].value.elts)
+
+
+def _mentions(node, name):
+    return any(
+        isinstance(child, ast.Name) and child.id == name
+        for child in ast.walk(node)
+    )
+
+
+def _exits_branch(statement):
+    return any(
+        isinstance(child, (ast.Raise, ast.Return))
+        for branch in statement.body for child in ast.walk(branch)
+    )
+
+
+def _root_unguarded(fn, root):
     # Root-validation guards can prevent a faulty component from ever
     # reaching CRT and therefore invalidate this attack's precondition.
     # Reject when the root is used in a post-computation assertion or an
@@ -483,20 +535,18 @@ def _quotient_quadratic_solver(fn):
     for statement in ast.walk(fn):
         if getattr(statement, "lineno", 0) <= root_line:
             continue
-        if isinstance(statement, ast.Assert) and any(
-            isinstance(child, ast.Name) and child.id == root
-            for child in ast.walk(statement.test)
-        ):
+        if isinstance(statement, ast.Assert) and _mentions(
+                statement.test, root):
             return False
-        if isinstance(statement, ast.If) and any(
-            isinstance(child, ast.Name) and child.id == root
-            for child in ast.walk(statement.test)
-        ) and any(
-            isinstance(child, (ast.Raise, ast.Return))
-            for branch in statement.body for child in ast.walk(branch)
-        ):
+        if (isinstance(statement, ast.If)
+                and _mentions(statement.test, root)
+                and _exits_branch(statement)):
             return False
-    complementary = any(
+    return True
+
+
+def _assigns_complement(fn, r, p, root, complement):
+    return any(
         isinstance(node, ast.Assign)
         and len(node.targets) == 1
         and _name(node.targets[0]) == complement
@@ -509,19 +559,71 @@ def _quotient_quadratic_solver(fn):
         and _name(node.value.left.right) == root
         for node in fn.body
     )
+
+
+def _multiplies(fn, name):
+    return any(
+        isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult)
+        and (_name(node.left) == name or _name(node.right) == name)
+        for node in ast.walk(fn)
+    )
+
+
+def _quotient_quadratic_solver(fn):
+    """Source-proof the specific root extraction identity used by the fault.
+
+    Do not confuse any modular inverse and two-value return with an
+    implementation of a quadratic solver. The faulty extraction computes
+    x = -(v[0]-1)/v[1] modulo p after exponentiation by (p-1)//2 in the
+    polynomial quotient, and returns x alongside the complementary r-x.
+    The surrounding code must also use both polynomial parameters in
+    arithmetic. Other root algorithms require separate recognizers.
+    """
+    if not isinstance(fn, ast.FunctionDef) or len(fn.args.args) < 3:
+        return False
+    r, c, p = (arg.arg for arg in fn.args.args[:3])
+    calls = _inverse_coefficient_calls(fn, p)
+    if len(calls) != 1:
+        return False
+    state_name = _name(calls[0].args[0].value)
+    if not _has_half_power(fn, p):
+        return False
+    # Require the same quotient-ring coefficient vector in the numerator
+    # of the root formula and in its inverse denominator.
+    if not _indexes_zero(fn, state_name):
+        return False
+    # Reject unrelated modular inverse routines by checking the root-sum
+    # relationship in both the returned pair and the function's equations.
+    pair = _returned_pair(fn)
+    if pair is None:
+        return False
+    root, complement = pair
+    if not _root_unguarded(fn, root):
+        return False
     # A proper quotient-field multiplication/reduction must involve both
     # coefficients of X**2-rX+c, not simply a formal inverse.
-    uses_r = any(
-        isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult)
-        and (_name(node.left) == r or _name(node.right) == r)
-        for node in ast.walk(fn)
+    return (_assigns_complement(fn, r, p, root, complement)
+            and _multiplies(fn, r) and _multiplies(fn, c))
+
+
+def _decryptor_matches(fn, solver_names, crt_names, jacobi_calls):
+    invoked = [
+        node for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and _name(node.func) in solver_names
+    ]
+    if len(invoked) < 2:
+        return False
+    moduli = {
+        member for call in invoked for arg in call.args
+        if (member := _member(arg)) is not None
+    }
+    invokes_crt = any(
+        isinstance(call, ast.Call)
+        and _name(call.func) in crt_names
+        for call in ast.walk(fn)
     )
-    uses_c = any(
-        isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult)
-        and (_name(node.left) == c or _name(node.right) == c)
-        for node in ast.walk(fn)
-    )
-    return complementary and uses_r and uses_c
+    return len(moduli) >= 2 and invokes_crt and any(jacobi_calls(fn))
 
 
 def _quadratic_decrypt(tree, encryption):
@@ -532,187 +634,181 @@ def _quadratic_decrypt(tree, encryption):
     coefficient and the complementary root r-a, then verify two private
     prime calls and CRT in the surrounding decryptor.
     """
-    solver_names = set()
     jacobi_calls = _jacobi_call_sites(tree)
     crt_names = _crt_functions(tree)
     if not crt_names:
         return None
-    for fn in tree.body:
-        if _quotient_quadratic_solver(fn):
-            solver_names.add(fn.name)
+    solver_names = {
+        fn.name for fn in tree.body if _quotient_quadratic_solver(fn)
+    }
     if not solver_names:
         return None
     for fn in tree.body:
         if not isinstance(fn, ast.FunctionDef) or fn.name == encryption:
             continue
-        invoked = [
-            node for node in ast.walk(fn)
-            if isinstance(node, ast.Call)
-            and _name(node.func) in solver_names
-        ]
-        if len(invoked) < 2:
-            continue
-        moduli = {
-            member for call in invoked for arg in call.args
-            if (member := _member(arg)) is not None
-        }
-        invokes_crt = any(
-            isinstance(call, ast.Call)
-            and _name(call.func) in crt_names
-            for call in ast.walk(fn)
-        )
-        if (len(moduli) >= 2 and invokes_crt
-                and any(jacobi_calls(fn))):
+        if _decryptor_matches(fn, solver_names, crt_names, jacobi_calls):
             return fn.name
     return None
+
+
+_SEPARATORS = {",", ";", " ", "|", ":"}
+
+
+def _string_args(nodes, function):
+    return [
+        node.args[0].value for node in nodes
+        if isinstance(node, ast.Call) and _name(node.func) == function
+        and len(node.args) == 1 and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    ]
+
+
+def _split_separator(call):
+    if not (isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "split"):
+        return None
+    if not (len(call.args) in (0, 1)
+            and (not call.args or isinstance(call.args[0], ast.Constant))):
+        return None
+    separator = call.args[0].value if call.args else " "
+    if (isinstance(separator, str) and len(separator) == 1
+            and separator in _SEPARATORS):
+        return separator
+    return None
+
+
+def _json_names(tree):
+    json_modules = {
+        alias.asname or alias.name
+        for statement in tree.body
+        if isinstance(statement, ast.Import)
+        for alias in statement.names if alias.name == "json"
+    }
+    json_aliases = {
+        alias.asname or alias.name
+        for statement in tree.body
+        if isinstance(statement, ast.ImportFrom)
+        and statement.module == "json"
+        for alias in statement.names if alias.name == "loads"
+    }
+    return json_modules, json_aliases
+
+
+def _is_json_unpack(stmt, json_modules, json_aliases):
+    if not (isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], (ast.Tuple, ast.List))
+            and len(stmt.targets[0].elts) == 3
+            and isinstance(stmt.value, ast.Call)):
+        return False
+    func = stmt.value.func
+    loads = (
+        _name(func) in json_aliases
+        or (isinstance(func, ast.Attribute)
+            and func.attr == "loads"
+            and _name(func.value) in json_modules)
+    )
+    return (
+        loads
+        and len(stmt.value.args) == 1
+        and any(
+            isinstance(inner, ast.Call) and _name(inner.func) == "input"
+            for inner in ast.walk(stmt.value.args[0])
+        )
+    )
+
+
+def _input_format(tree, loop):
+    # Derive the source's input wire representation rather than
+    # assuming comma-separated triples. Fail closed for unfamiliar
+    # parsing or inconsistent delimiters.
+    separators = {
+        separator for call in ast.walk(loop)
+        if (separator := _split_separator(call)) is not None
+    }
+    if len(separators) == 1:
+        return next(iter(separators)), "delimited"
+    if separators:
+        return None
+    # A three-value JSON array is an alternate representation
+    # of the same selected ciphertext, but this is safe to send
+    # only when the source actually unpacks JSON into three items.
+    json_modules, json_aliases = _json_names(tree)
+    if any(_is_json_unpack(stmt, json_modules, json_aliases)
+           for stmt in ast.walk(loop)):
+        return ",", "json-array"
+    return None
+
+
+def _roundtrips(loop, encrypt, decrypt):
+    return any(
+        isinstance(call, ast.Call)
+        and _name(call.func) == encrypt
+        and call.args and isinstance(call.args[0], ast.Call)
+        and _name(call.args[0].func) == decrypt
+        for call in ast.walk(loop)
+    )
+
+
+def _failure_texts(loop):
+    # Exception marker identity comes from the exception-handler
+    # control-flow branch, never from English words in the message.
+    return {
+        arg.value
+        for handler in ast.walk(loop)
+        if isinstance(handler, ast.ExceptHandler)
+        for call in ast.walk(handler)
+        if isinstance(call, ast.Call) and _name(call.func) == "print"
+        for arg in call.args
+        if isinstance(arg, ast.Constant)
+        and isinstance(arg.value, str)
+    }
+
+
+def _loop_profile(tree, loop, encrypt, decrypt):
+    prompts = _string_args(ast.walk(loop), "input")
+    if len(set(prompts)) != 1:
+        return None
+    wire = _input_format(tree, loop)
+    if wire is None:
+        return None
+    if not _roundtrips(loop, encrypt, decrypt):
+        return None
+    prints = _string_args(ast.walk(loop), "print")
+    failure_texts = _failure_texts(loop)
+    if len(failure_texts) != 1:
+        return None
+    marker = next(iter(failure_texts))
+    success = [value for value in prints if value != marker]
+    if len(success) != 1:
+        return None
+    # Some services put their banner directly at module scope;
+    # others guard startup under if __name__ == "__main__".
+    # The relevant invariant is that the banner is printed outside
+    # the interactive oracle loop.
+    loop_nodes = {id(node) for node in ast.walk(loop)}
+    banners = _string_args(
+        (call for call in ast.walk(tree) if id(call) not in loop_nodes),
+        "print",
+    )
+    banners = [s for s in banners if s not in prints]
+    if len(banners) != 1:
+        return None
+    return prompts[0], banners[0], success[0], marker, wire[0], wire[1]
 
 
 def _protocol_profile(tree, encrypt, decrypt):
     for loop in ast.walk(tree):
         if not isinstance(loop, ast.While):
             continue
-        prompts = [
-            node.args[0].value for node in ast.walk(loop)
-            if isinstance(node, ast.Call) and _name(node.func) == "input"
-            and len(node.args) == 1 and isinstance(node.args[0], ast.Constant)
-            and isinstance(node.args[0].value, str)
-        ]
-        if len(set(prompts)) != 1:
-            continue
-        # Derive the source's input wire representation rather than
-        # assuming comma-separated triples. Fail closed for unfamiliar
-        # parsing or inconsistent delimiters.
-        separators = set()
-        for call in ast.walk(loop):
-            if not (isinstance(call, ast.Call)
-                    and isinstance(call.func, ast.Attribute)
-                    and call.func.attr == "split"):
-                continue
-            if not (len(call.args) in (0, 1)
-                    and (not call.args or isinstance(
-                        call.args[0], ast.Constant))):
-                continue
-            separator = (
-                call.args[0].value if call.args else " "
-            )
-            if (isinstance(separator, str) and len(separator) == 1
-                    and separator in {",", ";", " ", "|", ":"}):
-                separators.add(separator)
-        if len(separators) == 1:
-            separator = next(iter(separators))
-            input_format = "delimited"
-        elif len(separators) == 0:
-            # A three-value JSON array is an alternate representation
-            # of the same selected ciphertext, but this is safe to send
-            # only when the source actually unpacks JSON into three items.
-            json_modules = {
-                alias.asname or alias.name
-                for statement in tree.body
-                if isinstance(statement, ast.Import)
-                for alias in statement.names if alias.name == "json"
-            }
-            json_aliases = {
-                alias.asname or alias.name
-                for statement in tree.body
-                if isinstance(statement, ast.ImportFrom)
-                and statement.module == "json"
-                for alias in statement.names if alias.name == "loads"
-            }
-            json_unpacked = any(
-                isinstance(stmt, ast.Assign)
-                and len(stmt.targets) == 1
-                and isinstance(stmt.targets[0], (ast.Tuple, ast.List))
-                and len(stmt.targets[0].elts) == 3
-                and isinstance(stmt.value, ast.Call)
-                and (
-                    _name(stmt.value.func) in json_aliases
-                    or (isinstance(stmt.value.func, ast.Attribute)
-                        and stmt.value.func.attr == "loads"
-                        and _name(stmt.value.func.value) in json_modules)
-                )
-                and len(stmt.value.args) == 1
-                and any(
-                    isinstance(inner, ast.Call)
-                    and _name(inner.func) == "input"
-                    for inner in ast.walk(stmt.value.args[0])
-                )
-                for stmt in ast.walk(loop)
-            )
-            if not json_unpacked:
-                continue
-            separator = ","
-            input_format = "json-array"
-        else:
-            continue
-        nested = [
-            call for call in ast.walk(loop)
-            if isinstance(call, ast.Call)
-            and _name(call.func) == encrypt
-            and call.args and isinstance(call.args[0], ast.Call)
-            and _name(call.args[0].func) == decrypt
-        ]
-        if not nested:
-            continue
-        prints = [
-            node.args[0].value for node in ast.walk(loop)
-            if isinstance(node, ast.Call) and _name(node.func) == "print"
-            and len(node.args) == 1 and isinstance(node.args[0], ast.Constant)
-            and isinstance(node.args[0].value, str)
-        ]
-        # Exception marker identity comes from the exception-handler
-        # control-flow branch, never from English words in the message.
-        failure_texts = {
-            arg.value
-            for handler in ast.walk(loop)
-            if isinstance(handler, ast.ExceptHandler)
-            for call in ast.walk(handler)
-            if isinstance(call, ast.Call) and _name(call.func) == "print"
-            for arg in call.args
-            if isinstance(arg, ast.Constant)
-            and isinstance(arg.value, str)
-        }
-        if len(failure_texts) != 1:
-            continue
-        marker = next(iter(failure_texts))
-        success = [value for value in prints if value != marker]
-        if len(success) != 1:
-            continue
-        # Some services put their banner directly at module scope;
-        # others guard startup under if __name__ == "__main__".
-        # The relevant invariant is that the banner is printed outside
-        # the interactive oracle loop.
-        loop_nodes = {id(node) for node in ast.walk(loop)}
-        banners = [
-            call.args[0].value for call in ast.walk(tree)
-            if id(call) not in loop_nodes
-            and isinstance(call, ast.Call) and _name(call.func) == "print"
-            and len(call.args) == 1
-            and isinstance(call.args[0], ast.Constant)
-            and isinstance(call.args[0].value, str)
-        ]
-        banners = [s for s in banners if s not in prints]
-        if len(banners) != 1:
-            continue
-        return prompts[0], banners[0], success[0], marker, separator, input_format
+        profile = _loop_profile(tree, loop, encrypt, decrypt)
+        if profile is not None:
+            return profile
     return None
 
 
-def _source_profile(document):
-    if not document.text or len(document.text) > _MAX_SOURCE:
-        return None
-    tree = parse_python(document)
-    if tree is None:
-        return None
-    encryption = _reciprocal_encryption(tree)
-    if encryption is None:
-        return None
-    encrypt, modulus_field, constant_field = encryption
-    if _quadratic_decrypt(tree, encrypt) is None:
-        return None
-    decrypt = _quadratic_decrypt(tree, encrypt)
-    protocol = _protocol_profile(tree, encrypt, decrypt)
-    if protocol is None:
-        return None
+def _int_constants(tree):
     definitions = {}
     for stmt in ast.walk(tree):
         if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
@@ -720,87 +816,102 @@ def _source_profile(document):
                 and isinstance(stmt.value, ast.Constant)
                 and type(stmt.value.value) is int):
             definitions[stmt.targets[0].id] = stmt.value.value
+    return definitions
+
+
+def _argument_value(arg, definitions):
+    if isinstance(arg, ast.Constant):
+        return arg.value
+    return definitions.get(_name(arg))
+
+
+def _forwarded_bits(tree, functions, definitions, current_function,
+                    parameter_index):
+    for _ in range(5):
+        calls = [
+            call for call in ast.walk(tree)
+            if isinstance(call, ast.Call)
+            and _name(call.func) == current_function
+            and len(call.args) > parameter_index
+        ]
+        if len(calls) == 0:
+            return None
+        arguments = [call.args[parameter_index] for call in calls]
+        numbers = [
+            value
+            for value in (_argument_value(arg, definitions)
+                          for arg in arguments)
+            if type(value) is int
+        ]
+        if numbers and len(set(numbers)) == 1:
+            return numbers[0]
+        # Follow a name forwarded from an enclosing function.
+        names = {_name(arg) for arg in arguments}
+        if len(names) != 1 or None in names:
+            return None
+        forward = next(iter(names))
+        owners = [
+            owner for owner in functions.values()
+            if forward in [arg.arg for arg in owner.args.args]
+            and any(child is calls[0] for child in ast.walk(owner))
+        ]
+        if len(owners) != 1:
+            return None
+        owner = owners[0]
+        current_function = owner.name
+        parameter_index = [arg.arg for arg in owner.args.args].index(forward)
+    return None
+
+
+def _function_bits(fn, tree, functions, definitions):
+    if not _calls(fn, "getPrime"):
+        return None
+    parameters = [arg.arg for arg in fn.args.args]
+    prime_widths = [
+        call.args[0] for call in _calls(fn, "getPrime") if call.args
+    ]
+    if not prime_widths or len({
+            ast.dump(value) for value in prime_widths
+    }) != 1:
+        return None
+    width = prime_widths[0]
+    if isinstance(width, ast.Constant) and type(width.value) is int:
+        return width.value
+    parameter = _name(width)
+    if parameter not in parameters:
+        return None
+    return _forwarded_bits(tree, functions, definitions, fn.name,
+                           parameters.index(parameter))
+
+
+def _prime_bits(tree):
+    definitions = _int_constants(tree)
     functions = {
         fn.name: fn for fn in tree.body if isinstance(fn, ast.FunctionDef)
     }
     # Resolve generator bit length across arbitrary finite chains of wrapper
     # functions and positional arguments. This is symbolic source dataflow,
     # never execution of the user's Python.
-    bits = None
     for fn in functions.values():
-        if not _calls(fn, "getPrime"):
-            continue
-        parameters = [arg.arg for arg in fn.args.args]
-        prime_widths = [
-            call.args[0] for call in _calls(fn, "getPrime") if call.args
-        ]
-        if not prime_widths or len({
-                ast.dump(value) for value in prime_widths
-        }) != 1:
-            continue
-        width = prime_widths[0]
-        if isinstance(width, ast.Constant) and type(width.value) is int:
-            bits = width.value
-            break
-        parameter = _name(width)
-        if parameter not in parameters:
-            continue
-        current_function = fn.name
-        parameter_index = parameters.index(parameter)
-        for _ in range(5):
-            calls = [
-                call for call in ast.walk(tree)
-                if isinstance(call, ast.Call)
-                and _name(call.func) == current_function
-                and len(call.args) > parameter_index
-            ]
-            if len(calls) == 0:
-                break
-            arguments = [call.args[parameter_index] for call in calls]
-            values = [
-                arg.value if isinstance(arg, ast.Constant) else
-                definitions.get(_name(arg))
-                for arg in arguments
-            ]
-            numbers = [
-                value for value in values
-                if type(value) is int
-            ]
-            if numbers and len(set(numbers)) == 1:
-                bits = numbers[0]
-                break
-            # Follow a name forwarded from an enclosing function.
-            names = {_name(arg) for arg in arguments}
-            if len(names) != 1 or None in names:
-                break
-            forward = next(iter(names))
-            owners = [
-                owner for owner in functions.values()
-                if forward in [arg.arg for arg in owner.args.args]
-                and any(child is calls[0] for child in ast.walk(owner))
-            ]
-            if len(owners) != 1:
-                break
-            owner = owners[0]
-            current_function = owner.name
-            parameter_index = [arg.arg for arg in owner.args.args].index(forward)
+        bits = _function_bits(fn, tree, functions, definitions)
         if bits is not None:
-            break
-    if bits is None or not isinstance(bits, int) or not 16 <= bits <= 4096:
-        return None
-    # The source must generate odd primes in a known congruence class.
-    if not any(
+            return bits
+    return None
+
+
+def _has_mod4_check(tree):
+    return any(
         isinstance(node, ast.Compare)
         and isinstance(node.left, ast.BinOp)
         and isinstance(node.left.op, ast.Mod)
-        and isinstance(node.left.right, ast.Constant)
-        and node.left.right.value == 4
-        and any(isinstance(comparator, ast.Constant)
-                and comparator.value == 3
+        and _is_constant(node.left.right, 4)
+        and any(_is_constant(comparator, 3)
                 for comparator in node.comparators)
         for node in ast.walk(tree)
-    ):
-        return None
+    )
+
+
+def _ciphertext_fields(tree, encrypt):
     # Follow the encryption function's *constructed* ciphertext type.
     # Unrelated three-field records are not evidence of an output schema.
     classes = {}
@@ -824,9 +935,36 @@ def _source_profile(document):
     }
     if len(output_types) != 1:
         return None
-    ciphertext_class = next(iter(output_types))
+    return classes[next(iter(output_types))]
+
+
+def _source_profile(document):
+    if not document.text or len(document.text) > _MAX_SOURCE:
+        return None
+    tree = parse_python(document)
+    if tree is None:
+        return None
+    encryption = _reciprocal_encryption(tree)
+    if encryption is None:
+        return None
+    encrypt, _, _ = encryption
+    if _quadratic_decrypt(tree, encrypt) is None:
+        return None
+    decrypt = _quadratic_decrypt(tree, encrypt)
+    protocol = _protocol_profile(tree, encrypt, decrypt)
+    if protocol is None:
+        return None
+    bits = _prime_bits(tree)
+    if bits is None or not isinstance(bits, int) or not 16 <= bits <= 4096:
+        return None
+    # The source must generate odd primes in a known congruence class.
+    if not _has_mod4_check(tree):
+        return None
+    fields = _ciphertext_fields(tree, encrypt)
+    if fields is None:
+        return None
     return ReciprocalRabinOracle(
-        bits, classes[ciphertext_class], protocol[0], protocol[1],
+        bits, fields, protocol[0], protocol[1],
         protocol[2], protocol[3], protocol[4], protocol[5],
     )
 
@@ -839,65 +977,93 @@ def extract_instance(documents: Sequence[Document]):
     return models[0] if len(models) == 1 else None
 
 
-def _records_to_factors(records, minimum_factor_bits):
-    from sympy import isprime
+def _output_deltas(records):
     # Any two distinct successful selector responses give a candidate
     # difference. Do not require precisely two distinct outputs or
     # demand success from every selector combination.
-    deltas = [
+    return [
         abs(a-b) for _, outputs in records if len(outputs) >= 2
         for i, a in enumerate(sorted(outputs))
         for b in sorted(outputs)[i+1:] if a != b
     ]
-    factors = set()
-    # Repeated independent deltas share the hidden prime, with
-    # accidental small co-factors removed by intersection.
+
+
+def _large_gcds(deltas, minimum_factor_bits):
     for i, left in enumerate(deltas):
         for right in deltas[i+1:]:
             factor = math.gcd(left, right)
-            if factor.bit_length() < minimum_factor_bits:
-                continue
-            if isprime(factor):
-                factors.add(factor)
-            if len(factors) >= 2:
-                primes = sorted(factors)
-                if primes[0] != primes[1]:
-                    return tuple(primes[:2])
+            if factor.bit_length() >= minimum_factor_bits:
+                yield factor
+
+
+def _records_to_factors(records, minimum_factor_bits):
+    from sympy import isprime
+    deltas = _output_deltas(records)
+    factors = set()
+    # Repeated independent deltas share the hidden prime, with
+    # accidental small co-factors removed by intersection.
+    for factor in _large_gcds(deltas, minimum_factor_bits):
+        if isprime(factor):
+            factors.add(factor)
+        if len(factors) >= 2:
+            primes = sorted(factors)
+            if primes[0] != primes[1]:
+                return tuple(primes[:2])
     return None
 
 
-def _recover_constant(records, factors):
-    p, q = factors
+def _pair_residue(r, A, B, p, q):
     n = p*q
+    shared = math.gcd(abs(A-B), n)
+    if shared not in (p,q):
+        return None
+    target = n//shared
+    denominator = (2*r-A-B) % target
+    if math.gcd(denominator, target) != 1:
+        return None
+    x = (r*(r-B)*pow(denominator, -1, target)) % target
+    return target, (A*x-x*x) % target
+
+
+def _constant_residues(records, p, q):
     residues = {}
     for r, values in records:
         values = sorted(values)
         for index, A in enumerate(values):
             for B in values[index+1:]:
-                shared = math.gcd(abs(A-B), n)
-                if shared not in (p,q):
-                    continue
-                target = n//shared
-                denominator = (2*r-A-B) % target
-                if math.gcd(denominator, target) != 1:
-                    continue
-                x = (r*(r-B)*pow(denominator, -1, target)) % target
-                c = (A*x-x*x) % target
-                residues.setdefault(target, []).append(c)
+                found = _pair_residue(r, A, B, p, q)
+                if found is not None:
+                    residues.setdefault(found[0], []).append(found[1])
+    return residues
+
+
+def _agreed_residue(observations):
+    counts = {}
+    for residue in observations:
+        counts[residue] = counts.get(residue, 0) + 1
+    ordered = sorted(
+        counts, key=lambda value, counts=counts: (-counts[value], value)
+    )
+    if not ordered:
+        return None
+    # At least two independently obtained observations must agree.
+    if counts[ordered[0]] < 2:
+        return None
+    return ordered[0]
+
+
+def _recover_constant(records, factors):
+    p, q = factors
+    n = p*q
+    residues = _constant_residues(records, p, q)
     if not all(prime in residues for prime in factors):
         return None
     chosen = {}
     for prime in factors:
-        counts = {}
-        for residue in residues[prime]:
-            counts[residue] = counts.get(residue, 0) + 1
-        ordered = sorted(counts, key=lambda value: (-counts[value], value))
-        if not ordered:
+        residue = _agreed_residue(residues[prime])
+        if residue is None:
             return None
-        # At least two independently obtained observations must agree.
-        if counts[ordered[0]] < 2:
-            return None
-        chosen[prime] = ordered[0]
+        chosen[prime] = residue
     return (
         chosen[p] + p*((chosen[q]-chosen[p])*pow(p,-1,q)%q)
     ) % n
@@ -930,7 +1096,7 @@ def _encrypt(m, n, c):
 def _decrypt_candidates(ciphertext, p, q, c):
     """CRT four quadratic roots; verify every candidate by re-encryption."""
     n = p*q
-    r, s, t = ciphertext
+    r, _, _ = ciphertext
     from sympy import sqrt_mod
     roots = []
     for prime in (p,q):
@@ -939,8 +1105,8 @@ def _decrypt_candidates(ciphertext, p, q, c):
         if value is None:
             return []
         inv2 = pow(2,-1,prime)
-        roots.append(tuple(set(((r+int(value))*inv2 % prime,
-                                (r-int(value))*inv2 % prime))))
+        roots.append(tuple({(r+int(value))*inv2 % prime,
+                            (r-int(value))*inv2 % prime}))
     candidates = []
     for a in roots[0]:
         for b in roots[1]:
@@ -1027,45 +1193,34 @@ class TextOracle:
         return self._triple(message)
 
 
-def recover_details(documents, host, port, *, timeout=30.0, max_queries=320):
-    profile = extract_instance(documents)
-    if profile is None:
-        raise ValueError("source does not establish reciprocal Rabin CRT oracle")
-    if not 8 <= max_queries <= 2048:
-        raise ValueError("unsupported chosen-ciphertext query budget")
+def _probe_oracle(oracle, profile, max_queries):
     records = []
-    with connect_authorized(host, port, timeout) as conn:
-        conn.settimeout(timeout)
-        oracle = TextOracle(conn, profile)
-        encrypted_flag = oracle.initial()
-        factors = None
-        c = None
-        for r in range(1, max_queries//4+1):
-            observations = [
-                oracle.query(r,s,t) for s in (-1,1) for t in (0,1)
-            ]
-            # An exception from one selector need not discard useful
-            # re-encryption differences from the remaining responses.
-            values = frozenset(
-                value[0] for value in observations if value is not None
-            )
-            if len(values) < 2:
-                continue
-            records.append((r, values))
-            if factors is None:
-                factors = _records_to_factors(
-                    records, max(16,profile.factor_bits-2),
-                )
-            if factors is not None and c is None:
-                c = _recover_constant(records, factors)
-                if c is not None:
-                    break
-    if factors is None or c is None:
-        raise RuntimeError(
-            "bounded reciprocal-Rabin oracle probes did not reveal "
-            "two independent CRT factors and the public constant"
+    factors = None
+    c = None
+    for r in range(1, max_queries//4+1):
+        observations = [
+            oracle.query(r,s,t) for s in (-1,1) for t in (0,1)
+        ]
+        # An exception from one selector need not discard useful
+        # re-encryption differences from the remaining responses.
+        values = frozenset(
+            value[0] for value in observations if value is not None
         )
-    p,q = factors
+        if len(values) < 2:
+            continue
+        records.append((r, values))
+        if factors is None:
+            factors = _records_to_factors(
+                records, max(16,profile.factor_bits-2),
+            )
+        if factors is not None and c is None:
+            c = _recover_constant(records, factors)
+            if c is not None:
+                break
+    return factors, c
+
+
+def _verified_plaintext(encrypted_flag, p, q, c):
     n = p*q
     if not 0 <= encrypted_flag[0] < n:
         raise RuntimeError("encrypted flag is inconsistent with reconstructed modulus")
@@ -1077,6 +1232,28 @@ def recover_details(documents, host, port, *, timeout=30.0, max_queries=320):
     flag, plaintext = _decode_flag(candidates[0])
     if _encrypt(candidates[0],n,c) != encrypted_flag:
         raise RuntimeError("plaintext failed source-defined re-encryption")
+    return flag, plaintext
+
+
+def recover_details(documents, host, port, *, timeout=30.0, max_queries=320):
+    profile = extract_instance(documents)
+    if profile is None:
+        raise ValueError("source does not establish reciprocal Rabin CRT oracle")
+    if not 8 <= max_queries <= 2048:
+        raise ValueError("unsupported chosen-ciphertext query budget")
+    with connect_authorized(host, port, timeout) as conn:
+        conn.settimeout(timeout)
+        oracle = TextOracle(conn, profile)
+        encrypted_flag = oracle.initial()
+        factors, c = _probe_oracle(oracle, profile, max_queries)
+    if factors is None or c is None:
+        raise RuntimeError(
+            "bounded reciprocal-Rabin oracle probes did not reveal "
+            "two independent CRT factors and the public constant"
+        )
+    p,q = factors
+    n = p*q
+    flag, plaintext = _verified_plaintext(encrypted_flag, p, q, c)
     return OracleResult(n,(p,q),c,plaintext,flag,oracle.probes)
 
 

@@ -1,7 +1,10 @@
 import pytest
-
 from cryptoscan.parser import Document
-from cryptoscan.rsa_related_key import extract_instance, recover_message, source_profiles
+from cryptoscan.rsa_related_key import (
+    extract_instance,
+    recover_message,
+    source_profiles,
+)
 from cryptoscan.scanner import scan
 
 
@@ -54,9 +57,8 @@ def test_unrelated_scope():
 
 
 def test_cli_large_message_and_source_only_exponent(tmp_path, capsys):
-    from sympy import nextprime
-
     from cryptoscan.cli import main
+    from sympy import nextprime
 
     exponent = 3
     primes = []
@@ -190,3 +192,48 @@ def test_common_inverse_call_spellings(inverse_expression):
     profiles = source_profiles(Document("alternate_inverse.py", source, None))
     assert len(profiles) == 1
     assert profiles[0].exponent == 3
+
+
+@pytest.mark.parametrize("exponent", [3, 11])
+def test_renamed_aliases_and_integer_casts(exponent):
+    docs = corpus(exponent)
+    source = docs[0].text.replace(
+        "private = pow(public, -1, order)",
+        "power_alias = public\n"
+        "power_twice = power_alias\n"
+        "private = pow(power_twice, -1, order)\n"
+        "private_alias = private\n"
+        "order_alias = order",
+    ).replace(
+        "alpha = pow(private, public, modulus)",
+        "alpha = int(pow(private_alias, power_twice, modulus))",
+    ).replace(
+        "beta = pow(order, public, modulus)",
+        "beta = int(pow(order_alias, power_twice, modulus))",
+    ).replace(
+        "gamma = pow(secret, public, modulus)",
+        "gamma = int(pow(secret, power_twice, modulus))",
+    )
+    renamed = [Document("unknown_program", source, None), docs[1]]
+    profiles = source_profiles(renamed[0])
+    assert len(profiles) == 1
+    instance = extract_instance(renamed)
+    assert instance is not None
+    assert recover_message(instance) == b"A"
+    assert any(f.rule == "RSA-RELATED-KEY-MATERIAL" for f in scan(renamed))
+
+
+def test_unrelated_cast_or_cyclic_exponent_is_not_a_profile():
+    source = corpus(3)[0].text
+    assert not source_profiles(Document(
+        "cast_before_pow", source.replace(
+            "alpha = pow(private, public, modulus)",
+            "alpha = int(private) ** public % modulus",
+        ), None,
+    ))
+    assert not source_profiles(Document(
+        "cyclic", source.replace("public = 3", "public = alias\nalias = public"),
+        None,
+    ))
+
+

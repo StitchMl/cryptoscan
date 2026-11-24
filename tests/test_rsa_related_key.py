@@ -89,3 +89,41 @@ def test_cli_large_message_and_source_only_exponent(tmp_path, capsys):
     assert "RSA-RELATED-KEY-MATERIAL" in capsys.readouterr().out
     assert main([str(tmp_path), "--solve"]) == 0
     assert token in capsys.readouterr().out
+
+
+def test_hacktm_shape_survives_unrelated_reassignment():
+    source = """
+import os
+from Crypto.Util.number import bytes_to_long, getStrongPrime
+
+scratch = 1
+scratch = 2
+flag = os.environ.get("FLAG", "FAKEFLAG{" + "A" * 245 + "}").encode()
+assert len(flag) == 255
+e = 3
+p = getStrongPrime(1024, e=e)
+q = getStrongPrime(1024, e=e)
+n = p * q
+phi = (p - 1) * (q - 1)
+d = pow(e, -1, phi)
+enc_d = pow(d, e, n)
+enc_phi = pow(phi, e, n)
+enc_flag = pow(bytes_to_long(flag), e, n)
+"""
+    profiles = source_profiles(Document("chall.py", source, None))
+    assert len(profiles) == 1
+    profile = profiles[0]
+    assert profile.exponent == 3
+    assert profile.modulus == "n"
+    assert profile.inverse_cipher == "enc_d"
+    assert profile.order_cipher == "enc_phi"
+    assert profile.message_cipher == "enc_flag"
+
+
+def test_reassignment_of_relevant_binding_stays_ambiguous():
+    docs = corpus(3)
+    source = docs[0].text.replace(
+        "public = 3",
+        "public = 3\npublic = 5",
+    )
+    assert not source_profiles(Document("ambiguous", source, None))

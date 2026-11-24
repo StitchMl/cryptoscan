@@ -228,7 +228,7 @@ def test_adaptive_crt_recovers_independent_random_secret(monkeypatch):
     secret = random.Random(1212).getrandbits(48)
     fake = FakeOracle(profile, secret)
     monkeypatch.setattr(
-        module.socket, "create_connection",
+        module, "connect_authorized",
         lambda *args, **kwargs: fake,
     )
     assert recover_flag([
@@ -272,7 +272,7 @@ def test_cli_plan_scan_and_remote_solver_gating(tmp_path, monkeypatch, capsys):
     profile = _source_profile(Document("new_source", source, None))
     fake = FakeOracle(profile, random.Random(17).getrandbits(48))
     monkeypatch.setattr(
-        module.socket, "create_connection",
+        module, "connect_authorized",
         lambda *args, **kwargs: fake,
     )
     assert cli.main([

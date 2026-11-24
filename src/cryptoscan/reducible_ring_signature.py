@@ -13,6 +13,7 @@ import socket
 from dataclasses import dataclass
 from typing import Sequence
 
+from .network_policy import connect_authorized
 from .parser import Document
 from .source_units import parse_python
 from .unramified_ring_oracle import _SageWorker
@@ -388,7 +389,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
             "dimension": instance.dimension,
             "modulus": instance.modulus,
         })
-        with socket.create_connection((host, port), timeout=timeout) as connection:
+        with connect_authorized(host, port, timeout) as connection:
             connection.settimeout(timeout)
             wire = _Wire(connection)
             public_a, public_t = _public_keys(wire, instance)

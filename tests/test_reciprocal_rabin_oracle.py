@@ -162,10 +162,11 @@ def _simulate(r,s,t,p,q,c):
                 m=(x+p*((y-x)*pow(p,-1,q)%q))%n
                 if _jacobi(m,n)==s:
                     replies.append(m)
-        assert len(replies)==2
+        if len(replies)!=2:
+            return None
         replies.sort()
         return _encrypt(replies[t],n,c)
-    except (AssertionError,ValueError,ZeroDivisionError):
+    except (ValueError,ZeroDivisionError):
         return None
 
 
@@ -285,7 +286,7 @@ def test_end_to_end_mock_tcp_with_new_oracle_names(monkeypatch):
     secret=int.from_bytes(b"LAB{ok}","big")
     service=SimulatedService(profile,p,q,c,secret)
     monkeypatch.setattr(
-        module.socket,"create_connection",lambda *args,**kw:service,
+        module, "connect_authorized",lambda *args,**kw:service,
     )
     result=recover_details(
         [doc],"unreachable.invalid",5555,timeout=10,max_queries=320,
@@ -636,7 +637,7 @@ def test_source_inferred_selector_delimiters_on_mock_tcp(separator, monkeypatch)
     secret = int.from_bytes(b"LAB{ok}", "big")
     service = SimulatedService(profile, p, q, c, secret)
     monkeypatch.setattr(
-        module.socket, "create_connection",
+        module, "connect_authorized",
         lambda *args, **kw: service,
     )
     details = recover_details(
@@ -662,7 +663,7 @@ def test_json_array_input_source_is_recognized_and_solved(monkeypatch):
     secret = int.from_bytes(b"LAB{ok}", "big")
     oracle = SimulatedService(profile, p, q, c, secret)
     monkeypatch.setattr(
-        module.socket, "create_connection", lambda *a, **k: oracle,
+        module, "connect_authorized", lambda *a, **k: oracle,
     )
     solved = recover_details(
         [doc], "example.invalid", 5555, max_queries=320,

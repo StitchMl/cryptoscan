@@ -206,7 +206,7 @@ def test_tcp_protocol_is_source_driven(monkeypatch):
             problems.append(exc)
 
     monkeypatch.setattr(module, "_SageWorker", FakeWorker)
-    monkeypatch.setattr(module.socket, "create_connection", lambda *a, **kw: left)
+    monkeypatch.setattr(module, "connect_authorized", lambda *a, **kw: left)
     thread = threading.Thread(target=server, daemon=True)
     thread.start()
     recovered = recover_flag(

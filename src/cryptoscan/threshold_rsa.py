@@ -1,8 +1,6 @@
 """Generic truncated-polynomial RSA share recovery; pure Python kernel."""
 from __future__ import annotations
 
-from .source_units import python_sources
-
 import ast
 import math
 import re
@@ -12,7 +10,9 @@ from fractions import Fraction
 from functools import reduce
 from typing import Sequence
 
+from .network_policy import connect_authorized
 from .parser import Document
+from .source_units import python_sources
 
 
 @dataclass(frozen=True)
@@ -223,7 +223,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
     if instance is None:
         raise ValueError("source is not an overdetermined truncated-share RSA oracle")
     weights = interpolation_kernel(instance.coefficient_count)
-    with socket.create_connection((host, port), timeout=timeout) as sock:
+    with connect_authorized(host, port, timeout) as sock:
         sock.settimeout(timeout)
         wire = _Stream(sock)
         modulus = _parsed_number(wire.line(), "n")

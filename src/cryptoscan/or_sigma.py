@@ -5,8 +5,6 @@ No CTF fixtures, parameters, witness values, or flags are embedded.
 """
 from __future__ import annotations
 
-from .source_units import python_sources
-
 import ast
 import operator
 import re
@@ -15,7 +13,9 @@ import socket
 from dataclasses import dataclass
 from typing import Sequence
 
+from .network_policy import connect_authorized
 from .parser import Document
+from .source_units import python_sources
 
 
 @dataclass(frozen=True)
@@ -372,7 +372,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         raise ValueError("unsupported source model")
     source = "\n".join(d.text for d in documents if d.path.lower().endswith(".py"))
     bits = _challenge_bits(source)
-    with socket.create_connection((host, port), timeout=timeout) as sock:
+    with connect_authorized(host, port, timeout) as sock:
         sock.settimeout(timeout)
         wire = _Dialogue(sock)
         _correctness_phase(wire, instance, bits)

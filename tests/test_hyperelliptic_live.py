@@ -131,7 +131,7 @@ def test_tcp_capture_full_investigation_and_verified_solver(monkeypatch):
         )
         services.append(srv)
         return srv
-    monkeypatch.setattr(live.socket, "create_connection", connect)
+    monkeypatch.setattr(live, "connect_authorized", connect)
     first = investigate(docs, "localhost", 31337)
     assert first.recovered_flag == flag.decode()
     assert first.polynomial == tuple(polynomial)
@@ -148,7 +148,7 @@ def test_cli_investigate_json_is_one_document(tmp_path, monkeypatch, capsys):
     path = tmp_path/"unknown.sage"
     path.write_text(docs[0].text, encoding="utf-8")
     monkeypatch.setattr(
-        live.socket, "create_connection",
+        live, "connect_authorized",
         lambda *args, **kwargs: FakeJacobianService(
             source_input_prompt(docs), ciphertext, stream,
         ),
@@ -186,7 +186,7 @@ def test_cli_solve_uses_verification_and_never_networks_during_planning(
         return FakeJacobianService(
             source_input_prompt(docs), ciphertext, stream,
         )
-    monkeypatch.setattr(live.socket, "create_connection", connect)
+    monkeypatch.setattr(live, "connect_authorized", connect)
     assert main([
         str(path), "--plan-attacks", "--format", "json",
         "--host", "example.invalid", "--port", "31337",

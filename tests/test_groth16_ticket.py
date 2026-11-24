@@ -168,7 +168,7 @@ def test_full_synthetic_tcp_ticket_lifecycle(monkeypatch):
         except BaseException as error:
             problems.append(error)
 
-    monkeypatch.setattr(module.socket, "create_connection",
+    monkeypatch.setattr(module, "connect_authorized",
                         lambda *args, **kwargs: left)
     thread = threading.Thread(target=server, daemon=True)
     thread.start()

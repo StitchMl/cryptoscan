@@ -5,15 +5,14 @@ This backend reads/writes canonical compressed arkworks 0.3 BN254 points.
 """
 from __future__ import annotations
 
-from .source_units import rust_sources
-
 import json
 import re
-import socket
 from dataclasses import dataclass
 from typing import Sequence
 
+from .network_policy import connect_authorized
 from .parser import Document
+from .source_units import rust_sources
 
 # BN254 standard curve parameters, independent of any service.
 BASE_FIELD = 21888242871839275222246405745257275088696311157297823662689037894645226208583
@@ -421,7 +420,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
     instance = extract_instance(documents)
     if instance is None:
         raise ValueError("source does not show Groth16 proof-hash redemption")
-    with socket.create_connection((host, port), timeout=timeout) as connection:
+    with connect_authorized(host, port, timeout) as connection:
         connection.settimeout(timeout)
         wire = _LineSocket(connection)
         wire.line()  # greeting

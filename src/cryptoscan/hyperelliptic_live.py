@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import ast
 import re
-import socket
 import struct
 from dataclasses import dataclass
 
 from .hyperelliptic_state_leak import (
-    _sage_tree, _source_profile, curve_from_divisors,
-    extract_instance, unpack_state,
+    _sage_tree,
+    _source_profile,
+    curve_from_divisors,
+    extract_instance,
+    unpack_state,
 )
+from .network_policy import connect_authorized
 
 _TOKEN = re.compile(rb"[A-Za-z][A-Za-z0-9_-]{1,39}\{[^{}\r\n]{1,256}\}\Z")
 _HEX_LINE = re.compile(rb"(?m)^[ \t]*([0-9a-fA-F]{2,})[ \t]*$")
@@ -246,7 +249,7 @@ def collect_oracle(host, port, model, prompt, *, timeout=30, states=4):
     if not isinstance(prompt, str) or not 0 < len(prompt) <= 256:
         raise ValueError("missing source-derived input prompt")
     marker = prompt.encode()
-    with socket.create_connection((host, port), timeout=timeout) as conn:
+    with connect_authorized(host, port, timeout) as conn:
         conn.settimeout(timeout)
         first = _read_prompt(conn, marker)
         ciphertext = _parse_ciphertext(first.split(marker, 1)[0])

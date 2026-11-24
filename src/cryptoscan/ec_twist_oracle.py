@@ -13,10 +13,10 @@ from __future__ import annotations
 import ast
 import math
 import re
-import socket
 from dataclasses import dataclass, replace
 from typing import Sequence
 
+from .network_policy import connect_authorized
 from .parser import Document
 from .source_units import parse_python
 
@@ -510,7 +510,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int,
     factors = factorint(order, limit=1_000_000)
     _, _, _, input_x = twist_generator(model, factors)
     prompt = model.input_prompt.encode()
-    with socket.create_connection((host, port), timeout=timeout) as conn:
+    with connect_authorized(host, port, timeout) as conn:
         conn.settimeout(timeout)
         response = bytearray()
         while prompt not in response and len(response) < 16384:

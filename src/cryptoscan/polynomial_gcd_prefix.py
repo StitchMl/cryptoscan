@@ -16,6 +16,7 @@ from typing import Sequence
 
 from sympy import Poly, Symbol, subresultants
 
+from .network_policy import connect_authorized
 from .parser import Document
 from .source_units import parse_python
 
@@ -245,7 +246,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
     if instance is None:
         raise ValueError("no supported source-verified polynomial GCD prefix oracle")
     candidate, _ = construct_input(instance)
-    with socket.create_connection((host, port), timeout=timeout) as conn:
+    with connect_authorized(host, port, timeout) as conn:
         conn.settimeout(timeout)
         prompt = instance.prompt.encode("utf-8")
         if prompt:

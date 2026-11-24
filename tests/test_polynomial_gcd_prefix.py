@@ -86,7 +86,7 @@ def test_network_exchange_receives_full_flag(monkeypatch):
 
     fake = FakeSocket()
     monkeypatch.setattr(
-        module.socket, "create_connection",
+        module, "connect_authorized",
         lambda *args, **kwargs: fake,
     )
     docs = [Document("server.py", invented_source(), None)]

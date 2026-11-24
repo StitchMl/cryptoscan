@@ -6,8 +6,6 @@ secrets, fixtures or known plaintext/ciphertext pairs are included.
 """
 from __future__ import annotations
 
-from .source_units import parse_python
-
 import ast
 import random
 import re
@@ -16,7 +14,9 @@ import socket
 from dataclasses import dataclass
 from typing import Sequence
 
+from .network_policy import connect_authorized
 from .parser import Document
+from .source_units import parse_python
 
 
 @dataclass(frozen=True)
@@ -446,7 +446,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         raise ValueError('unsupported seeded-linear/substitution/linear source model')
     plaintexts, verification = _probes()
     chosen = b''.join(value.to_bytes(model.block_bytes, 'big') for value in plaintexts)
-    with socket.create_connection((host, port), timeout=timeout) as sock:
+    with connect_authorized(host, port, timeout) as sock:
         sock.settimeout(timeout)
         wire = _Dialogue(sock)
         wire.until(model.first_prompt)

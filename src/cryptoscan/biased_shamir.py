@@ -22,6 +22,7 @@ from typing import Sequence
 
 from sympy import nextprime
 
+from .network_policy import connect_authorized
 from .parser import Document
 from .source_units import parse_python
 
@@ -714,7 +715,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         budget = min(budget, max(0.1, profile.server_alarm - 3.0))
     if budget <= 0:
         raise ValueError("timeout must be positive")
-    with socket.create_connection((host, port), timeout=timeout) as conn:
+    with connect_authorized(host, port, timeout) as conn:
         conn.settimeout(min(timeout, 2.0))
         secret, certificate = recover_secret_from_oracle(
             conn, profile, budget_seconds=budget, max_queries=max_queries,

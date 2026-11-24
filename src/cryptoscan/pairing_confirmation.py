@@ -5,15 +5,15 @@ data; no challenge parameters are bundled.
 """
 from __future__ import annotations
 
-from .source_units import MAX_SOURCE_LENGTH
-
 import json
 import re
 import socket
 from dataclasses import dataclass
 from typing import Sequence
 
+from .network_policy import connect_authorized
 from .parser import Document
+from .source_units import MAX_SOURCE_LENGTH
 from .unramified_ring_oracle import _SageWorker
 
 
@@ -172,7 +172,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
     )
     worker = _SageWorker("sage_pairing_confirmation_worker.py")
     try:
-        with socket.create_connection((host, port), timeout=timeout) as sock:
+        with connect_authorized(host, port, timeout) as sock:
             sock.settimeout(timeout)
             wire = _Dialogue(sock)
             parameters = _public_parameters(wire, instance.user_prompt)

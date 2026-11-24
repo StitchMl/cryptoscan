@@ -24,10 +24,10 @@ import ast
 import json
 import math
 import re
-import socket
 from dataclasses import dataclass
 from typing import Sequence
 
+from .network_policy import connect_authorized
 from .parser import Document
 from .source_units import parse_python
 
@@ -1034,7 +1034,7 @@ def recover_details(documents, host, port, *, timeout=30.0, max_queries=320):
     if not 8 <= max_queries <= 2048:
         raise ValueError("unsupported chosen-ciphertext query budget")
     records = []
-    with socket.create_connection((host,port), timeout=timeout) as conn:
+    with connect_authorized(host, port, timeout) as conn:
         conn.settimeout(timeout)
         oracle = TextOracle(conn, profile)
         encrypted_flag = oracle.initial()

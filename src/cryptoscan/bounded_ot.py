@@ -6,8 +6,6 @@ source. No challenge fixture, known secret, flag or public point is embedded.
 """
 from __future__ import annotations
 
-from .source_units import parse_python
-
 import ast
 import json
 import re
@@ -15,7 +13,9 @@ import socket
 from dataclasses import dataclass
 from typing import Sequence
 
+from .network_policy import connect_authorized
 from .parser import Document
+from .source_units import parse_python
 
 
 @dataclass(frozen=True)
@@ -354,7 +354,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
         raise RuntimeError("requires pycryptodome: py -m pip install --user pycryptodome") from exc
     generator = EccPoint(instance.gx, instance.gy)
     secret, table, key, chosen = _parameters(instance, generator)
-    with socket.create_connection((host, port), timeout=timeout) as sock:
+    with connect_authorized(host, port, timeout) as sock:
         sock.settimeout(timeout)
         wire = _Socket(sock)
         wire.until(instance.prompts[0])

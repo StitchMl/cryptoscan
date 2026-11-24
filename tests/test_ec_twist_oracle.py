@@ -267,7 +267,7 @@ def test_remote_solver_with_fresh_long_secret_and_mocked_x_oracle(monkeypatch):
 
     fake = Oracle()
     monkeypatch.setattr(
-        oracle.socket, "create_connection",
+        oracle, "connect_authorized",
         lambda *args, **kwargs: fake,
     )
     assert oracle.recover_flag(

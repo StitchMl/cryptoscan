@@ -194,7 +194,7 @@ def test_synthetic_pairing_dialogue_without_sage(monkeypatch):
             failure.append(exc)
 
     monkeypatch.setattr(module, "_SageWorker", FakeWorker)
-    monkeypatch.setattr(module.socket, "create_connection", lambda *a, **kw: left)
+    monkeypatch.setattr(module, "connect_authorized", lambda *a, **kw: left)
     thread = threading.Thread(target=service, daemon=True)
     thread.start()
     result = module.recover_flag(

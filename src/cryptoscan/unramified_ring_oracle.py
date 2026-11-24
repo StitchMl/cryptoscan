@@ -5,8 +5,6 @@ remote service. Requires an independently installed SageMath runtime.
 """
 from __future__ import annotations
 
-from .source_units import parse_python
-
 import ast
 import hashlib
 import json
@@ -21,7 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+from .network_policy import connect_authorized
 from .parser import Document
+from .source_units import parse_python
 
 DEFAULT_SAGE_WORKER = "sage_ring_iso_worker.py"
 
@@ -347,8 +347,7 @@ def recover_flag(documents: Sequence[Document], host: str, port: int, *,
     worker = _stage("starting Sage worker", _SageWorker)
     collected = []
     try:
-        with _stage("opening TCP connection", lambda: socket.create_connection(
-                (host, port), timeout=timeout)) as connection:
+        with _stage("opening TCP connection", lambda: connect_authorized(host, port, timeout)) as connection:
             connection.settimeout(timeout)
             wire = _Socket(connection)
             for k, degrees in model.rounds:

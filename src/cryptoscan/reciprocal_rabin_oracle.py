@@ -673,9 +673,13 @@ def extract_instance(documents: Sequence[Document]):
 
 def _records_to_factors(records, minimum_factor_bits):
     from sympy import isprime
+    # Any two distinct successful selector responses give a candidate
+    # difference. Do not require precisely two distinct outputs or
+    # demand success from every selector combination.
     deltas = [
-        abs(a-b) for _, outputs in records if len(outputs) == 2
-        for a,b in (tuple(sorted(outputs)),) if a != b
+        abs(a-b) for _, outputs in records if len(outputs) >= 2
+        for i, a in enumerate(sorted(outputs))
+        for b in sorted(outputs)[i+1:] if a != b
     ]
     factors = set()
     # Repeated independent deltas share the hidden prime, with
@@ -699,19 +703,19 @@ def _recover_constant(records, factors):
     n = p*q
     residues = {}
     for r, values in records:
-        if len(values) != 2:
-            continue
-        A, B = sorted(values)
-        shared = math.gcd(abs(A-B), n)
-        if shared not in (p,q):
-            continue
-        target = n//shared
-        denominator = (2*r-A-B) % target
-        if math.gcd(denominator, target) != 1:
-            continue
-        x = (r*(r-B)*pow(denominator, -1, target)) % target
-        c = (A*x-x*x) % target
-        residues.setdefault(target, []).append(c)
+        values = sorted(values)
+        for index, A in enumerate(values):
+            for B in values[index+1:]:
+                shared = math.gcd(abs(A-B), n)
+                if shared not in (p,q):
+                    continue
+                target = n//shared
+                denominator = (2*r-A-B) % target
+                if math.gcd(denominator, target) != 1:
+                    continue
+                x = (r*(r-B)*pow(denominator, -1, target)) % target
+                c = (A*x-x*x) % target
+                residues.setdefault(target, []).append(c)
     if not all(prime in residues for prime in factors):
         return None
     chosen = {}
@@ -867,10 +871,12 @@ def recover_details(documents, host, port, *, timeout=30.0, max_queries=320):
             observations = [
                 oracle.query(r,s,t) for s in (-1,1) for t in (0,1)
             ]
-            if any(value is None for value in observations):
-                continue
-            values = frozenset(value[0] for value in observations)
-            if len(values) != 2:
+            # An exception from one selector need not discard useful
+            # re-encryption differences from the remaining responses.
+            values = frozenset(
+                value[0] for value in observations if value is not None
+            )
+            if len(values) < 2:
                 continue
             records.append((r, values))
             if factors is None:

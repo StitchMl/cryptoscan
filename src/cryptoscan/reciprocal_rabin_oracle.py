@@ -815,16 +815,28 @@ class TextOracle:
         return self._triple(banner)
 
     def _triple(self, data):
+        """Decode named integer records without evaluating remote strings.
+
+        Supports one-field-per-line output, Python dataclass repr, and
+        JSON / Python mapping style records. Ambiguous values are rejected.
+        """
+        if len(data) > 65536:
+            raise ValueError("oversized ciphertext record")
         labels = self.profile.ciphertext_labels
         observed = {}
-        for label, value in _TRIPLE.findall(data):
-            name = label.decode("ascii")
-            if name in labels:
-                if name in observed:
-                    raise ValueError("ambiguous duplicated ciphertext attribute")
-                observed[name] = int(value)
-        if set(observed) != set(labels):
-            raise ValueError("incomplete ciphertext triple")
+        for name in labels:
+            token = re.escape(name.encode("ascii"))
+            pattern = (
+                rb"(?<![A-Za-z0-9_])(?:[\"']" + token
+                + rb"[\"']|" + token
+                + rb")\s*[:=]\s*([+-]?[0-9]+)(?![0-9])"
+            )
+            matches = re.findall(pattern, data)
+            if len(matches) != 1:
+                raise ValueError(
+                    f"missing or ambiguous ciphertext attribute {name}"
+                )
+            observed[name] = int(matches[0])
         return tuple(observed[label] for label in labels)
 
     def query(self, r,s,t):

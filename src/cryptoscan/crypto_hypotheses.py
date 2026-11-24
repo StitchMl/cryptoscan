@@ -11,10 +11,10 @@ import re
 from dataclasses import dataclass
 from typing import Sequence
 
-from .parser import Document
-from .source_units import MAX_SOURCE_LENGTH, parse_python
 from .hyperelliptic_state_leak import _sage_tree
+from .parser import Document
 from .reciprocal_rabin_oracle import _crt_functions
+from .source_units import MAX_SOURCE_LENGTH, parse_python
 
 
 @dataclass(frozen=True)
@@ -137,8 +137,8 @@ def _is_random_scalar_call(node, random_names, random_modules):
     return (
         isinstance(node.func, ast.Attribute)
         and node.func.attr in _RANDOM_SCALAR_NAMES
-        and (isinstance(node.func.value, ast.Name)
-             and node.func.value.id in random_modules
+        and ((isinstance(node.func.value, ast.Name)
+             and node.func.value.id in random_modules)
              or isinstance(node.func.value, ast.Call))
     )
 
@@ -226,6 +226,97 @@ def _has_polynomially_related_primes(nodes):
         and isinstance(node.args[0], ast.Name)
         and node.args[0].id in prime_related
         for node in nodes
+    )
+
+
+def _imported_names(tree, module):
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == module
+    }
+
+
+def _imported_symbols(tree, module, symbol):
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == module
+        for alias in node.names
+        if alias.name == symbol
+    }
+
+
+def _module_attribute(node, modules, attribute):
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == attribute
+        and isinstance(node.value, ast.Name)
+        and node.value.id in modules
+    )
+
+
+def _contains_input(node):
+    return any(
+        isinstance(part, ast.Call)
+        and isinstance(part.func, ast.Name)
+        and part.func.id == "input"
+        for part in ast.walk(node)
+    )
+
+
+def _input_assigned_names(nodes):
+    names = set()
+    for node in nodes:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        if node.value is None or not _contains_input(node.value):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        names.update(target.id for target in targets if isinstance(target, ast.Name))
+    return names
+
+
+def _replaces_urandom(nodes, os_names, random_names):
+    return any(
+        isinstance(node, ast.Assign)
+        and any(_module_attribute(target, os_names, "urandom") for target in node.targets)
+        and _module_attribute(node.value, random_names, "randbytes")
+        for node in nodes
+    )
+
+
+def _seeds_from_input(nodes, random_names, input_names):
+    return any(
+        isinstance(node, ast.Call)
+        and _module_attribute(node.func, random_names, "seed")
+        and node.args
+        and ((isinstance(node.args[0], ast.Name) and node.args[0].id in input_names)
+             or _contains_input(node.args[0]))
+        for node in nodes
+    )
+
+
+def _has_seeded_urandom_replacement(tree, nodes):
+    os_names = _imported_names(tree, "os")
+    random_names = _imported_names(tree, "random")
+    return (
+        _replaces_urandom(nodes, os_names, random_names)
+        and _seeds_from_input(nodes, random_names, _input_assigned_names(nodes))
+    )
+
+
+def _has_dsa_verification(tree, nodes):
+    keys = _imported_symbols(tree, "Crypto.PublicKey", "DSA")
+    signatures = _imported_symbols(tree, "Crypto.Signature", "DSS")
+    return (
+        any(isinstance(node, ast.Call)
+            and _module_attribute(node.func, keys, "construct") for node in nodes)
+        and any(isinstance(node, ast.Call)
+                and _module_attribute(node.func, signatures, "new") for node in nodes)
+        and any(_calls_named(node, {"verify"}) for node in nodes)
     )
 
 
@@ -354,6 +445,10 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
     result = {name for name, predicate in _NODE_SIGNALS if predicate(nodes)}
     if _has_sampled_random_scalars(tree, nodes):
         result.add("sampled_random_scalars")
+    if _has_seeded_urandom_replacement(tree, nodes):
+        result.add("seeded_urandom_replacement")
+    if _has_dsa_verification(tree, nodes):
+        result.add("dsa_verification")
     crt_combiners = _crt_functions(tree)
     if crt_combiners:
         result.add("crt_residue_recombination")
@@ -364,6 +459,13 @@ def _syntactic_signals(tree: ast.Module | None) -> set[str]:
 
 # Requirements describe mechanisms rather than target service names.
 HYPOTHESIS_RULES = (
+    ({"seeded_urandom_replacement", "dsa_verification"},
+     "Predictable entropy in DSA verification",
+     "The program replaces os.urandom with seeded random.randbytes while "
+     "constructing and using a DSA verifier.",
+     ("Trace the seeded byte stream into key or nonce generation",
+      "Check the DSA parameter and public key validation assumptions",
+      "Keep system entropy independent of user-controlled state")),
     ({"factorwise_crt_computation", "crt_residue_recombination",
       "interaction"},
      "CRT component-consistency and chosen-ciphertext oracle",

@@ -256,8 +256,20 @@ plaintext fail their mathematical certificates.
 The AST recognizer traces the reciprocal encryptor, independent
 private-factor root inversions, CRT recombination, the visible
 decrypt/re-encrypt dataflow and the exception response. It derives
-the source's key-size, ciphertext field labels and wire prompts
-rather than requiring one challenge's identifiers.
+the source's key-size, ciphertext field labels, source input separator
+and wire prompts rather than requiring one challenge's identifiers.
+Bounded symbolic propagation recognizes temporary assignments and
+commuted reciprocal terms, and resolves trusted modular inversion
+libraries (Python's pow, gmpy2, SymPy and Crypto.Util.number, including
+import aliases) while rejecting shadowed functions.
+
+The response decoder accepts named integer fields printed on separate
+lines, dataclass-style repr records, or JSON/dictionary records.
+Missing or repeated fields are rejected. The probe collector uses any
+two distinct successful selector responses, even if another selector
+returns an error. Input delimiters parsed from source include commas,
+semicolons, colons, pipes and whitespace. JSON *requests* and generic
+binary protocols remain out of scope for this particular adapter.
 
 ```powershell
 cryptoscan server.py

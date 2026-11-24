@@ -23,6 +23,7 @@ from .mathutil import (
     wiener_private_exponent,
 )
 from .model import Finding
+from .rsa_related_key import extract_instance as extract_related_key, source_profiles as related_key_profiles
 from .eclcg_detector import detect_ec_lcg
 from .fischlin_workflow import supported_source as supported_fischlin_source
 from .dghv_workflow import supported_source as supported_dghv_source
@@ -1487,6 +1488,7 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
     _scan_phase_15(records, ntru_contexts, findings)
     _scan_phase_16(documents, findings)
     _scan_phase_17(documents, findings)
+    findings.extend(_related_key_findings(documents))
     unique = {finding.id: finding for finding in findings}
     return sorted(unique.values(), key=lambda finding: (finding.location.casefold(), finding.rule, finding.id))
 
@@ -2176,3 +2178,18 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
             ],
         ))
     return findings
+
+def _related_key_findings(documents):
+    for document in documents:
+        for profile in related_key_profiles(document):
+            matched = extract_related_key(documents) is not None
+            yield Finding(
+                "RSA-RELATED-KEY-MATERIAL",
+                "RSA encrypts algebraically related inverse key material",
+                "high", "high", document.path,
+                {"public_exponent": profile.exponent, "public_corpus_available": matched},
+                ["Raw RSA encrypts a modular inverse and its inverse modulus under the same key."],
+                "Use modular polynomial GCD with bounded inverse multipliers and verify the totient.",
+                {"kind": "rsa_related_key_material", "offline": True},
+                "Never publish raw RSA encryptions of private key components; use standard key wrapping.",
+            )

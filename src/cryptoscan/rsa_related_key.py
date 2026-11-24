@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from .parser import Document, assignments
 from .source_units import parse_python
 
-MAX_EXPONENT = 17
+MAX_RECOVERY_EXPONENT = 17
 
 
 @dataclass(frozen=True)
@@ -18,7 +18,7 @@ class Profile:
     modulus: str
     inverse_cipher: str
     order_cipher: str
-    message_cipher: str
+    message_cipher: str | None
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,10 @@ def _profile_inverse(inverse_name, inverse, bindings):
     if not _same(negative_one, ast.UnaryOp(op=ast.USub(), operand=ast.Constant(value=1))):
         return
     exponent = _exponent(public, bindings)
-    if exponent is None or not 3 <= exponent <= MAX_EXPONENT or exponent % 2 == 0:
+    # Detection is mathematical, not solver-specific.  Very large public
+    # exponents are still a related-key leak even when this polynomial
+    # recovery implementation deliberately declines to solve them.
+    if exponent is None or exponent < 3 or exponent % 2 == 0:
         return
     groups = {}
     for name, (base, power, modulus) in _cipher_groups(bindings):
@@ -87,8 +90,13 @@ def _profile_inverse(inverse_name, inverse, bindings):
         inverse_ciphers = [name for name, base in entries if isinstance(base, ast.Name) and base.id == inverse_name]
         order_ciphers = [name for name, base in entries if isinstance(base, ast.Name) and base.id == order.id]
         other = [name for name, _ in entries if name not in inverse_ciphers + order_ciphers]
-        if len(inverse_ciphers) == len(order_ciphers) == len(other) == 1:
-            yield Profile(exponent, modulus, inverse_ciphers[0], order_ciphers[0], other[0])
+        if len(inverse_ciphers) == len(order_ciphers) == 1:
+            # Payload recovery is intentionally optional.  The vulnerability
+            # exists as soon as encryptions of d and phi(n) are published.
+            # A solver target is attached only when exactly one additional
+            # ciphertext is present, avoiding challenge-specific guessing.
+            message_cipher = other[0] if len(other) == 1 else None
+            yield Profile(exponent, modulus, inverse_ciphers[0], order_ciphers[0], message_cipher)
 
 
 def source_profiles(document: Document) -> list[Profile]:
@@ -103,6 +111,8 @@ def source_profiles(document: Document) -> list[Profile]:
 
 
 def _public_instance(profile, output):
+    if profile.message_cipher is None or profile.exponent > MAX_RECOVERY_EXPONENT:
+        return None
     values = assignments(output.text)
     labels = (profile.modulus, profile.inverse_cipher, profile.order_cipher, profile.message_cipher)
     numbers = [values.get(label.casefold()) for label in labels]

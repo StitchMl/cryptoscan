@@ -31,13 +31,18 @@ class Instance:
 
 
 def _bindings(tree):
-    """Only analyze unambiguous straight-line assignments."""
+    """Keep unique straight-line bindings while isolating ambiguous names."""
     result = {}
+    ambiguous = set()
     for stmt in tree.body:
         match stmt:
             case ast.Assign(targets=[ast.Name(id=name)], value=value):
+                if name in ambiguous:
+                    continue
                 if name in result:
-                    return {}
+                    result.pop(name)
+                    ambiguous.add(name)
+                    continue
                 result[name] = value
             case _:
                 continue

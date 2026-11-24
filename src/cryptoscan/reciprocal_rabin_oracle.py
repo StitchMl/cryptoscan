@@ -1012,17 +1012,17 @@ def _records_to_factors(records, minimum_factor_bits):
     return None
 
 
-def _pair_residue(r, A, B, p, q):
+def _pair_residue(r, a_value, b_value, p, q):
     n = p*q
-    shared = math.gcd(abs(A-B), n)
+    shared = math.gcd(abs(a_value-b_value), n)
     if shared not in (p,q):
         return None
     target = n//shared
-    denominator = (2*r-A-B) % target
+    denominator = (2*r-a_value-b_value) % target
     if math.gcd(denominator, target) != 1:
         return None
-    x = (r*(r-B)*pow(denominator, -1, target)) % target
-    return target, (A*x-x*x) % target
+    x = (r*(r-b_value)*pow(denominator, -1, target)) % target
+    return target, (a_value*x-x*x) % target
 
 
 def _constant_residues(records, p, q):
@@ -1105,8 +1105,8 @@ def _decrypt_candidates(ciphertext, p, q, c):
         if value is None:
             return []
         inv2 = pow(2,-1,prime)
-        roots.append(tuple({(r+int(value))*inv2 % prime,
-                            (r-int(value))*inv2 % prime}))
+        distinct = {(r+int(value))*inv2 % prime, (r-int(value))*inv2 % prime}
+        roots.append((*distinct,))
     candidates = []
     for a in roots[0]:
         for b in roots[1]:

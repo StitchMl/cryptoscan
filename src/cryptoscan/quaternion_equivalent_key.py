@@ -18,7 +18,6 @@ from .parser import Document
 
 _NAME = r"([^\W\d]\w*)"
 _QUAT = re.compile(r"\((?:\s*\d+\s*\(mod\s+\d+\)\s*,?){4}\)")
-_COMPONENT = re.compile(r"(?<!\d)(\d+)\s*\(mod\s+(\d+)\)")
 _BYTES = re.compile(r"""b(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")""")
 
 
@@ -30,6 +29,39 @@ class QuaternionConjugationLeak:
     masked: tuple[int, ...]
     observed: tuple[int, ...]
     iv: bytes
+
+
+_DIGITS = re.compile(r"\d+")
+_MOD_SUFFIX = re.compile(r"\s*\(mod\s+(\d+)\)")
+
+
+def _component_fields(text):
+    """Return (value, modulus) pairs for `value (mod modulus)` in one linear pass."""
+    fields = []
+    position = 0
+    while True:
+        digits = _DIGITS.search(text, position)
+        if digits is None:
+            return fields
+        suffix = _MOD_SUFFIX.match(text, digits.end())
+        if suffix is None:
+            position = digits.end()
+            continue
+        fields.append((digits.group(), suffix.group(1)))
+        position = suffix.end()
+
+
+def _trailing_modulus(prefix):
+    """Return the integer before a trailing comma, matching `(\d+)\s*,\s*$`."""
+    head = prefix.rstrip()
+    if not head.endswith(","):
+        return None
+    head = head[:-1].rstrip()
+    start = len(head)
+    while start > 0 and head[start - 1].isdecimal():
+        start -= 1
+    digits = head[start:]
+    return int(digits) if digits else None
 
 
 def _symbol_name(node):
@@ -281,7 +313,7 @@ def _source_shape(source: str) -> bytes | None:
 
 
 def _parse_quaternion(text: str, modulus: int) -> tuple[int, ...] | None:
-    fields = _COMPONENT.findall(text)
+    fields = _component_fields(text)
     if len(fields) != 4 or any(int(mod) != modulus for _, mod in fields):
         return None
     coords = tuple(int(value) for value, _ in fields)
@@ -290,10 +322,9 @@ def _parse_quaternion(text: str, modulus: int) -> tuple[int, ...] | None:
 
 def _public_candidate(line, position, quaternions):
     prefix = line.split(quaternions[0], 1)[0]
-    modulus_match = re.search(r"(?<!\d)(\d+)\s*,\s*$", prefix)
-    if modulus_match is None:
+    modulus = _trailing_modulus(prefix)
+    if modulus is None:
         return None
-    modulus = int(modulus_match.group(1))
     if not 16 <= modulus.bit_length() <= 8192 or modulus % 2 == 0:
         return None
     parsed = [_parse_quaternion(q, modulus) for q in quaternions]

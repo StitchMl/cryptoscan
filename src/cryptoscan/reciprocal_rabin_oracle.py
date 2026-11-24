@@ -98,6 +98,21 @@ def _jacobi_call_sites(tree):
                 if alias.name in ("gmpy2", "sympy"):
                     modules[alias.asname or alias.name] = alias.name
 
+    rebound = set()
+    for stmt in ast.walk(tree):
+        if isinstance(stmt, (ast.FunctionDef, ast.ClassDef)):
+            rebound.add(stmt.name)
+        elif isinstance(stmt, ast.Assign):
+            rebound.update(
+                node.id for target in stmt.targets
+                for node in ast.walk(target) if isinstance(node, ast.Name)
+            )
+    functions -= rebound
+    modules = {
+        alias: library for alias, library in modules.items()
+        if alias not in rebound
+    }
+
     def jacobi_calls(section):
         for call in ast.walk(section):
             if not isinstance(call, ast.Call) or len(call.args) != 2:
@@ -189,6 +204,25 @@ def _inverse_calls(tree):
             for alias in statement.names:
                 if alias.name in ("gmpy2", "sympy", "Crypto.Util.number"):
                     modules[alias.asname or alias.name] = alias.name
+    # Imported helpers can be rebound later in the source. A name that
+    # is overwritten is not a proof of a mathematical library operation.
+    rebound = set()
+    for statement in ast.walk(tree):
+        if isinstance(statement, (ast.FunctionDef, ast.ClassDef)):
+            rebound.add(statement.name)
+        elif isinstance(statement, ast.Assign):
+            rebound.update(
+                node.id for target in statement.targets
+                for node in ast.walk(target) if isinstance(node, ast.Name)
+            )
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+                statement.target, ast.Name):
+            rebound.add(statement.target.id)
+    direct -= rebound
+    modules = {
+        alias: actual for alias, actual in modules.items()
+        if alias not in rebound
+    }
     return direct, modules, recognized
 
 

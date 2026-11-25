@@ -232,7 +232,7 @@ def recover_flag(documents: Sequence[object], host: str, port: int,
         payload = password + salt
         digest = hashlib.sha256(bytes(payload[index] for index in pbox)).hexdigest()
         stream.write(digest.encode("ascii") + b"\n")
-        final = _read_until(stream, model.prompt)
+        final = _read_until(stream, b"}")
     flag = re.search(
         rb"[a-z][a-z0-9_]{0,31}\{[^\r\n}]{1,200}\}",
         final,

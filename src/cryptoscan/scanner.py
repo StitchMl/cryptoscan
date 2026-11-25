@@ -49,6 +49,10 @@ from .weak_seeded_multiprime_rsa import (
     extract_instance as extract_weak_seeded_rsa,
     _source_profile as weak_seeded_rsa_profile,
 )
+from .gaussian_rsa import (
+    extract_instance as extract_gaussian_rsa,
+    source_profile as gaussian_rsa_profile,
+)
 from .rsa_reused_digits import (
     extract_instance as extract_reused_digits,
     source_profile as reused_digits_profile,
@@ -1903,6 +1907,49 @@ def _reused_digit_rsa_findings(documents: list[Document], findings: list[Finding
         ))
 
 
+def _gaussian_rsa_findings(documents: list[Document], findings: list[Finding]) -> None:
+    matched = extract_gaussian_rsa(documents)
+    for document in documents:
+        profile = gaussian_rsa_profile(document)
+        if profile is None:
+            continue
+        has_public = matched is not None
+        findings.append(Finding(
+            "RSA-GAUSSIAN-INTEGER-DECRYPTION",
+            "RSA-like Gaussian-integer encryption has an incomplete decryption path",
+            "high", "high", document.path,
+            {
+                "source_verified": True,
+                "factor_powers": [power for _, power in profile.factors],
+                "public_exponent": profile.exponent,
+                "public_modulus_matched": has_public,
+                "modulus_bits": matched.modulus.bit_length() if has_public else None,
+            },
+            [
+                "The source performs RSA exponentiation in Z[i] with "
+                "component-wise complex multiplication.",
+                "The integer modulus is a repeated-prime product whose "
+                "Gaussian totient can be derived from the source factors.",
+            ],
+            "Compute the Gaussian-ring totient, invert the public exponent, "
+            "decrypt both components, and verify re-encryption before unpadding.",
+            {
+                "kind": "gaussian_integer_rsa",
+                "offline": True,
+                "source_verified": True,
+                "public_corpus_available": has_public,
+                "requires": ["source", "private factors", "ciphertext"],
+            },
+            "Use a reviewed Gaussian-integer cryptosystem with a complete "
+            "decryption specification and standard authenticated encryption.",
+            [
+                "Identify the repeated integer-prime factors and their powers.",
+                "Use the Gaussian-prime split determined by each factor modulo 4.",
+                "Verify component re-encryption and padding before accepting plaintext.",
+            ],
+        ))
+
+
 def _biased_shamir_findings(documents: list[Document], findings: list[Finding]) -> None:
     for document in documents:
         profile = biased_shamir_profile(document)
@@ -2271,6 +2318,7 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
     _per_document_source_findings(documents, rules, findings)
     _weak_seeded_rsa_findings(documents, findings)
     _reused_digit_rsa_findings(documents, findings)
+    _gaussian_rsa_findings(documents, findings)
     _biased_shamir_findings(documents, findings)
     _cyclotomic_rsa_findings(documents, findings)
     _modular_noise_findings(documents, findings)

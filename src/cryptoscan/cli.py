@@ -67,6 +67,7 @@ from .reducible_ring_signature import extract_instance as extract_reducible_glp,
 from .terminal_report import render_findings
 from .mt19937_sparse import extract_instance as extract_sparse_mt19937, recover_flag as recover_sparse_mt19937_flag
 from .rsa_suffix_oracle import extract_instance as extract_rsa_suffix_oracle, recover_flag as recover_rsa_suffix_oracle_flag
+from .sha256_permutation_extension import extract_instance as extract_sha256_permutation, recover_flag as recover_sha256_permutation_flag
 
 COLORS = {"critical": "\033[91m", "high": "\033[31m", "medium": "\033[33m", "low": "\033[36m"}
 RESET = "\033[0m"
@@ -202,6 +203,8 @@ def _attack_strategies(args):
             preflight=preflight,
         )
     interactive = (
+        remote("SHA-256 chosen-permutation length extension",
+               extract_sha256_permutation, recover_sha256_permutation_flag, 1),
         remote("RSA fixed-point suffix oracle",
                extract_rsa_suffix_oracle, recover_rsa_suffix_oracle_flag, 1),
         remote("Sparse MT19937 output prediction",

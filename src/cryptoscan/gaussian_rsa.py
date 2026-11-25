@@ -140,41 +140,48 @@ def _has_gaussian_arithmetic(tree: ast.AST) -> bool:
     return has_mult and has_pow
 
 
-def _source_profile(document: Document) -> _SourceProfile | None:
-    tree = parse_python(document)
-    if tree is None or len(document.text) > _OUTPUT_LIMIT:
-        return None
-    constants = _constants(tree)
-    if not _has_gaussian_arithmetic(tree):
-        return None
-    profiles = []
+def _factor_assignments(tree: ast.AST, constants: dict[str, int]):
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
             continue
         modulus_name = _name(node.targets[0])
-        if modulus_name is None:
-            continue
         terms = _factor_terms(node.value, constants)
         names = {prime for prime, _ in terms}
-        if len(terms) != 2 or len(names) != 2:
+        if modulus_name and len(terms) == 2 and len(names) == 2:
+            yield modulus_name, terms, names
+
+
+def _candidate_exponents(tree: ast.AST, modulus_name: str,
+                         constants: dict[str, int]) -> list[int]:
+    found = set()
+    for node in ast.walk(tree):
+        if (not isinstance(node, ast.Call)
+                or _call_name(node) != "complex_pow"
+                or len(node.args) != 3
+                or _name(node.args[2]) != modulus_name):
             continue
+        exponent = _integer(node.args[1], constants)
+        if exponent is not None and exponent > 1 and exponent % 2:
+            found.add(exponent)
+    return sorted(found)
+
+
+def _source_profile(document: Document) -> _SourceProfile | None:
+    tree = parse_python(document)
+    if tree is None or len(document.text) > _OUTPUT_LIMIT:
+        return None
+    if not _has_gaussian_arithmetic(tree):
+        return None
+    constants = _constants(tree)
+    profiles = []
+    for modulus_name, terms, names in _factor_assignments(tree, constants):
         if not _has_prime_source(tree, names):
             continue
-        for call in ast.walk(tree):
-            if not (isinstance(call, ast.Call)
-                    and _call_name(call) == "complex_pow"
-                    and len(call.args) == 3
-                    and _name(call.args[2]) == modulus_name):
-                continue
-            exponent = _integer(call.args[1], constants)
-            if exponent is not None and exponent > 1 and exponent % 2:
-                profiles.append(_SourceProfile(
-                    modulus_name, tuple(terms), exponent,
-                ))
+        for exponent in _candidate_exponents(tree, modulus_name, constants):
+            profiles.append(_SourceProfile(modulus_name, tuple(terms), exponent))
     if len(profiles) != 1:
         return None
     return profiles[0]
-
 
 def source_profile(document: Document) -> _SourceProfile | None:
     """Expose the source recognizer for scanner diagnostics and tests."""

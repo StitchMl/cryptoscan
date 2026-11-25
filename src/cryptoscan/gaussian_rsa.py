@@ -292,7 +292,7 @@ def recover_details(instance: GaussianRSA):
         message[0].to_bytes(width, "big")
         + message[1].to_bytes(width, "big")
     )
-    plaintext = raw.rsplit(b"\\x00", 1)[-1]
+    plaintext = raw.rsplit(b"\x00", 1)[-1]
     if not plaintext:
         raise RuntimeError("Gaussian RSA plaintext is empty")
     try:

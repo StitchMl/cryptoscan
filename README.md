@@ -47,6 +47,28 @@ applies only to a source-verified recursive Cantor encoder over bytes;
 an arbitrary large integer alone is insufficient evidence.
 
 
+## RSA factors from reused base digits
+
+CryptoScan recognizes RSA source that draws a candidate factor, renders its
+digits in a source base from 2 through 10, and interprets that string in
+decimal to form the other factor. It checks the prime tests, factor product,
+and encryption expression from the Python AST without running the generator.
+The draw may use `random.getrandbits`, `secrets.randbits`, or
+`Crypto.Util.number.getPrime`; import aliases and literal base variables
+are supported. The finding identifies the source base, decimal target base,
+prime width, and whether a matching same-scope modulus is present.
+
+This is an **analysis-only** finding in `--plan-attacks`. It does not
+recover factors or a plaintext through `--solve`. A source file by itself
+still gives a useful finding, while a modulus from another scope or
+ambiguous public transcripts are not attached to it. The appropriate
+remediation is to regenerate both RSA primes independently with fresh
+cryptographic randomness and rotate affected keys.
+
+```powershell
+cryptoscan generator.py output.txt --plan-attacks --format json
+```
+
 ## Weak-seeded RSA and partial CRT recovery
 
 CryptoScan recognizes RSA prime generation built from a deterministic
@@ -194,7 +216,7 @@ coefficients, optional published curve order, and input checks.
 The generic mathematical core selects a twist point of verified
 order, derives its associated x-coordinate, collects one
 authorized oracle response, and applies bounded subgroup discrete
-logarithms, Pohlig–Hellman and CRT. Every recovered scalar residue
+logarithms, Pohlig-Hellman and CRT. Every recovered scalar residue
 is validated against the oracle point, and both possible signs
 are retained because x-only responses identify P and -P.
 
@@ -953,7 +975,7 @@ under Linux/WSL or SageMath if they are not available on your Windows
 Python installation. A 1023-dimensional LLL and optional BKZ may require
 considerable memory/time and might still find no private key.
 The menu asks before starting and optionally accepts a BKZ block size
-(0 for LLL only, 2–60 for BKZ). It never invents a flag from the
+(0 for LLL only, 2-60 for BKZ). It never invents a flag from the
 Hamming-weight leak.
 
 This is a deterministic mathematical method derived from the analyzed
@@ -1003,7 +1025,7 @@ After the `0` (LLL only) answer, the assistant asks:
 Maximum worker duration in seconds [300]:
 ```
 
-Press Enter for 300 seconds, or choose 1–3600 seconds. A timeout stops the
+Press Enter for 300 seconds, or choose 1-3600 seconds. A timeout stops the
 child process without claiming a flag. If large-instance LLL is too expensive,
 choose `N` at the confirmation rather than repeatedly running it. Native
 Windows LLL at NTRU n=512 is still computationally demanding and is **not**

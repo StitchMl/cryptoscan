@@ -293,7 +293,7 @@ def _candidate_plan(args, documents):
         )
         plan.candidates.extend(scoped.candidates)
         plan.rejected.extend(scoped.rejected)
-        if args.plan_attacks:
+        if args.plan_attacks or args.solve:
             analysis = build_plan(
                 _analysis_strategies(), scoped_documents,
                 mode="analysis", scope=scope,
@@ -332,6 +332,13 @@ def _solve_documents(args, documents) -> int:
               else _solve_offline(args, documents))
     if result is not None:
         return result
+    investigations = _candidate_plan(args, documents).investigations
+    if investigations:
+        families = ", ".join(sorted({item.family for item in investigations}))
+        print(f"Recognized analysis-only family: {families}. "
+              "No verified plaintext-recovery solver is registered for it.",
+              file=sys.stderr)
+        return 2
     print("No supported source-verified solver for these files and endpoint.",
           file=sys.stderr)
     return 2

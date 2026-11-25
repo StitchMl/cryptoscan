@@ -25,6 +25,27 @@ The recognizer rejects ambiguous transcripts, unsupported formulas and
 modular ciphertext encryption. A transcript without source evidence is
 insufficient.
 
+## Sparse MT19937 output prediction
+
+Some CTF services reveal a sequence of Python `random.getrandbits(32)`
+outputs while allowing the client to choose two output indices. When the
+source establishes a consecutive stream and a target draw at least one
+MT19937 period beyond the seed state, the twist recurrence can recover that
+target from two strategically selected outputs. CryptoScan derives the
+indices from the source's output count, reverses output tempering, computes
+the recurrence, and submits the prediction through the explicitly supplied
+remote endpoint.
+
+The solver is source-gated on 32-bit outputs and a bounded generated
+sequence; it does not execute challenge code or store challenge-specific
+outputs. It currently supports services that prompt with `number!\n`,
+accept two indices on separate lines, return the generated sequence as
+one integer per line, then accept the predicted value.
+
+```powershell
+cryptoscan challenge.py --solve --host archive.cryptohack.org --port 63222
+```
+
 ## Recursive Cantor pairing of byte sequences
 
 CryptoScan recognizes Python source that recursively combines byte values

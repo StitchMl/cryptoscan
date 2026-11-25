@@ -66,6 +66,10 @@ from .pairing_confirmation import extract_instance as extract_pairing_confirmati
 from .reducible_ring_signature import extract_instance as extract_reducible_glp, recover_flag as recover_reducible_glp_flag
 from .terminal_report import render_findings
 from .mt19937_sparse import extract_instance as extract_sparse_mt19937, recover_flag as recover_sparse_mt19937_flag
+from .aes_mode_confusion import (
+    extract_instance as extract_aes_mode_confusion,
+    recover_flag as recover_aes_mode_confusion_flag,
+)
 from .rsa_suffix_oracle import extract_instance as extract_rsa_suffix_oracle, recover_flag as recover_rsa_suffix_oracle_flag
 from .sha256_permutation_extension import extract_instance as extract_sha256_permutation, recover_flag as recover_sha256_permutation_flag
 
@@ -257,6 +261,9 @@ def _attack_strategies(args):
                supported_fischlin_source, recover_fischlin_flag, 130),
         remote("DGHV",
                supported_dghv_source, recover_dghv_flag, 140),
+        remote("AES CBC/OFB cross-mode keystream recovery",
+               extract_aes_mode_confusion,
+               recover_aes_mode_confusion_flag, 150),
     )
     return offline + interactive
 

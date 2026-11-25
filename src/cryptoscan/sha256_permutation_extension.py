@@ -23,7 +23,7 @@ _K = (
     0x748F82EE, 0x78A5636F, 0x84C87814, 0x8CC70208, 0x90BEFFFA, 0xA4506CEB, 0xBEF9A3F7, 0xC67178F2,
 )
 _MASK = 0xFFFFFFFF
-_ALPHABET = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+_ALPHABET = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
 
 
 @dataclass(frozen=True)
@@ -175,8 +175,8 @@ def _spy(stream, model: SHA256PermutationOracle, pbox: list[int], salt: bytes) -
 
 def _recover_password(stream, model: SHA256PermutationOracle) -> bytes:
     message_length = model.password_length + model.salt_length
-    if message_length >= 56:
-        raise ValueError("source lengths exceed the supported one-block glue-padding profile")
+    if message_length >= 32 or model.salt_length < 2:
+        raise ValueError("source lengths exceed the supported one-byte glue-padding profile")
     padding = _glue_padding(message_length)
     if len(padding) < model.salt_length:
         raise ValueError("salt is too short to encode the chosen SHA-256 glue padding")
@@ -190,24 +190,23 @@ def _recover_password(stream, model: SHA256PermutationOracle) -> bytes:
         raise ValueError("computed SHA-256 glue padding is not block aligned")
     password = bytearray()
     for position in range(0, model.password_length, 2):
-        if position + 1 >= model.password_length:
-            raise ValueError("password length must be even for two-byte recovery")
+        positions = list(range(position, min(position + 2, model.password_length)))
         padding_box = (
             list(range(message_length))
             + [message_length - 1]
             + [message_length - model.salt_length] * (len(padding) - 2)
             + [message_length - model.salt_length + 1]
         )
-        target = _spy(
-            stream, model, padding_box + [position, position + 1], bytes(salt),
-        )
+        target = _spy(stream, model, padding_box + positions, bytes(salt))
         matches = [
-            bytes((first, second))
-            for first, second in itertools.product(model.alphabet, repeat=2)
-            if _sha256_continue(base_hash, processed_length, bytes((first, second))).hex() == target
+            bytes(candidate)
+            for candidate in itertools.product(model.alphabet, repeat=len(positions))
+            if _sha256_continue(
+                base_hash, processed_length, bytes(candidate),
+            ).hex() == target
         ]
         if len(matches) != 1:
-            raise ValueError(f"expected one two-byte password match at offset {position}")
+            raise ValueError(f"expected one password match at offset {position}")
         password.extend(matches[0])
     return bytes(password)
 

@@ -77,8 +77,10 @@ def extract_instance(documents: Sequence[object]) -> AESModePickerModel | None:
     data_selector = next(item for item in selector_list if item.lower() == "data")
     secret_selector = next(item for item in selector_list if item.lower() == "flag")
 
-    if not re.search(r"\boptions\s*\.\s*remove\s*\(\s*option\s*\)", source):
-        return None
+    for mode in (cbc_mode, ofb_mode):
+        branch = rf"\b(?:if|elif)\s+[A-Za-z_]\w*\s*==\s*['\"]{re.escape(mode)}['\"]"
+        if not re.search(branch, source, re.IGNORECASE):
+            return None
     if not re.search(r"\bmessage\s*=\s*flag\b", source):
         return None
     if not re.search(r"\bbytes\s*\.\s*fromhex\s*\(", source):

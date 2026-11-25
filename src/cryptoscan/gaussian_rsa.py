@@ -20,12 +20,6 @@ from .source_units import parse_python
 
 _MAX_BITS = 16384
 _OUTPUT_LIMIT = 4_000_000
-_ASSIGNMENT = re.compile(
-    r"(?m)^\s*(private_key|public_key|ciphertext)\s*=\s*(.*)$",
-    re.ASCII,
-)
-
-
 @dataclass(frozen=True)
 class GaussianRSA:
     factors: tuple[tuple[int, int], ...]

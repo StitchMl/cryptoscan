@@ -22,6 +22,7 @@ from .ring_scalar_anonymity import signer_candidates as ring_signer_candidates
 from .polynomial_gcd_prefix import extract_instance as extract_polynomial_gcd_prefix, recover_flag as recover_polynomial_gcd_prefix_flag
 from .polynomial_gcd_prefix import construct_input as construct_polynomial_gcd_input
 from .weak_seeded_multiprime_rsa import extract_instance as extract_weak_seeded_rsa, recover_flag as recover_weak_seeded_rsa_flag
+from .gaussian_rsa import extract_instance as extract_gaussian_rsa, recover_flag as recover_gaussian_rsa_flag
 from .rsa_reused_digits import (
     extract_instance as extract_reused_digits,
     recover_flag as recover_reused_digits_flag,
@@ -160,6 +161,8 @@ def _attack_strategies(args):
                  ), 5),
         strategy("RSA reused base digits", "offline",
                  extract_reused_digits, recover_reused_digits_flag, 6),
+        strategy("Gaussian-integer RSA decryption", "offline",
+                 extract_gaussian_rsa, recover_gaussian_rsa_flag, 7),
         strategy("Ring signature scalar distribution", "offline",
                  extract_ring_scalar_leak, recover_ring_scalar_leak_flag, 10,
                  preflight=_ring_range_preflight),

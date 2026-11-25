@@ -60,6 +60,8 @@ def _integer(node: ast.AST, constants: dict[str, int]) -> int | None:
         return left - right
     if isinstance(node.op, ast.Mult):
         return left * right
+    if isinstance(node.op, ast.BitXor):
+        return left**right
     if isinstance(node.op, ast.Pow) and 0 <= right <= 16:
         return left**right
     return None
@@ -81,10 +83,13 @@ def _prime_names(tree: ast.AST) -> set[str]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
-        if isinstance(node.value, ast.Call) and _call_name(node.value) in {"getPrime", "getStrongPrime"}:
-            target = _name(node.targets[0])
-            if target is not None:
-                names.add(target)
+        target_nodes = node.targets[0].elts if isinstance(node.targets[0], (ast.Tuple, ast.List)) else [node.targets[0]]
+        value_nodes = node.value.elts if isinstance(node.value, (ast.Tuple, ast.List)) else [node.value]
+        for target, value in zip(target_nodes, value_nodes):
+            if isinstance(value, ast.Call) and _call_name(value) in {"getPrime", "getStrongPrime"}:
+                name = _name(target)
+                if name is not None:
+                    names.add(name)
     return names
 
 
@@ -271,11 +276,8 @@ def _integer_roots(rows, bound: int, offset: int, modulus: int):
 
 def _recover_factor(instance: HintFactorRSA) -> int:
     offset = _approximate_factor(instance)
-    bound = 1 << max(16, instance.modulus.bit_length() // 2 - 590)
-    # The challenge family publishes a ~590-bit absolute error for 1337-bit
-    # factors.  Derive a conservative bound from the modulus, then enlarge it
-    # slightly for smaller educational instances.
-    bound = max(bound, 1 << (instance.modulus.bit_length() // 4 + 8))
+    quarter_root = math.isqrt(math.isqrt(instance.modulus))
+    bound = max(1 << 16, 16 * quarter_root // instance.scale + 2)
     for m, t in ((1, 1), (2, 2), (3, 3), (4, 5), (6, 9)):
         matrix = Matrix(_lattice_rows(instance.modulus, offset, bound, m, t))
         basis = hermite_normal_form(matrix.T).T.lll().tolist()

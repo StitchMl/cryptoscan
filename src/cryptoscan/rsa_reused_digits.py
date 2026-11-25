@@ -37,21 +37,31 @@ def _call(node, names):
     return None
 
 
+def _module_aliases(stmt, names):
+    for alias in stmt.names:
+        if alias.name not in ("gmpy2", "random", "secrets"):
+            continue
+        local = alias.asname or alias.name
+        for attr in ("digits", "is_prime", "getrandbits", "randbits"):
+            names[local + "." + attr] = alias.name + "." + attr
+
+
+def _function_aliases(stmt, names):
+    if stmt.module not in ("gmpy2", "random", "secrets", "Crypto.Util.number"):
+        return
+    for alias in stmt.names:
+        if alias.name in ("digits", "is_prime", "getrandbits",
+                          "randbits", "getPrime"):
+            names[alias.asname or alias.name] = stmt.module + "." + alias.name
+
+
 def _aliases(tree):
     names = {"int": "int", "pow": "pow"}
     for stmt in tree.body:
         if isinstance(stmt, ast.Import):
-            for alias in stmt.names:
-                if alias.name in ("gmpy2", "random", "secrets"):
-                    local = alias.asname or alias.name
-                    for attr in ("digits", "is_prime", "getrandbits", "randbits"):
-                        names[local + "." + attr] = alias.name + "." + attr
-        if isinstance(stmt, ast.ImportFrom) and stmt.module in (
-                "gmpy2", "random", "secrets", "Crypto.Util.number"):
-            for alias in stmt.names:
-                if alias.name in ("digits", "is_prime", "getrandbits",
-                                  "randbits", "getPrime"):
-                    names[alias.asname or alias.name] = stmt.module + "." + alias.name
+            _module_aliases(stmt, names)
+        if isinstance(stmt, ast.ImportFrom):
+            _function_aliases(stmt, names)
     return names
 
 

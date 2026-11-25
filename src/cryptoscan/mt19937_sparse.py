@@ -100,7 +100,7 @@ def predict_from_sparse_outputs(target_index: int, first_output: int,
 def _read_line(stream, limit: int = 4096) -> bytes:
     data = bytearray()
     while len(data) < limit:
-        char = stream.recv(1)
+        char = stream.read(1)
         if not char:
             break
         data.extend(char)

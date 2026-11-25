@@ -22,6 +22,7 @@ from .ring_scalar_anonymity import signer_candidates as ring_signer_candidates
 from .polynomial_gcd_prefix import extract_instance as extract_polynomial_gcd_prefix, recover_flag as recover_polynomial_gcd_prefix_flag
 from .polynomial_gcd_prefix import construct_input as construct_polynomial_gcd_input
 from .weak_seeded_multiprime_rsa import extract_instance as extract_weak_seeded_rsa, recover_flag as recover_weak_seeded_rsa_flag
+from .rsa_reused_digits import extract_instance as extract_reused_digits
 from .cyclotomic_rsa import extract_instance as extract_cyclotomic_rsa, recover_flag as recover_cyclotomic_rsa_flag
 from .modular_noise_mixture import extract_instance as extract_modular_noise, recover_flag as recover_modular_noise_flag
 from .hyperelliptic_state_leak import extract_instance as extract_hyperelliptic_leak
@@ -251,6 +252,13 @@ def _analysis_strategies():
     they are never passed to execute_plan or activated by --solve.
     """
     return (
+        Strategy(
+            "RSA reused base digits",
+            "analysis",
+            extract_reused_digits,
+            _analysis_only_solver,
+            rank=9,
+        ),
         Strategy(
             "Hyperelliptic Mumford-state curve reconstruction",
             "analysis",

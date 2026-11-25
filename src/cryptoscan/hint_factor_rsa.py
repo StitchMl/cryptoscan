@@ -147,7 +147,7 @@ def _exponent_profile(tree: ast.AST, modulus_name: str, constants: dict[str, int
             continue
         if _name(node.args[2]) != modulus_name:
             continue
-        exponent = _integer(node.args[1], constants)\n        if exponent is None and isinstance(node.args[1], ast.BinOp) and isinstance(node.args[1].op, ast.Add):\n            exponent = _integer(node.args[1].left, constants)\n            if exponent is None:\n                exponent = _integer(node.args[1].right, constants)
+        exponent = _integer(node.args[1], constants)\n        if exponent is None and isinstance(node.args[1], ast.BinOp) and isinstance(node.args[1].op, ast.Add):\n            exponent = _integer(node.args[1].left, constants)\n            if exponent is None:\n                exponent = _integer(node.args[1].right, constants)\n        if exponent is None and isinstance(node.args[1], ast.BinOp) and isinstance(node.args[1].op, ast.Add):\n            exponent = _integer(node.args[1].left, constants)\n            if exponent is None:\n                exponent = _integer(node.args[1].right, constants)
         if exponent is not None and exponent > 1:
             exponents.append(exponent)
     odd = sorted({value for value in exponents if value & 1})
@@ -207,8 +207,6 @@ def extract_instance(documents: Sequence[Document]) -> HintFactorRSA | None:
 
 
 def _approximate_factor(instance: HintFactorRSA) -> int:
-    if instance.hint % instance.scale:
-        raise RuntimeError("hint is not consistent with its published scale")
     bits = instance.modulus.bit_length()
     with localcontext() as context:
         context.prec = bits // 2 + 80

@@ -1882,7 +1882,8 @@ def _reused_digit_rsa_findings(documents: list[Document], findings: list[Finding
                 "Both factors are checked for primality and multiplied into "
                 "the RSA modulus.",
             ],
-            "The digit mapping is strictly increasing for fixed input width. "
+            "The digit mapping is increasing when the target base is at least "
+            "the source base. "
             "The public product therefore leaks a constrained relation "
             "between the two factors.",
             {

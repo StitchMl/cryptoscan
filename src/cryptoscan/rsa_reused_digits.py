@@ -214,13 +214,12 @@ def extract_instance(documents) -> DigitReuse | None:
     if len(records) != 1:
         return None
     modulus, ciphertext = records[0]
-    if (modulus <= 3 or ciphertext is None
-            or not 0 <= ciphertext < modulus):
+    if (modulus <= 3 or (
+            ciphertext is not None and not 0 <= ciphertext < modulus)):
         return None
     return DigitReuse(profile.source_base, profile.target_base,
-                      profile.prime_bits, profile.exponent, modulus, True,
-                      ciphertext)
-
+                      profile.prime_bits, profile.exponent, modulus,
+                      ciphertext is not None, ciphertext)
 
 
 def _reinterpret_integer(value, source_base, target_base):

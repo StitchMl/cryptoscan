@@ -128,19 +128,24 @@ def recover_flag(documents: Sequence[object], host: str, port: int,
         if b"number!\n" not in banner:
             raise ValueError("service did not expose the expected selectable-number prompt")
         stream.write(f"{first_index}\n{second_index}\n".encode("ascii"))
-        outputs = []
-        for _ in range(model.output_count):
+        selected = {}
+        requested = {first_index, second_index}
+        for output_index in range(model.output_count):
             line = _read_line(stream)
             if not line:
                 raise ValueError("service closed before returning the generated sequence")
-            try:
-                outputs.append(int(line.strip()))
-            except ValueError:
+            if output_index not in requested:
                 continue
-        if max(first_index, second_index) >= len(outputs):
-            raise ValueError("service returned fewer outputs than the requested indices")
+            try:
+                selected[output_index] = int(line.strip())
+            except ValueError as exc:
+                raise ValueError(
+                    f"service did not reveal the requested output at index {output_index}"
+                ) from exc
+        if set(selected) != requested:
+            raise ValueError("service did not return both requested indexed outputs")
         guess = predict_from_sparse_outputs(
-            model.target_index, outputs[first_index], outputs[second_index],
+            model.target_index, selected[first_index], selected[second_index],
         )
         stream.write(f"{guess}\n".encode("ascii"))
         response = bytearray()

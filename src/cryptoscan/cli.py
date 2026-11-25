@@ -201,6 +201,8 @@ def _attack_strategies(args):
             preflight=preflight,
         )
     interactive = (
+        remote("Sparse MT19937 output prediction",
+               extract_sparse_mt19937, recover_sparse_mt19937_flag, 1),
         remote("Faulty reciprocal-Rabin CRT re-encryption oracle",
                extract_reciprocal_rabin, recover_reciprocal_rabin_flag, 1),
         remote("Jacobian Mumford known-plaintext divisor recovery",

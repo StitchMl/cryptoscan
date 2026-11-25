@@ -137,7 +137,7 @@ c = pow(m, e, n)
     assert instance.prime_bits == 256
 
 
-def test_cli_reports_analysis_only(tmp_path, capsys):
+def test_cli_plans_offline_solver(tmp_path, capsys):
     from cryptoscan.cli import main
 
     for doc in _corpus(7):
@@ -147,5 +147,5 @@ def test_cli_reports_analysis_only(tmp_path, capsys):
     assert any(item["rule"] == "RSA-REUSED-BASE-DIGITS"
                for item in report["findings"])
     assert any(item["family"] == "RSA reused base digits"
-               and item["status"] == "analysis-only"
+               and item["status"] == "applicable"
                for item in report["attack_plan"])

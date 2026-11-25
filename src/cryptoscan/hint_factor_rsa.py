@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import ast
 import math
-from contextlib import localcontext
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from typing import Sequence
 
 from sympy import Matrix, Poly, Symbol

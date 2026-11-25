@@ -50,8 +50,9 @@ an arbitrary large integer alone is insufficient evidence.
 ## RSA factors from reused base digits
 
 CryptoScan recognizes RSA source that draws a candidate factor, renders its
-digits in a source base from 2 through 10, and interprets that string in
-decimal to form the other factor. It checks the prime tests, factor product,
+digits in a source base from 2 through 36, and interprets that string in
+a target base up to 36 that is at least as large, to form the other factor.
+The usual implicit decimal target is supported. It checks the prime tests, factor product,
 and encryption expression from the Python AST without running the generator.
 The draw may use `random.getrandbits`, `secrets.randbits`, or
 `Crypto.Util.number.getPrime`; import aliases and literal base variables

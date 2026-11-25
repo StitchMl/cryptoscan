@@ -75,7 +75,7 @@ def extract_instance(documents: Sequence[object]) -> AESModePickerModel | None:
 
     if not re.search(r"\boptions\s*\.\s*remove\s*\(\s*option\s*\)", source):
         return None
-    if not re.search(r"\bsuboption\s*==\s*['\"]flag['\"]", source):
+    if not re.search(r"\bmessage\s*=\s*flag\b", source):
         return None
     if not re.search(r"\bbytes\s*\.\s*fromhex\s*\(", source):
         return None

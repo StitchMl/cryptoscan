@@ -162,9 +162,9 @@ def _source_profile(document: Document) -> _SourceProfile | None:
             continue
         for call in ast.walk(tree):
             if not (isinstance(call, ast.Call)
-                    or _call_name(call) != "complex_pow"
-                    or len(call.args) != 3
-                    or _name(call.args[2]) != modulus_name):
+                    and _call_name(call) == "complex_pow"
+                    and len(call.args) == 3
+                    and _name(call.args[2]) == modulus_name):
                 continue
             exponent = _integer(call.args[1], constants)
             if exponent is not None and exponent > 1 and exponent % 2:

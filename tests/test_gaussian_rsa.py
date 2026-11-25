@@ -45,9 +45,9 @@ def encrypt(public_key, plaintext):
     return c.re.to_bytes((n.bit_length() + 7) // 8, "big") + c.im.to_bytes((n.bit_length() + 7) // 8, "big")
 """
 
-OUTPUT = """private_key = (13, 7)
-public_key = 8281
-ciphertext = b'\\x12\\xbc\\x1f\\x0a'
+OUTPUT = """private_key = (13, 19)
+public_key = 61009
+ciphertext = b'\\x33\\x15\\xca\\x05'
 """
 
 

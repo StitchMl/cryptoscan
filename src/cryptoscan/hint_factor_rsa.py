@@ -133,7 +133,7 @@ def _hint_profile(tree: ast.AST, constants: dict[str, int], primes: set[str]):
         expr = node.value.args[0] if isinstance(node.value, ast.Call) else node.value
         factors = []
         for term in (expr.left, expr.right):  # type: ignore[union-attr]
-            factors.append(term.left if _name(term.right) in primes else term.right)
+            parts = (term.left, term.right)\n            factor = next(\n                part for part in parts\n                if not (isinstance(part, ast.Call) and _name(part.func) in {\"sqrt\", \"isqrt\"})\n            )\n            factors.append(factor)
         scale = _integer(factors[0], constants)
         if scale is not None and scale > 1 and scale == _integer(factors[1], constants):
             return target, scale
@@ -251,7 +251,7 @@ def _recover_factor(instance: HintFactorRSA) -> int:
     # factors.  Derive a conservative bound from the modulus, then enlarge it
     # slightly for smaller educational instances.
     bound = max(bound, 1 << (instance.modulus.bit_length() // 4 + 8))
-    for m, t in ((6, 9), (8, 12), (10, 15)):
+    for m, t in ((1, 1), (2, 2), (3, 3), (4, 5), (6, 9)):
         matrix = Matrix(_lattice_rows(instance.modulus, offset, bound, m, t))
         basis = hermite_normal_form(matrix.T).T.lll().tolist()
         factors = _integer_roots(basis, bound, offset, instance.modulus)

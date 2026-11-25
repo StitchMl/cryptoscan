@@ -76,10 +76,10 @@ def temper(value: int) -> int:
     return value & _WORD_MASK
 
 
-def twist_word(previous: int, following: int, offset: int) -> int:
-    """Compute state[offset+624] from state[offset] and state[offset+1]."""
-    joined = (previous & _UPPER_MASK) | (following & _LOWER_MASK)
-    result = joined >> 1
+def twist_word(known_msb: int, following: int, offset_state: int) -> int:
+    """Compute one twist word from a known high bit, next word, and offset word."""
+    joined = (known_msb & _UPPER_MASK) | (following & _LOWER_MASK)
+    result = offset_state ^ (joined >> 1)
     if following & 1:
         result ^= _MATRIX_A
     return result & _WORD_MASK
@@ -94,7 +94,7 @@ def predict_from_sparse_outputs(target_index: int, first_output: int,
         raise ValueError("target draw is too early for the sparse MT19937 recurrence")
     first_state = untemper(first_output)
     second_state = untemper(second_output)
-    return temper(twist_word(first_state, second_state, first_index))
+    return temper(twist_word(0, first_state, second_state))
 
 
 def _read_line(stream, limit: int = 4096) -> bytes:

@@ -142,7 +142,12 @@ def _hint_profile(tree: ast.AST, constants: dict[str, int], primes: set[str]):
         expr = node.value.args[0] if isinstance(node.value, ast.Call) else node.value
         factors = []
         for term in (expr.left, expr.right):  # type: ignore[union-attr]
-            parts = (term.left, term.right)\n            factor = next(\n                part for part in parts\n                if not (isinstance(part, ast.Call) and _name(part.func) in {\"sqrt\", \"isqrt\"})\n            )\n            factors.append(factor)
+            parts = (term.left, term.right)
+            factor = next(
+                part for part in parts
+                if not (isinstance(part, ast.Call) and _call_name(part) in {"sqrt", "isqrt"})
+            )
+            factors.append(factor)
         scale = _integer(factors[0], constants)
         if scale is not None and scale > 1 and scale == _integer(factors[1], constants):
             return target, scale
@@ -156,7 +161,11 @@ def _exponent_profile(tree: ast.AST, modulus_name: str, constants: dict[str, int
             continue
         if _name(node.args[2]) != modulus_name:
             continue
-        exponent = _integer(node.args[1], constants)\n        if exponent is None and isinstance(node.args[1], ast.BinOp) and isinstance(node.args[1].op, ast.Add):\n            exponent = _integer(node.args[1].left, constants)\n            if exponent is None:\n                exponent = _integer(node.args[1].right, constants)\n        if exponent is None and isinstance(node.args[1], ast.BinOp) and isinstance(node.args[1].op, ast.Add):\n            exponent = _integer(node.args[1].left, constants)\n            if exponent is None:\n                exponent = _integer(node.args[1].right, constants)
+        exponent = _integer(node.args[1], constants)
+        if exponent is None and isinstance(node.args[1], ast.BinOp) and isinstance(node.args[1].op, ast.Add):
+            exponent = _integer(node.args[1].left, constants)
+            if exponent is None:
+                exponent = _integer(node.args[1].right, constants)
         if exponent is not None and exponent > 1:
             exponents.append(exponent)
     odd = sorted({value for value in exponents if value & 1})

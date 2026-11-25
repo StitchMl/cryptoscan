@@ -66,6 +66,7 @@ from .pairing_confirmation import extract_instance as extract_pairing_confirmati
 from .reducible_ring_signature import extract_instance as extract_reducible_glp, recover_flag as recover_reducible_glp_flag
 from .terminal_report import render_findings
 from .mt19937_sparse import extract_instance as extract_sparse_mt19937, recover_flag as recover_sparse_mt19937_flag
+from .rsa_suffix_oracle import extract_instance as extract_rsa_suffix_oracle, recover_flag as recover_rsa_suffix_oracle_flag
 
 COLORS = {"critical": "\033[91m", "high": "\033[31m", "medium": "\033[33m", "low": "\033[36m"}
 RESET = "\033[0m"
@@ -201,6 +202,8 @@ def _attack_strategies(args):
             preflight=preflight,
         )
     interactive = (
+        remote("RSA fixed-point suffix oracle",
+               extract_rsa_suffix_oracle, recover_rsa_suffix_oracle_flag, 1),
         remote("Sparse MT19937 output prediction",
                extract_sparse_mt19937, recover_sparse_mt19937_flag, 1),
         remote("Faulty reciprocal-Rabin CRT re-encryption oracle",

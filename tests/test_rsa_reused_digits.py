@@ -96,6 +96,16 @@ def test_independent_prime_draw_implementations(draw, import_line):
     assert source_profile(Document("variant.py", source, None)) is not None
 
 
+@pytest.mark.parametrize("source_base,target_base", [(2, 16), (12, 20), (30, 36)])
+def test_distinct_target_radices(source_base, target_base):
+    docs = _corpus(source_base)
+    source = docs[0].text.replace("), 10)", f"), {target_base})")
+    profile = source_profile(Document("other_radix.py", source, None))
+    assert profile is not None
+    assert profile.source_base == source_base
+    assert profile.target_base == target_base
+
+
 def test_original_source_shape_and_public_transcript():
     source = """
 import random

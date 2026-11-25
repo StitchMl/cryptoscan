@@ -7,6 +7,7 @@ the same digits determine both factors.
 from __future__ import annotations
 
 import ast
+import math
 from dataclasses import dataclass
 
 from .parser import Document, parse_int, scalar_records
@@ -21,6 +22,7 @@ class DigitReuse:
     exponent: int
     modulus: int | None = None
     ciphertext_available: bool = False
+    ciphertext: int | None = None
 
 
 def _name(node):
@@ -212,8 +214,92 @@ def extract_instance(documents) -> DigitReuse | None:
     if len(records) != 1:
         return None
     modulus, ciphertext = records[0]
-    if modulus <= 3 or (ciphertext is not None and not 0 <= ciphertext < modulus):
+    if (modulus <= 3 or (
+            ciphertext is not None and not 0 <= ciphertext < modulus)):
         return None
     return DigitReuse(profile.source_base, profile.target_base,
                       profile.prime_bits, profile.exponent, modulus,
-                      ciphertext is not None)
+                      ciphertext is not None, ciphertext)
+
+
+def _reinterpret_integer(value, source_base, target_base):
+    """Evaluate the source digit sequence in the target radix."""
+    digits = []
+    while value:
+        value, digit = divmod(value, source_base)
+        digits.append(digit)
+    result = 0
+    for digit in reversed(digits):
+        result = result * target_base + digit
+    return result
+
+
+def _factor_from_digit_reuse(instance):
+    """Binary-search the monotone product p * reinterpret(p)."""
+    if instance.modulus is None:
+        raise ValueError("RSA modulus is missing")
+    low, high = 0, 1 << instance.prime_bits
+    while low < high:
+        candidate = (low + high) // 2
+        derived = _reinterpret_integer(
+            candidate, instance.source_base, instance.target_base,
+        )
+        if candidate * derived < instance.modulus:
+            low = candidate + 1
+        else:
+            high = candidate
+    prime = low
+    derived = _reinterpret_integer(
+        prime, instance.source_base, instance.target_base,
+    )
+    if (prime >= (1 << instance.prime_bits)
+            or prime * derived != instance.modulus):
+        raise RuntimeError("no exact reused-digit factor pair matches the modulus")
+    return prime, derived
+
+
+def _is_prime(value):
+    try:
+        from Crypto.Util.number import isPrime
+    except ImportError:
+        from sympy import isprime as isPrime
+    return bool(isPrime(value))
+
+
+def recover_details(instance: DigitReuse):
+    """Recover both factors and verify the RSA plaintext by re-encryption."""
+    if instance.ciphertext is None or instance.modulus is None:
+        raise ValueError("RSA ciphertext and modulus are required")
+    prime, derived = _factor_from_digit_reuse(instance)
+    if not _is_prime(prime) or not _is_prime(derived):
+        raise RuntimeError("reused-digit factors are not both prime")
+    phi = (prime - 1) * (derived - 1)
+    if math.gcd(instance.exponent, phi) != 1:
+        raise RuntimeError("RSA exponent is not invertible modulo phi(n)")
+    private_exponent = pow(instance.exponent, -1, phi)
+    plaintext = pow(instance.ciphertext, private_exponent, instance.modulus)
+    if pow(plaintext, instance.exponent, instance.modulus) != instance.ciphertext:
+        raise RuntimeError("RSA plaintext re-encryption check failed")
+    length = max(1, (plaintext.bit_length() + 7) // 8)
+    try:
+        decoded = plaintext.to_bytes(length, "big").decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("recovered RSA plaintext is not UTF-8") from exc
+    if not decoded:
+        raise RuntimeError("recovered RSA plaintext is empty")
+    return decoded, {
+        "factors": [prime, derived],
+        "source_base": instance.source_base,
+        "target_base": instance.target_base,
+        "plaintext_bytes": length,
+        "reencryption_verified": True,
+    }
+
+
+def recover_flag(documents):
+    """Recover a CTF plaintext from source and a public RSA transcript."""
+    instance = extract_instance(documents)
+    if instance is None:
+        raise ValueError("no unique source-verified reused-digit RSA instance")
+    plaintext, _ = recover_details(instance)
+    return plaintext

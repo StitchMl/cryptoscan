@@ -49,6 +49,10 @@ from .weak_seeded_multiprime_rsa import (
     extract_instance as extract_weak_seeded_rsa,
     _source_profile as weak_seeded_rsa_profile,
 )
+from .rsa_reused_digits import (
+    extract_instance as extract_reused_digits,
+    source_profile as reused_digits_profile,
+)
 from .parser import (
     Document,
     flatten_objects,
@@ -1852,6 +1856,53 @@ def _weak_seeded_rsa_findings(documents: list[Document], findings: list[Finding]
         ))
 
 
+def _reused_digit_rsa_findings(documents: list[Document], findings: list[Finding]) -> None:
+    matched = extract_reused_digits(documents)
+    for document in documents:
+        profile = reused_digits_profile(document)
+        if profile is None:
+            continue
+        has_public = matched is not None
+        findings.append(Finding(
+            "RSA-REUSED-BASE-DIGITS",
+            "RSA factors reuse the same digits in distinct bases",
+            "high", "high", document.path,
+            {
+                "source_verified": True,
+                "source_base": profile.source_base,
+                "target_base": profile.target_base,
+                "prime_draw_bits": profile.prime_bits,
+                "public_exponent": profile.exponent,
+                "public_modulus_matched": has_public,
+                "modulus_bits": matched.modulus.bit_length() if has_public else None,
+            },
+            [
+                "The source draws one RSA factor and forms another by "
+                "reinterpreting its digits in a larger base.",
+                "Both factors are checked for primality and multiplied into "
+                "the RSA modulus.",
+            ],
+            "The digit mapping is increasing when the target base is at least "
+            "the source base. "
+            "The public product therefore leaks a constrained relation "
+            "between the two factors.",
+            {
+                "kind": "rsa_reused_base_digits",
+                "offline": True,
+                "source_verified": True,
+                "public_corpus_available": has_public,
+                "requires": ["source", "public modulus"],
+            },
+            "Generate independent RSA primes with fresh cryptographic "
+            "randomness; never derive one factor from the other.",
+            [
+                "Confirm the source and target digit bases and factor roles.",
+                "Check that the public modulus belongs to the same source scope.",
+                "Replace the correlated key pair and rotate affected keys.",
+            ],
+        ))
+
+
 def _biased_shamir_findings(documents: list[Document], findings: list[Finding]) -> None:
     for document in documents:
         profile = biased_shamir_profile(document)
@@ -2219,6 +2270,7 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
     _gcm_oracle_findings(documents, findings)
     _per_document_source_findings(documents, rules, findings)
     _weak_seeded_rsa_findings(documents, findings)
+    _reused_digit_rsa_findings(documents, findings)
     _biased_shamir_findings(documents, findings)
     _cyclotomic_rsa_findings(documents, findings)
     _modular_noise_findings(documents, findings)
@@ -2253,7 +2305,7 @@ def _rotated_rsa_findings(documents):
                 "high", "high", document.path,
                 {"public_corpus_available": instance is not None,
                  "vector_labels": list(profile.vectors)},
-                ["Two exact representations x_i� + e y_i� = n share an orthogonal rotation."],
+                ["Two exact representations x_i? + e y_i? = n share an orthogonal rotation."],
                 "Recover e from the rotation-invariant trace, invert the rotation, "
                 "and verify the determinant factor and RSA ciphertext.",
                 {"kind": "rotated_quadratic_rsa", "offline": True},

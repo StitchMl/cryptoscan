@@ -99,7 +99,7 @@ def _digits(value, prime, names, values):
     if _name(value.args[0]) != prime:
         return None
     base = _integer(value.args[1], values)
-    return base if base is not None and 2 <= base <= 10 else None
+    return base if base is not None and 2 <= base <= 36 else None
 
 
 def _reinterpretation(value, prime, names, values):
@@ -107,9 +107,11 @@ def _reinterpretation(value, prime, names, values):
         return None
     if value.keywords:
         return None
-    if len(value.args) == 2 and _integer(value.args[1], values) != 10:
+    target = 10 if len(value.args) == 1 else _integer(value.args[1], values)
+    source = _digits(value.args[0], prime, names, values)
+    if target is None or source is None or not source <= target <= 36:
         return None
-    return _digits(value.args[0], prime, names, values)
+    return source, target
 
 
 def _primality_checks(tree, prime, derived, names):
@@ -161,7 +163,7 @@ def _related_profiles(tree, names, values, prime, bits, draw_line):
     for derived, value, derived_line in derived_values:
         if derived_line <= draw_line or not _primality_checks(tree, prime, derived, names):
             continue
-        base = _reinterpretation(value, prime, names, values)
+        source, target = _reinterpretation(value, prime, names, values)
         products = _assignment(
             tree, lambda expr, other=derived: _product(expr, prime, other),
         )
@@ -170,7 +172,7 @@ def _related_profiles(tree, names, values, prime, bits, draw_line):
                 continue
             exponent = _matching_exponent(tree, modulus, values, names)
             if exponent is not None:
-                profiles.append(DigitReuse(base, 10, bits, exponent))
+                profiles.append(DigitReuse(source, target, bits, exponent))
     return profiles
 
 

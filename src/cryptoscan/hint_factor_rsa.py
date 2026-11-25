@@ -103,30 +103,43 @@ def _modulus_name(tree: ast.AST, primes: set[str], constants: dict[str, int]) ->
     return None
 
 
+def _radical_term(node: ast.AST, primes: set[str]):
+    if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Mult):
+        return None
+    radical = next((part for part in (node.left, node.right)
+                    if isinstance(part, ast.Call) and _call_name(part) in {"sqrt", "isqrt"}), None)
+    factor = next((part for part in (node.left, node.right) if part is not radical), None)
+    if (not isinstance(radical, ast.Call) or len(radical.args) != 1
+            or _name(radical.args[0]) not in primes):
+        return None
+    return _name(radical.args[0]), factor
+
+
 def _sqrt_terms(node: ast.AST, primes: set[str]) -> tuple[str, str, int] | None:
     if isinstance(node, ast.Call) and _call_name(node) == "int" and len(node.args) == 1:
         node = node.args[0]
     if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Add):
         return None
-    terms = []
-    for term in (node.left, node.right):
-        if not isinstance(term, ast.BinOp) or not isinstance(term.op, ast.Mult):
-            return None
-        factor = None
-        radical = None
-        for part in (term.left, term.right):
-            if isinstance(part, ast.Call) and _call_name(part) in {"sqrt", "isqrt"} and len(part.args) == 1:
-                radical = _name(part.args[0])
-            else:
-                factor = part
-        if radical not in primes:
-            return None
-        terms.append((radical, factor))
-    if {item[0] for item in terms} != primes:
+    terms = [_radical_term(term, primes) for term in (node.left, node.right)]
+    if any(term is None for term in terms):
         return None
-    if ast.dump(terms[0][1]) != ast.dump(terms[1][1]):
+    if {term[0] for term in terms} != primes or ast.dump(terms[0][1]) != ast.dump(terms[1][1]):
         return None
     return terms[0][0], terms[1][0], ast.dump(terms[0][1])
+
+
+def _hint_scale(node: ast.AST, constants: dict[str, int]) -> int | None:
+    expr = node.args[0] if isinstance(node, ast.Call) else node
+    if not isinstance(expr, ast.BinOp):
+        return None
+    factors = []
+    for term in (expr.left, expr.right):
+        if not isinstance(term, ast.BinOp) or not isinstance(term.op, ast.Mult):
+            return None
+        factor = next((part for part in (term.left, term.right)
+                       if not (isinstance(part, ast.Call) and _call_name(part) in {"sqrt", "isqrt"})), None)
+        factors.append(_integer(factor, constants))
+    return factors[0] if factors[0] and factors[0] == factors[1] else None
 
 
 def _hint_profile(tree: ast.AST, constants: dict[str, int], primes: set[str]):
@@ -136,22 +149,18 @@ def _hint_profile(tree: ast.AST, constants: dict[str, int], primes: set[str]):
         target = _name(node.targets[0])
         if target is None:
             continue
-        terms = _sqrt_terms(node.value, primes)
-        if terms is None:
-            continue
-        expr = node.value.args[0] if isinstance(node.value, ast.Call) else node.value
-        factors = []
-        for term in (expr.left, expr.right):  # type: ignore[union-attr]
-            parts = (term.left, term.right)
-            factor = next(
-                part for part in parts
-                if not (isinstance(part, ast.Call) and _call_name(part) in {"sqrt", "isqrt"})
-            )
-            factors.append(factor)
-        scale = _integer(factors[0], constants)
-        if scale is not None and scale > 1 and scale == _integer(factors[1], constants):
-            return target, scale
+        if _sqrt_terms(node.value, primes) is not None:
+            scale = _hint_scale(node.value, constants)
+            if scale is not None and scale > 1:
+                return target, scale
     return None
+
+
+def _exponent_value(node: ast.AST, constants: dict[str, int]) -> int | None:
+    value = _integer(node, constants)
+    if value is None and isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        value = _integer(node.left, constants) or _integer(node.right, constants)
+    return value
 
 
 def _exponent_profile(tree: ast.AST, modulus_name: str, constants: dict[str, int]) -> int | None:
@@ -161,11 +170,7 @@ def _exponent_profile(tree: ast.AST, modulus_name: str, constants: dict[str, int
             continue
         if _name(node.args[2]) != modulus_name:
             continue
-        exponent = _integer(node.args[1], constants)
-        if exponent is None and isinstance(node.args[1], ast.BinOp) and isinstance(node.args[1].op, ast.Add):
-            exponent = _integer(node.args[1].left, constants)
-            if exponent is None:
-                exponent = _integer(node.args[1].right, constants)
+        exponent = _exponent_value(node.args[1], constants)
         if exponent is not None and exponent > 1:
             exponents.append(exponent)
     odd = sorted({value for value in exponents if value & 1})
@@ -204,23 +209,29 @@ def _public_values(documents: Sequence[Document]):
     return matches
 
 
+def _valid_output(source: Document, profile, item) -> HintFactorRSA | None:
+    document, hint, scale, modulus, ciphertexts = item
+    modulus_name, expected_scale, exponent = profile
+    if document.scope != source.scope or scale != expected_scale or document.path == source.path:
+        return None
+    if modulus <= 3 or hint <= 0 or modulus.bit_length() > 8192:
+        return None
+    if not ciphertexts or any(value < 0 or value >= modulus for value in ciphertexts):
+        return None
+    if modulus_name.casefold() not in {"n", "modulus"} and modulus_name not in document.text:
+        return None
+    return HintFactorRSA(modulus, hint, scale, ciphertexts, exponent, source.path)
+
+
 def extract_instance(documents: Sequence[Document]) -> HintFactorRSA | None:
     profiles = [(document, _source_profile(document)) for document in documents]
     profiles = [(document, profile) for document, profile in profiles if profile is not None]
     if len(profiles) != 1:
         return None
     source, (modulus_name, scale, exponent) = profiles[0]
-    matches = []
-    for document, hint, output_scale, modulus, ciphertexts in _public_values(documents):
-        if document.scope != source.scope or output_scale != scale:
-            continue
-        if modulus <= 3 or hint <= 0 or modulus.bit_length() > 8192:
-            continue
-        if document.path == source.path or not ciphertexts or any(value < 0 or value >= modulus for value in ciphertexts):
-            continue
-        if modulus_name.casefold() not in {"n", "modulus"} and modulus_name not in document.text:
-            continue
-        matches.append(HintFactorRSA(modulus, hint, scale, ciphertexts, exponent, source.path))
+    matches = [candidate for candidate in
+               (_valid_output(source, (modulus_name, scale, exponent), item)
+                for item in _public_values(documents)) if candidate is not None]
     return matches[0] if len(matches) == 1 else None
 
 

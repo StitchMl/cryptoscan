@@ -149,3 +149,7 @@ def test_cli_reports_analysis_only(tmp_path, capsys):
     assert any(item["family"] == "RSA reused base digits"
                and item["status"] == "analysis-only"
                for item in report["attack_plan"])
+    assert main([str(tmp_path), "--solve"]) == 2
+    error = capsys.readouterr().err
+    assert "Recognized analysis-only family: RSA reused base digits" in error
+    assert "No verified plaintext-recovery solver" in error

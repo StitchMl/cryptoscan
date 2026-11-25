@@ -65,6 +65,7 @@ from .groth16_ticket import extract_instance as extract_groth16_tickets, recover
 from .pairing_confirmation import extract_instance as extract_pairing_confirmation, recover_flag as recover_pairing_confirmation_flag
 from .reducible_ring_signature import extract_instance as extract_reducible_glp, recover_flag as recover_reducible_glp_flag
 from .terminal_report import render_findings
+from .mt19937_sparse import extract_instance as extract_sparse_mt19937, recover_flag as recover_sparse_mt19937_flag
 
 COLORS = {"critical": "\033[91m", "high": "\033[31m", "medium": "\033[33m", "low": "\033[36m"}
 RESET = "\033[0m"

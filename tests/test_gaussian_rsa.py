@@ -56,7 +56,7 @@ def test_general_gaussian_totient_and_recovery():
         Document("source.py", SOURCE, None),
         Document("output.txt", OUTPUT, None),
     ]
-    assert gaussian_totient(((13, 2), (7, 2))) == 6912
+    assert gaussian_totient(((13, 2), (7, 2))) == 57238272
     model = extract_instance(docs)
     assert model is not None
     assert model.modulus == 8281

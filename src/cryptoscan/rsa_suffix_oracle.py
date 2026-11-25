@@ -47,7 +47,9 @@ def extract_instance(documents: Sequence[object]) -> RSASuffixOracleModel | None
         }
         if not has_private_pow or suffix_oracle is None:
             continue
-        if not {"pkey", "read", "shhh", "send", "nice"}.issubset(strings):
+        if not {"pkey", "read", "send", "nice"}.issubset(strings):
+            continue
+        if not any("[shhh]" in value for value in strings):
             continue
         exponent = 65537
         for node in ast.walk(tree):

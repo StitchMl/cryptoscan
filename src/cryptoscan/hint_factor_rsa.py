@@ -35,6 +35,15 @@ def _name(node: ast.AST | None) -> str | None:
     return node.id if isinstance(node, ast.Name) else None
 
 
+def _call_name(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Name):
+            return node.func.id
+        if isinstance(node.func, ast.Attribute):
+            return node.func.attr
+    return None
+
+
 def _integer(node: ast.AST, constants: dict[str, int]) -> int | None:
     if isinstance(node, ast.Constant) and type(node.value) is int:
         return int(node.value)
@@ -72,7 +81,7 @@ def _prime_names(tree: ast.AST) -> set[str]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
-        if isinstance(node.value, ast.Call) and _name(node.value.func) in {"getPrime", "getStrongPrime"}:
+        if isinstance(node.value, ast.Call) and _call_name(node.value) in {"getPrime", "getStrongPrime"}:
             target = _name(node.targets[0])
             if target is not None:
                 names.add(target)
@@ -95,7 +104,7 @@ def _modulus_name(tree: ast.AST, primes: set[str], constants: dict[str, int]) ->
 
 
 def _sqrt_terms(node: ast.AST, primes: set[str]) -> tuple[str, str, int] | None:
-    if isinstance(node, ast.Call) and _name(node.func) == "int" and len(node.args) == 1:
+    if isinstance(node, ast.Call) and _call_name(node) == "int" and len(node.args) == 1:
         node = node.args[0]
     if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Add):
         return None
@@ -106,7 +115,7 @@ def _sqrt_terms(node: ast.AST, primes: set[str]) -> tuple[str, str, int] | None:
         factor = None
         radical = None
         for part in (term.left, term.right):
-            if isinstance(part, ast.Call) and _name(part.func) in {"sqrt", "isqrt"} and len(part.args) == 1:
+            if isinstance(part, ast.Call) and _call_name(part) in {"sqrt", "isqrt"} and len(part.args) == 1:
                 radical = _name(part.args[0])
             else:
                 factor = part
@@ -125,7 +134,7 @@ def _hint_profile(tree: ast.AST, constants: dict[str, int], primes: set[str]):
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
         target = _name(node.targets[0])
-        if target is None or target.casefold() not in {"hint", "h", "leak"}:
+        if target is None:
             continue
         terms = _sqrt_terms(node.value, primes)
         if terms is None:
@@ -143,7 +152,7 @@ def _hint_profile(tree: ast.AST, constants: dict[str, int], primes: set[str]):
 def _exponent_profile(tree: ast.AST, modulus_name: str, constants: dict[str, int]) -> int | None:
     exponents = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or _name(node.func) != "pow" or len(node.args) != 3:
+        if not isinstance(node, ast.Call) or _call_name(node) != "pow" or len(node.args) != 3:
             continue
         if _name(node.args[2]) != modulus_name:
             continue

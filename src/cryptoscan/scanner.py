@@ -53,6 +53,10 @@ from .gaussian_rsa import (
     extract_instance as extract_gaussian_rsa,
     source_profile as gaussian_rsa_profile,
 )
+from .hint_factor_rsa import (
+    extract_instance as extract_hint_factor_rsa,
+    _source_profile as hint_factor_profile,
+)
 from .rsa_reused_digits import (
     extract_instance as extract_reused_digits,
     source_profile as reused_digits_profile,
@@ -1950,6 +1954,56 @@ def _gaussian_rsa_findings(documents: list[Document], findings: list[Finding]) -
         ))
 
 
+
+def _hint_factor_findings(documents: list[Document], findings: list[Finding]) -> None:
+    matched = extract_hint_factor_rsa(documents)
+    for document in documents:
+        profile = hint_factor_profile(document)
+        if profile is None:
+            continue
+        modulus_name, scale, exponent = profile
+        findings.append(Finding(
+            "RSA-SQUARE-ROOT-HINT-FACTOR",
+            "RSA factor approximated by a published square-root hint",
+            "high", "high", document.path,
+            {
+                "source_verified": True,
+                "modulus_name": modulus_name,
+                "hint_scale": scale,
+                "odd_exponent": exponent,
+                "public_modulus_matched": matched is not None,
+                "ciphertext_count": len(matched.ciphertexts) if matched else None,
+            },
+            [
+                "The source publishes a scaled sum of square roots of the "
+                "two RSA primes.",
+                "Truncation makes one factor a small root of a linear "
+                "polynomial modulo the unknown prime.",
+                "Quadratic-residue bits can be read with a Legendre symbol "
+                "after the factor is recovered.",
+            ],
+            "Construct a source-parameterized approximate-common-divisor "
+            "lattice, recover and verify a factor, then classify each "
+            "ciphertext by its Legendre symbol.",
+            {
+                "kind": "rsa_square_root_hint_factorization",
+                "offline": True,
+                "source_verified": True,
+                "public_corpus_available": matched is not None,
+                "requires": ["source", "scaled square-root hint", "modulus", "ciphertexts"],
+            },
+            "Never publish expressions that preserve high-precision "
+            "relations between RSA prime roots. Generate independent "
+            "prime factors and use a standard authenticated encryption scheme.",
+            [
+                "Identify prime generation and the scaled square-root sum.",
+                "Parse the modulus and ciphertext sequence without executing source.",
+                "Recover the approximate factor with high-precision arithmetic.",
+                "Reduce the linear approximate-common-divisor lattice.",
+                "Verify the factor and decrypt the residue-bit encoding.",
+            ],
+        ))
+
 def _biased_shamir_findings(documents: list[Document], findings: list[Finding]) -> None:
     for document in documents:
         profile = biased_shamir_profile(document)
@@ -2319,6 +2373,7 @@ def _source_findings(documents: list[Document]) -> list[Finding]:
     _weak_seeded_rsa_findings(documents, findings)
     _reused_digit_rsa_findings(documents, findings)
     _gaussian_rsa_findings(documents, findings)
+    _hint_factor_findings(documents, findings)
     _biased_shamir_findings(documents, findings)
     _cyclotomic_rsa_findings(documents, findings)
     _modular_noise_findings(documents, findings)

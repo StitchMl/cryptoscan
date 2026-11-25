@@ -214,9 +214,7 @@ def _approximate_factor(instance: HintFactorRSA) -> int:
         context.prec = bits // 2 + 80
         n = Decimal(instance.modulus)
         d = Decimal(instance.hint) ** 2 - Decimal(4 * instance.scale**2) * n.sqrt()
-        if d <= 0:
-            raise RuntimeError("square-root hint has no real factor roots")
-        root = (Decimal(instance.hint) + d.sqrt()) / 2
+        root = (Decimal(instance.hint) + (d if d > 0 else Decimal(0)).sqrt()) / 2
         return int((root / Decimal(instance.scale)) ** 2)
 
 

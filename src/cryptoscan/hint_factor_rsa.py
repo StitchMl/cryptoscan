@@ -1,0 +1,279 @@
+"""Recover bit encodings when an RSA factor is leaked by a square-root hint.
+
+Some CTF implementations publish ``D*(sqrt(p)+sqrt(q))`` alongside an RSA
+modulus.  Truncation gives a close approximation to one factor; a univariate
+approximate-common-divisor lattice recovers the exact factor.  This module is
+source gated and deliberately accepts equivalent variable names and constant
+exponents rather than a particular challenge name.
+"""
+from __future__ import annotations
+
+import ast
+import math
+from contextlib import localcontext
+from dataclasses import dataclass
+from decimal import Decimal
+from typing import Sequence
+
+from sympy import Matrix, Poly, Symbol
+from sympy.matrices.normalforms import hermite_normal_form
+
+from .parser import Document, scalar_records
+from .source_units import parse_python
+
+
+@dataclass(frozen=True)
+class HintFactorRSA:
+    modulus: int
+    hint: int
+    scale: int
+    ciphertexts: tuple[int, ...]
+    odd_exponent: int
+    source_path: str = ""
+
+
+def _name(node: ast.AST | None) -> str | None:
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _integer(node: ast.AST, constants: dict[str, int]) -> int | None:
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return int(node.value)
+    if isinstance(node, ast.Name):
+        return constants.get(node.id)
+    if not isinstance(node, ast.BinOp):
+        return None
+    left, right = _integer(node.left, constants), _integer(node.right, constants)
+    if left is None or right is None:
+        return None
+    if isinstance(node.op, ast.Add):
+        return left + right
+    if isinstance(node.op, ast.Sub):
+        return left - right
+    if isinstance(node.op, ast.Mult):
+        return left * right
+    if isinstance(node.op, ast.Pow) and 0 <= right <= 16:
+        return left**right
+    return None
+
+
+def _constants(tree: ast.AST) -> dict[str, int]:
+    values: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = _name(node.targets[0])
+            value = _integer(node.value, values)
+            if target is not None and value is not None and abs(value).bit_length() <= 256:
+                values[target] = value
+    return values
+
+
+def _prime_names(tree: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        if isinstance(node.value, ast.Call) and _name(node.value.func) in {"getPrime", "getStrongPrime"}:
+            target = _name(node.targets[0])
+            if target is not None:
+                names.add(target)
+    return names
+
+
+def _modulus_name(tree: ast.AST, primes: set[str], constants: dict[str, int]) -> str | None:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = _name(node.targets[0])
+        value = node.value
+        if target is None or not isinstance(value, ast.BinOp) or not isinstance(value.op, ast.Mult):
+            continue
+        if {_name(value.left), _name(value.right)} == primes and len(primes) == 2:
+            return target
+        if _integer(value, constants) is not None and target.casefold() in {"n", "modulus"}:
+            return target
+    return None
+
+
+def _sqrt_terms(node: ast.AST, primes: set[str]) -> tuple[str, str, int] | None:
+    if isinstance(node, ast.Call) and _name(node.func) == "int" and len(node.args) == 1:
+        node = node.args[0]
+    if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Add):
+        return None
+    terms = []
+    for term in (node.left, node.right):
+        if not isinstance(term, ast.BinOp) or not isinstance(term.op, ast.Mult):
+            return None
+        factor = None
+        radical = None
+        for part in (term.left, term.right):
+            if isinstance(part, ast.Call) and _name(part.func) in {"sqrt", "isqrt"} and len(part.args) == 1:
+                radical = _name(part.args[0])
+            else:
+                factor = part
+        if radical not in primes:
+            return None
+        terms.append((radical, factor))
+    if {item[0] for item in terms} != primes:
+        return None
+    if ast.dump(terms[0][1]) != ast.dump(terms[1][1]):
+        return None
+    return terms[0][0], terms[1][0], ast.dump(terms[0][1])
+
+
+def _hint_profile(tree: ast.AST, constants: dict[str, int], primes: set[str]):
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = _name(node.targets[0])
+        if target is None or target.casefold() not in {"hint", "h", "leak"}:
+            continue
+        terms = _sqrt_terms(node.value, primes)
+        if terms is None:
+            continue
+        expr = node.value.args[0] if isinstance(node.value, ast.Call) else node.value
+        factors = []
+        for term in (expr.left, expr.right):  # type: ignore[union-attr]
+            factors.append(term.left if _name(term.right) in primes else term.right)
+        scale = _integer(factors[0], constants)
+        if scale is not None and scale > 1 and scale == _integer(factors[1], constants):
+            return target, scale
+    return None
+
+
+def _exponent_profile(tree: ast.AST, modulus_name: str, constants: dict[str, int]) -> int | None:
+    exponents = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or _name(node.func) != "pow" or len(node.args) != 3:
+            continue
+        if _name(node.args[2]) != modulus_name:
+            continue
+        exponent = _integer(node.args[1], constants)
+        if exponent is not None and exponent > 1:
+            exponents.append(exponent)
+    odd = sorted({value for value in exponents if value & 1})
+    return odd[0] if len(odd) == 1 else None
+
+
+def _source_profile(document: Document):
+    tree = parse_python(document)
+    if tree is None or len(document.text) > 4_000_000:
+        return None
+    constants = _constants(tree)
+    primes = _prime_names(tree)
+    modulus = _modulus_name(tree, primes, constants)
+    hint = _hint_profile(tree, constants, primes)
+    if modulus is None or hint is None:
+        return None
+    exponent = _exponent_profile(tree, modulus, constants)
+    if exponent is None:
+        return None
+    return modulus, hint[1], exponent
+
+
+def _public_values(documents: Sequence[Document]):
+    matches = []
+    for document in documents:
+        for record in scalar_records(document.text):
+            values = {key.casefold(): value for key, value in record.items()}
+            hint, scale, modulus, ciphertexts = (
+                values.get("hint"), values.get("d", values.get("scale")),
+                values.get("n", values.get("modulus")), values.get("c", values.get("ciphertexts")),
+            )
+            if (type(hint) is int and type(scale) is int and type(modulus) is int
+                    and isinstance(ciphertexts, (list, tuple))
+                    and all(type(value) is int for value in ciphertexts)):
+                matches.append((document, hint, scale, modulus, tuple(ciphertexts)))
+    return matches
+
+
+def extract_instance(documents: Sequence[Document]) -> HintFactorRSA | None:
+    profiles = [(document, _source_profile(document)) for document in documents]
+    profiles = [(document, profile) for document, profile in profiles if profile is not None]
+    if len(profiles) != 1:
+        return None
+    source, (modulus_name, scale, exponent) = profiles[0]
+    matches = []
+    for document, hint, output_scale, modulus, ciphertexts in _public_values(documents):
+        if document.scope != source.scope or output_scale != scale:
+            continue
+        if modulus <= 3 or hint <= 0 or modulus.bit_length() > 8192:
+            continue
+        if document.path == source.path or not ciphertexts or any(value < 0 or value >= modulus for value in ciphertexts):
+            continue
+        if modulus_name.casefold() not in {"n", "modulus"} and modulus_name not in document.text:
+            continue
+        matches.append(HintFactorRSA(modulus, hint, scale, ciphertexts, exponent, source.path))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _approximate_factor(instance: HintFactorRSA) -> int:
+    if instance.hint % instance.scale:
+        raise RuntimeError("hint is not consistent with its published scale")
+    bits = instance.modulus.bit_length()
+    with localcontext() as context:
+        context.prec = bits // 2 + 80
+        n = Decimal(instance.modulus)
+        d = Decimal(instance.hint) ** 2 - Decimal(4 * instance.scale**2) * n.sqrt()
+        if d <= 0:
+            raise RuntimeError("square-root hint has no real factor roots")
+        root = (Decimal(instance.hint) + d.sqrt()) / 2
+        return int((root / Decimal(instance.scale)) ** 2)
+
+
+def _lattice_rows(modulus: int, offset: int, bound: int, m: int, t: int):
+    width = m + t + 1
+    rows = []
+    for i in range(m + 1):
+        for j in range(t + 1):
+            coefficients = [0] * width
+            for k in range(i + 1):
+                coefficients[j + k] = math.comb(i, k) * offset ** (i - k) * modulus ** (m - i)
+            rows.append([value * bound**degree for degree, value in enumerate(coefficients)])
+    return rows
+
+
+def _integer_roots(rows, bound: int, offset: int, modulus: int):
+    symbol = Symbol("x")
+    candidates = set()
+    for row in rows:
+        coefficients = [int(value) // bound**degree for degree, value in enumerate(row)]
+        polynomial = Poly(sum(value * symbol**degree for degree, value in enumerate(coefficients)), symbol)
+        for root in polynomial.ground_roots():
+            if root.is_Integer and abs(int(root)) < bound:
+                candidates.add(offset + int(root))
+    return [candidate for candidate in candidates if candidate > 1 and modulus % candidate == 0]
+
+
+def _recover_factor(instance: HintFactorRSA) -> int:
+    offset = _approximate_factor(instance)
+    bound = 1 << max(16, instance.modulus.bit_length() // 2 - 590)
+    # The challenge family publishes a ~590-bit absolute error for 1337-bit
+    # factors.  Derive a conservative bound from the modulus, then enlarge it
+    # slightly for smaller educational instances.
+    bound = max(bound, 1 << (instance.modulus.bit_length() // 4 + 8))
+    for m, t in ((6, 9), (8, 12), (10, 15)):
+        matrix = Matrix(_lattice_rows(instance.modulus, offset, bound, m, t))
+        basis = hermite_normal_form(matrix.T).T.lll().tolist()
+        factors = _integer_roots(basis, bound, offset, instance.modulus)
+        if factors:
+            return min(factors, key=lambda value: abs(value - offset))
+    raise RuntimeError("approximate-factor lattice did not recover a divisor")
+
+
+def recover_flag(documents: Sequence[Document]) -> str:
+    instance = extract_instance(documents)
+    if instance is None:
+        raise ValueError("no source-verified square-root RSA hint instance")
+    factor = _recover_factor(instance)
+    if not (1 < factor < instance.modulus and instance.modulus % factor == 0):
+        raise RuntimeError("lattice returned an invalid RSA factor")
+    bits = []
+    for ciphertext in instance.ciphertexts:
+        legendre = pow(ciphertext, (factor - 1) // 2, factor)
+        if legendre not in {1, factor - 1}:
+            raise RuntimeError("ciphertext is not a quadratic-residue bit encoding")
+        bits.append("1" if legendre == 1 else "0")
+    raw = int("".join(bits), 2).to_bytes((len(bits) + 7) // 8, "big")
+    return raw.lstrip(b"\x00").decode("utf-8")
+

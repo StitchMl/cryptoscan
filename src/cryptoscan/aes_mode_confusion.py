@@ -23,16 +23,13 @@ class AESModePickerModel:
     block_size: int = 16
 
 
-def _string_list(source: str, variable: str) -> list[str] | None:
-    match = re.search(
-        rf"\b{re.escape(variable)}\s*=\s*\[([^\]]*)\]",
-        source,
-        re.DOTALL,
-    )
-    if match is None:
-        return None
-    return re.findall(r"['\"]([^'\"]+)['\"]", match.group(1))
-
+def _string_lists(source: str) -> list[list[str]]:
+    """Return values from simple static string-list assignments."""
+    lists = re.finditer(r"\b[A-Za-z_]\w*\s*=\s*\[([^\]]*)\]", source, re.DOTALL)
+    return [
+        re.findall(r"['\"]([^'\"]+)['\"]", match.group(1))
+        for match in lists
+    ]
 
 def _constructor(source: str, mode: str) -> tuple[str, str | None] | None:
     if mode == "CBC":
@@ -62,16 +59,23 @@ def extract_instance(documents: Sequence[object]) -> AESModePickerModel | None:
     if cbc is None or ofb is None or cbc != ofb:
         return None
 
-    modes = _string_list(source, "options")
-    selectors = _string_list(source, "suboptions")
-    if modes is None or selectors is None:
+    literal_lists = _string_lists(source)
+    mode_list = next(
+        (items for items in literal_lists
+         if {"cbc", "ofb"}.issubset({item.lower() for item in items})),
+        None,
+    )
+    selector_list = next(
+        (items for items in literal_lists
+         if {"data", "flag"}.issubset({item.lower() for item in items})),
+        None,
+    )
+    if mode_list is None or selector_list is None:
         return None
-    cbc_mode = next((item for item in modes if item.lower() == "cbc"), None)
-    ofb_mode = next((item for item in modes if item.lower() == "ofb"), None)
-    data_selector = next((item for item in selectors if item.lower() == "data"), None)
-    secret_selector = next((item for item in selectors if item.lower() == "flag"), None)
-    if None in (cbc_mode, ofb_mode, data_selector, secret_selector):
-        return None
+    cbc_mode = next(item for item in mode_list if item.lower() == "cbc")
+    ofb_mode = next(item for item in mode_list if item.lower() == "ofb")
+    data_selector = next(item for item in selector_list if item.lower() == "data")
+    secret_selector = next(item for item in selector_list if item.lower() == "flag")
 
     if not re.search(r"\boptions\s*\.\s*remove\s*\(\s*option\s*\)", source):
         return None

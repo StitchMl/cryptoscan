@@ -106,7 +106,7 @@ def test_distinct_target_radices(source_base, target_base):
     assert profile.target_base == target_base
 
 
-def test_original_source_shape_and_public_transcript():
+def test_original_source_shape_and_public_transcript(tmp_path, capsys):
     source = """
 import random
 import gmpy2
@@ -135,6 +135,13 @@ c = pow(m, e, n)
     assert instance is not None
     assert instance.source_base == 3
     assert instance.prime_bits == 256
+
+    from cryptoscan.cli import main
+
+    (tmp_path / "chall.py").write_text(source, encoding="utf-8")
+    (tmp_path / "output.txt").write_text(public, encoding="utf-8")
+    assert main([str(tmp_path), "--solve"]) == 0
+    assert "FLAG: firebird{b1n4ry_s34rch_f0r_th3_w1n!}" in capsys.readouterr().out
 
 
 def test_cli_plans_offline_solver(tmp_path, capsys):

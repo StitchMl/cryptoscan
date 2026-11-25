@@ -48,12 +48,10 @@ def _function(tree: ast.AST, name: str) -> ast.FunctionDef | None:
 
 
 def _label(source: str, name: str) -> bytes | None:
-    match = re.search(r"['\"]\\[" + re.escape(name) + r"\\]\\s*['\"]", source)
+    match = re.search(r"\\[" + re.escape(name) + r"\\]\\s*", source)
     if match is None:
         return None
     return ("[" + name + "] ").encode("ascii")
-
-
 def extract_instance(documents: Sequence[object]) -> SHA256PermutationOracle | None:
     """Detect a chosen-order SHA-256 hash of password||salt in source."""
     for document in documents:

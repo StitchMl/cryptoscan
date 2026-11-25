@@ -78,19 +78,24 @@ def _constants(tree: ast.AST) -> dict[str, int]:
     return values
 
 
+def _prime_assignment_names(node: ast.Assign) -> set[str]:
+    if len(node.targets) != 1:
+        return set()
+    targets = node.targets[0].elts if isinstance(node.targets[0], (ast.Tuple, ast.List)) else [node.targets[0]]
+    values = node.value.elts if isinstance(node.value, (ast.Tuple, ast.List)) else [node.value]
+    return {
+        name for target, value in zip(targets, values)
+        if isinstance(value, ast.Call)
+        and _call_name(value) in {"getPrime", "getStrongPrime"}
+        for name in [_name(target)] if name is not None
+    }
+
+
 def _prime_names(tree: ast.AST) -> set[str]:
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target_nodes = node.targets[0].elts if isinstance(node.targets[0], (ast.Tuple, ast.List)) else [node.targets[0]]
-        value_nodes = node.value.elts if isinstance(node.value, (ast.Tuple, ast.List)) else [node.value]
-        for target, value in zip(target_nodes, value_nodes):
-            if isinstance(value, ast.Call) and _call_name(value) in {"getPrime", "getStrongPrime"}:
-                name = _name(target)
-                if name is not None:
-                    names.add(name)
-    return names
+    return {
+        name for node in ast.walk(tree) if isinstance(node, ast.Assign)
+        for name in _prime_assignment_names(node)
+    }
 
 
 def _modulus_name(tree: ast.AST, primes: set[str], constants: dict[str, int]) -> str | None:

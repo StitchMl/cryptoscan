@@ -16,6 +16,7 @@ class RSASuffixOracleModel:
     prompt: bytes = b"[cmd] "
     public_label: bytes = b"[pkey]"
     ciphertext_label: bytes = b"[shhh]"
+    suffix_byte: int = 46
 
 
 def extract_instance(documents: Sequence[object]) -> RSASuffixOracleModel | None:
@@ -38,9 +39,15 @@ def extract_instance(documents: Sequence[object]) -> RSASuffixOracleModel | None
             for node in ast.walk(tree)
         )
         suffix_oracle = re.search(
-            r"message\s*\[\s*-1\s*:\s*\]\s*!=\s*b(['\"])\.\1",
+            r"\w+\s*\[\s*-1\s*:\s*\]\s*!=\s*(b['\"][^'\"]*['\"])",
             source,
         )
+        try:
+            suffix = ast.literal_eval(suffix_oracle.group(1)) if suffix_oracle else b""
+        except (SyntaxError, ValueError):
+            continue
+        if not isinstance(suffix, bytes) or len(suffix) != 1:
+            continue
         strings = {
             node.value for node in ast.walk(tree)
             if isinstance(node, ast.Constant) and isinstance(node.value, str)
@@ -60,7 +67,9 @@ def extract_instance(documents: Sequence[object]) -> RSASuffixOracleModel | None
                     if keyword.arg == "e" and isinstance(keyword.value, ast.Constant):
                         if isinstance(keyword.value.value, int):
                             exponent = keyword.value.value
-        return RSASuffixOracleModel(exponent=exponent)
+        return RSASuffixOracleModel(
+            exponent=exponent, suffix_byte=suffix[0],
+        )
     return None
 
 
@@ -99,26 +108,34 @@ def _query(stream, model: RSASuffixOracleModel, n: int, ciphertext: int,
     )
 
 
+def _multiplier_step(suffix_byte: int) -> int:
+    """Smallest even step that preserves the known low plaintext byte."""
+    trailing_zero_bits = (
+        8 if suffix_byte == 0
+        else (suffix_byte & -suffix_byte).bit_length() - 1
+    )
+    return 1 << max(1, 8 - trailing_zero_bits)
+
+
 def _wrap_interval(stream, model: RSASuffixOracleModel, n: int,
                    ciphertext: int) -> tuple[int, int]:
-    residue = 0x81  # 0x2e * 0x81 == 0x2e (mod 256)
-    if not _query(stream, model, n, ciphertext, residue):
+    step = _multiplier_step(model.suffix_byte)
+    if not _query(stream, model, n, ciphertext, 1):
         raise ValueError("secret plaintext does not have the oracle's known suffix")
     low = 0
     high = 1
-    while _query(stream, model, n, ciphertext, residue + 256 * high):
+    while _query(stream, model, n, ciphertext, 1 + step * high):
         low = high
         high *= 16
         if high.bit_length() > 16384:
             raise ValueError("RSA wrap search exceeded its iteration bound")
     while high - low > 1:
         middle = (low + high) // 2
-        if _query(stream, model, n, ciphertext, residue + 256 * middle):
+        if _query(stream, model, n, ciphertext, 1 + step * middle):
             low = middle
         else:
             high = middle
-    return residue + 256 * low, residue + 256 * high
-
+    return 1 + step * low, 1 + step * high
 
 def _recover_integer(n: int, ciphertext: int, exponent: int,
                      before: int, after: int) -> int:

@@ -178,25 +178,31 @@ def _recover_password(stream, model: SHA256PermutationOracle) -> bytes:
     if message_length >= 32 or model.salt_length < 2:
         raise ValueError("source lengths exceed the supported one-byte glue-padding profile")
     padding = _glue_padding(message_length)
-    if len(padding) < model.salt_length:
-        raise ValueError("salt is too short to encode the chosen SHA-256 glue padding")
+    if len(set(padding)) > model.salt_length:
+        raise ValueError(
+            "salt is too short to represent every byte of the SHA-256 glue padding"
+        )
+
+    # Pick salt bytes that can be re-indexed to reproduce the exact SHA-256
+    # glue padding after the hashed password||salt prefix.
     salt = bytearray(model.salt_length)
-    salt[0] = 0
-    salt[-1] = 0x80
-    salt[1] = (message_length * 8) & 0xFF
-    base_hash = bytes.fromhex(_spy(stream, model, list(range(message_length)), bytes(salt)))
+    padding_indices: dict[int, int] = {}
+    for offset, value in enumerate(dict.fromkeys(padding)):
+        salt[offset] = value
+        padding_indices[value] = model.password_length + offset
+
+    base_hash = bytes.fromhex(
+        _spy(stream, model, list(range(message_length)), bytes(salt))
+    )
     processed_length = message_length + len(padding)
     if processed_length % 64:
         raise ValueError("computed SHA-256 glue padding is not block aligned")
     password = bytearray()
     for position in range(0, model.password_length, 2):
         positions = list(range(position, min(position + 2, model.password_length)))
-        padding_box = (
-            list(range(message_length))
-            + [message_length - 1]
-            + [message_length - model.salt_length] * (len(padding) - 2)
-            + [message_length - model.salt_length + 1]
-        )
+        padding_box = list(range(message_length)) + [
+            padding_indices[value] for value in padding
+        ]
         target = _spy(stream, model, padding_box + positions, bytes(salt))
         matches = [
             bytes(candidate)

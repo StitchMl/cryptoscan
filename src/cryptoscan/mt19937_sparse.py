@@ -39,7 +39,8 @@ def extract_instance(documents: Sequence[object]) -> SparseMT19937Model | None:
     output_count = max(map(int, counts))
     if output_count <= 624:
         return None
-    target = output_count
+    # The prompt's Nth number is zero-based index N-1.
+    target = output_count - 1
     if not 0 <= target - 624 + 1 < output_count:
         return None
     return SparseMT19937Model(output_count, target)
@@ -85,17 +86,27 @@ def twist_word(known_msb: int, following: int, offset_state: int) -> int:
     return result & _WORD_MASK
 
 
-def predict_from_sparse_outputs(target_index: int, first_output: int,
-                                second_output: int) -> int:
-    """Predict output[target_index] from the two recurrence source words."""
+def predict_sparse_candidates(target_index: int, first_output: int,
+                               second_output: int) -> tuple[int, int]:
+    """Return both outputs allowed by the one unknown MT state MSB."""
     first_index = target_index - 624 + 1
     second_index = target_index - 624 + 397
     if first_index < 0 or second_index <= first_index:
         raise ValueError("target draw is too early for the sparse MT19937 recurrence")
     first_state = untemper(first_output)
     second_state = untemper(second_output)
-    return temper(twist_word(0, first_state, second_state))
+    return tuple(
+        temper(twist_word(msb, first_state, second_state))
+        for msb in (0, _UPPER_MASK)
+    )
 
+
+def predict_from_sparse_outputs(target_index: int, first_output: int,
+                                second_output: int) -> int:
+    """Return the candidate corresponding to a zero guess for the missing MSB."""
+    return predict_sparse_candidates(
+        target_index, first_output, second_output,
+    )[0]
 
 def _read_line(stream, limit: int = 4096) -> bytes:
     data = bytearray()
@@ -109,45 +120,53 @@ def _read_line(stream, limit: int = 4096) -> bytes:
     return bytes(data)
 
 
-def recover_flag(documents: Sequence[object], host: str, port: int,
-                 timeout: float = 30.0) -> str:
-    """Use two chosen-index leaks, predict the target, and return the flag."""
-    model = extract_instance(documents)
-    if model is None:
-        raise ValueError("source does not establish a consecutive 32-bit MT19937 stream")
+def _recover_once(documents: Sequence[object], model: SparseMT19937Model,
+                  host: str, port: int, timeout: float,
+                  candidate_index: int) -> bytes:
+    """Collect the selectable sparse outputs and submit one MSB candidate."""
     first_index = model.target_index - 624 + 1
     second_index = model.target_index - 624 + 397
+    requested = {first_index, second_index}
     with connect_authorized(host, port, timeout) as sock:
         stream = sock.makefile("rwb", buffering=0)
         banner = bytearray()
-        while b"number!\n" not in banner and len(banner) < 16384:
+        while b"number!\\n" not in banner and len(banner) < 16384:
             line = _read_line(stream)
             if not line:
                 break
             banner.extend(line)
-        if b"number!\n" not in banner:
+        if b"number!\\n" not in banner:
             raise ValueError("service did not expose the expected selectable-number prompt")
-        stream.write(f"{first_index}\n{second_index}\n".encode("ascii"))
-        selected = {}
-        requested = {first_index, second_index}
-        for output_index in range(model.output_count):
+
+        stream.write(f"{first_index}\\n{second_index}\\n".encode("ascii"))
+        selected: dict[int, int] = {}
+        # The service emits one line per revealed index, with "Nope" for
+        # hidden values. Its final target is not included in this list.
+        for output_index in range(model.target_index):
             line = _read_line(stream)
             if not line:
-                raise ValueError("service closed before returning the generated sequence")
+                raise ValueError(
+                    f"service stopped after {output_index} of "
+                    f"{model.target_index} indexed outputs"
+                )
             if output_index not in requested:
                 continue
-            try:
-                selected[output_index] = int(line.strip())
-            except ValueError as exc:
+            match = re.search(rb"-?\\d+", line)
+            if match is None:
                 raise ValueError(
-                    f"service did not reveal the requested output at index {output_index}"
-                ) from exc
+                    f"service did not reveal the selected output "
+                    f"at index {output_index}"
+                )
+            selected[output_index] = int(match.group())
+
         if set(selected) != requested:
-            raise ValueError("service did not return both requested indexed outputs")
-        guess = predict_from_sparse_outputs(
+            raise ValueError("service did not return both selected MT19937 outputs")
+
+        candidates = predict_sparse_candidates(
             model.target_index, selected[first_index], selected[second_index],
         )
-        stream.write(f"{guess}\n".encode("ascii"))
+        guess = candidates[candidate_index]
+        stream.write(f"{guess}\\n".encode("ascii"))
         response = bytearray()
         while len(response) < 65536:
             chunk = sock.recv(4096)
@@ -156,8 +175,35 @@ def recover_flag(documents: Sequence[object], host: str, port: int,
             response.extend(chunk)
             if b"}" in response:
                 break
-    match = re.search(rb"(?:flag|ctf|tetctf)\{[^\r\n}]{1,200}\}",
-                      bytes(response), re.IGNORECASE)
-    if match is None:
-        raise ValueError("predicted value was submitted but no flag-shaped response was returned")
-    return match.group().decode("ascii")
+            if b"nope" in response.lower() or b"wrong" in response.lower():
+                break
+        return bytes(response)
+
+
+def recover_flag(documents: Sequence[object], host: str, port: int,
+                 timeout: float = 30.0) -> str:
+    """Retry independent seeds until one of the two MT twist candidates wins."""
+    model = extract_instance(documents)
+    if model is None:
+        raise ValueError("source does not establish a consecutive 32-bit MT19937 stream")
+
+    last_response = b""
+    # Each session leaves one unknown state MSB, so either candidate succeeds
+    # with probability 1/2. Independent connections make retries effective.
+    for attempt in range(64):
+        response = _recover_once(
+            documents, model, host, port, timeout, candidate_index=attempt & 1,
+        )
+        match = re.search(
+            rb"(?:flag|ctf|tetctf)\\{[^\\r\\n}]{1,200}\\}",
+            response, re.IGNORECASE,
+        )
+        if match is not None:
+            return match.group().decode("ascii")
+        last_response = response
+
+    excerpt = last_response.decode("ascii", "replace")[:160].strip()
+    raise ValueError(
+        "MT19937 candidate was rejected in 64 independent sessions"
+        + (f" (last response: {excerpt})" if excerpt else "")
+    )

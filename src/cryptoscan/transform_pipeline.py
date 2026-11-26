@@ -73,7 +73,10 @@ def _payload(source: str) -> bytes | None:
     if block is not None:
         lines = []
         for line in block.group(1).splitlines():
-            line = re.sub(r"^\s*#+\s?", "", line).strip()
+            line = re.sub(r"^\s*\\?#\s?", "", line).strip()
+            # Chat transcripts and shell continuations may add a trailing
+            # backslash to each wrapped data line; it is not a codec byte.
+            line = line.rstrip("\\").rstrip()
             if line:
                 lines.append(line)
         value = "".join(lines)

@@ -199,7 +199,7 @@ def _infer_pipeline(payload: bytes, max_stages: int = 4) -> tuple[tuple[str, ...
             except (ValueError, UnicodeError):
                 continue
             flag = re.search(
-                rb"[A-Za-z][A-Za-z0-9_]{0,31}\\{[^\\r\\n}]{1,200}\\}",
+                rb"[A-Za-z][A-Za-z0-9_]{0,31}\{[^\r\n}]{1,200}\}",
                 output,
             )
             if flag is not None:

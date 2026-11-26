@@ -78,6 +78,23 @@ def _documents_in_file(root: Path, path: Path) -> list[Document]:
     )]
 
 
+def _pipeline_markdown(path: Path, relative_name: str) -> bool:
+    """Include a Markdown challenge statement only when it declares a pipeline."""
+    if path.suffix.casefold() not in {".md", ".markdown"}:
+        return False
+    parts = [part.casefold() for part in relative_name.replace("\\", "/").split("/")]
+    if any(part in IGNORED_DIRS for part in parts[:-1]):
+        return False
+    try:
+        raw = path.read_bytes()
+        if len(raw) > 8 * 1024 * 1024 or b"\0" in raw[:4096]:
+            return False
+        text = raw.decode("utf-8", errors="replace")
+    except OSError:
+        return False
+    return re.search(r"(?im)\bPIPELINE\s*:\s*[A-Za-z][A-Za-z0-9_-]*(?:\s*->\s*[A-Za-z][A-Za-z0-9_-]*)+", text) is not None
+
+
 def collect_documents(targets: Iterable[str]) -> list[Document]:
     files: list[tuple[Path, Path]] = []
     for raw in targets:
@@ -86,7 +103,12 @@ def collect_documents(targets: Iterable[str]) -> list[Document]:
             files.extend(
                 (target, path) for path in target.rglob("*")
                 if path.is_file()
-                and not _ignored(path.relative_to(target).as_posix())
+                and (
+                    not _ignored(path.relative_to(target).as_posix())
+                    or _pipeline_markdown(
+                        path, path.relative_to(target).as_posix(),
+                    )
+                )
             )
         elif target.is_file():
             # Explicitly selected evidence always wins over filename-based

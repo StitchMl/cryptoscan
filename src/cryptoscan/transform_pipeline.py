@@ -121,6 +121,15 @@ def extract_instance(documents: Sequence[object]) -> TransformPipeline | None:
         stages, source_path = next(iter(declarations.items()))
         payload, _ = next(iter(payloads.items()))
         return TransformPipeline(stages, payload, source_path)
+
+    # Some challenge bundles contain only the encoded buffer. In that case,
+    # infer a short chain from the supported reversible codecs and require a
+    # flag-shaped plaintext before accepting the result.
+    if not declarations and len(payloads) == 1:
+        payload, source_path = next(iter(payloads.items()))
+        inferred = _infer_pipeline(payload)
+        if inferred is not None:
+            return TransformPipeline(inferred[0], payload, source_path)
     return None
 
 def _decode_stage(data: bytes, stage: str) -> bytes:
@@ -173,6 +182,35 @@ def _decode_stage(data: bytes, stage: str) -> bytes:
             raise ValueError("URL-encoded stage input is not ASCII") from exc
     raise ValueError(f"unsupported transform stage: {stage}")
 
+
+
+def _infer_pipeline(payload: bytes, max_stages: int = 4) -> tuple[tuple[str, ...], bytes] | None:
+    """Infer a bounded codec chain only when it yields one unique flag."""
+    import itertools
+
+    codecs = tuple(dict.fromkeys(_STAGE_ALIASES.values()))
+    found: dict[bytes, list[tuple[str, ...]]] = {}
+    for depth in range(1, max_stages + 1):
+        for decode_order in itertools.product(codecs, repeat=depth):
+            output = payload
+            try:
+                for stage in decode_order:
+                    output = _decode_stage(output, stage)
+            except (ValueError, UnicodeError):
+                continue
+            flag = re.search(
+                rb"[A-Za-z][A-Za-z0-9_]{0,31}\\{[^\\r\\n}]{1,200}\\}",
+                output,
+            )
+            if flag is not None:
+                flag_bytes = flag.group()
+                encoding_order = tuple(reversed(decode_order))
+                found.setdefault(flag_bytes, []).append(encoding_order)
+    if len(found) != 1:
+        return None
+    flag, chains = next(iter(found.items()))
+    chain = min(chains, key=lambda item: (len(item), item))
+    return chain, flag
 
 def decode_pipeline(model: TransformPipeline) -> bytes:
     """Reverse the documented encoding order, one codec at a time."""

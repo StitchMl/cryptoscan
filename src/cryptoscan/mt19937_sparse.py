@@ -130,15 +130,15 @@ def _recover_once(documents: Sequence[object], model: SparseMT19937Model,
     with connect_authorized(host, port, timeout) as sock:
         stream = sock.makefile("rwb", buffering=0)
         banner = bytearray()
-        while b"number!\\n" not in banner and len(banner) < 16384:
+        while b"number!\n" not in banner and len(banner) < 16384:
             line = _read_line(stream)
             if not line:
                 break
             banner.extend(line)
-        if b"number!\\n" not in banner:
+        if b"number!\n" not in banner:
             raise ValueError("service did not expose the expected selectable-number prompt")
 
-        stream.write(f"{first_index}\\n{second_index}\\n".encode("ascii"))
+        stream.write(f"{first_index}\n{second_index}\n".encode("ascii"))
         selected: dict[int, int] = {}
         # The service emits one line per revealed index, with "Nope" for
         # hidden values. Its final target is not included in this list.
@@ -151,7 +151,7 @@ def _recover_once(documents: Sequence[object], model: SparseMT19937Model,
                 )
             if output_index not in requested:
                 continue
-            match = re.search(rb"-?\\d+", line)
+            match = re.search(rb"-?\d+", line)
             if match is None:
                 raise ValueError(
                     f"service did not reveal the selected output "
@@ -166,7 +166,7 @@ def _recover_once(documents: Sequence[object], model: SparseMT19937Model,
             model.target_index, selected[first_index], selected[second_index],
         )
         guess = candidates[candidate_index]
-        stream.write(f"{guess}\\n".encode("ascii"))
+        stream.write(f"{guess}\n".encode("ascii"))
         response = bytearray()
         while len(response) < 65536:
             chunk = sock.recv(4096)
@@ -195,7 +195,7 @@ def recover_flag(documents: Sequence[object], host: str, port: int,
             documents, model, host, port, timeout, candidate_index=attempt & 1,
         )
         match = re.search(
-            rb"(?:flag|ctf|tetctf)\\{[^\\r\\n}]{1,200}\\}",
+            rb"(?:flag|ctf|tetctf)\{[^\r\n}]{1,200}\}",
             response, re.IGNORECASE,
         )
         if match is not None:

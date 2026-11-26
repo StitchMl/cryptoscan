@@ -67,7 +67,7 @@ def _payload(source: str) -> bytes | None:
     block = re.search(
         r"(?is)RAW\s+(?:[A-Z0-9_-]+\s+)*BUFFER[^\r\n]*"
         r"(.*?)"
-        r"(?:END\s+OF\s+RAW\s+BUFFER)",
+        r"(?:END\s+OF\s+RAW\s+BUFFER|\Z)",
         source,
     )
     if block is not None:
@@ -80,7 +80,11 @@ def _payload(source: str) -> bytes | None:
             if line:
                 lines.append(line)
         value = "".join(lines)
-        return value.encode("ascii") if value else None
+        if value:
+            try:
+                return value.encode("ascii")
+            except UnicodeEncodeError:
+                return None
 
     # Support common named payload fields when the challenge does not use a
     # delimited raw-buffer block.
@@ -95,19 +99,29 @@ def _payload(source: str) -> bytes | None:
 
 
 def extract_instance(documents: Sequence[object]) -> TransformPipeline | None:
-    """Recognize a declared codec chain and its associated encoded payload."""
+    """Pair a declared codec chain with its payload within one challenge scope."""
+    declarations: dict[tuple[str, ...], str] = {}
+    payloads: dict[bytes, str] = {}
     for document in documents:
         source = getattr(document, "text", "")
         stages = _pipeline(source)
         payload = _payload(source)
+        path = getattr(document, "path", "<document>")
         if stages and payload:
-            return TransformPipeline(
-                stages=stages,
-                payload=payload,
-                source_path=getattr(document, "path", "<document>"),
-            )
-    return None
+            return TransformPipeline(stages, payload, path)
+        if stages:
+            declarations.setdefault(stages, path)
+        if payload:
+            payloads.setdefault(payload, path)
 
+    # Challenge instructions and their attached telemetry dump are often
+    # separate files. Pair only when the scope has one unambiguous pipeline
+    # and one unambiguous payload; never mix multiple candidate artifacts.
+    if len(declarations) == 1 and len(payloads) == 1:
+        stages, source_path = next(iter(declarations.items()))
+        payload, _ = next(iter(payloads.items()))
+        return TransformPipeline(stages, payload, source_path)
+    return None
 
 def _decode_stage(data: bytes, stage: str) -> bytes:
     compact = re.sub(rb"\s+", b"", data)

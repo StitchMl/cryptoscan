@@ -53,6 +53,10 @@ from .gcm_hidden_live import (
 from .hamiltonicity_workflow import extract_instance as extract_fiat_shamir_graph, recover_flag as recover_fs_graph_flag
 from .fiat_shamir_batch import extract_instance as extract_batch_fiat_shamir, recover_flag as recover_batch_fs_flag
 from .parser import collect_documents
+from .transform_pipeline import (
+    extract_instance as extract_transform_pipeline,
+    recover_flag as recover_transform_pipeline_flag,
+)
 from .scanner import scan
 from .ntru_auto import instances as ntru_instances, recover_flag as recover_ntru_flag
 from .stream_combiner_workflow import recognize_stream_cipher, recover_stream_cipher
@@ -150,6 +154,9 @@ def _attack_strategies(args):
                         tuple(capabilities), rank, backend, preflight)
 
     offline = (
+        strategy("Declared layered encoding pipeline", "offline",
+                 extract_transform_pipeline,
+                 recover_transform_pipeline_flag, 1),
         strategy("Public-residue multiplicative exchange", "offline",
                  extract_public_residue, recover_public_residue_flag, 1),
         strategy("Recursive Cantor pairing of byte sequence", "offline",

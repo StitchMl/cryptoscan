@@ -308,13 +308,18 @@ def scalar_records(text: str) -> list[dict[str, Any]]:
 
 
 def pem_rsa_public_keys(text: str) -> list[dict[str, int]]:
-    """Parse RSA PKCS#1 and SubjectPublicKeyInfo PEM without external packages."""
+    """Parse RSA public-key and X.509 certificate PEM without external packages."""
     found: list[dict[str, int]] = []
-    pattern = re.compile(r"-----BEGIN (RSA PUBLIC KEY|PUBLIC KEY)-----([A-Za-z0-9+/=\s]{0,32768})-----END \1-----")
+    pattern = re.compile(r"-----BEGIN (RSA PUBLIC KEY|PUBLIC KEY|CERTIFICATE)-----([A-Za-z0-9+/=\s]{0,32768})-----END \1-----")
     for label, body in pattern.findall(text):
         try:
             der = base64.b64decode(re.sub(r"\s+", "", body), validate=True)
-            keys = der_rsa_public_keys(der, spki=label == "PUBLIC KEY")
+            is_spki = None
+            if label == "RSA PUBLIC KEY":
+                is_spki = False
+            elif label == "PUBLIC KEY":
+                is_spki = True
+            keys = der_rsa_public_keys(der, spki=is_spki)
             found.extend(keys)
         except ValueError:
             continue
@@ -343,16 +348,86 @@ def _parse_rsa_der_variant(der: bytes, is_spki: bool) -> dict[str, int] | None:
     return {"n": modulus, "e": exponent} if modulus > 3 and exponent > 1 else None
 
 
+_RSA_ENCRYPTION_OID = bytes.fromhex("2a864886f70d010101")
+_MAX_DER_NODES = 20_000
+
+
+def _parse_rsa_spki(der: bytes) -> dict[str, int] | None:
+    try:
+        sequence, end = _der_value(der, 0, 0x30)
+        if end != len(der):
+            return None
+        algorithm, _ = _der_value(sequence, 0, 0x30)
+        oid, _ = _der_value(algorithm, 0, 0x06)
+    except ValueError:
+        return None
+    if oid != _RSA_ENCRYPTION_OID:
+        return None
+    try:
+        return _parse_rsa_der_variant(der, True)
+    except ValueError:
+        return None
+
+
+def _der_children(data: bytes):
+    offset = 0
+    while offset < len(data):
+        tag = data[offset]
+        value, end = _der_value(data, offset, tag)
+        yield tag, data[offset:end], value
+        offset = end
+
+
+def _nested_rsa_spki_keys(der: bytes) -> list[dict[str, int]]:
+    if len(der) > 1_000_000:
+        return []
+    pending = [der]
+    found: dict[tuple[int, int], dict[str, int]] = {}
+    visited = 0
+    while pending and visited < _MAX_DER_NODES:
+        sequence = pending.pop()
+        try:
+            body, end = _der_value(sequence, 0, 0x30)
+        except ValueError:
+            continue
+        if end != len(sequence):
+            continue
+        visited = _inspect_der_children(body, pending, found, visited)
+    return list(found.values())
+
+
+def _inspect_der_children(body: bytes, pending: list[bytes], found: dict,
+                          visited: int) -> int:
+    try:
+        for tag, encoded, _value in _der_children(body):
+            visited += 1
+            if tag == 0x30:
+                key = _parse_rsa_spki(encoded)
+                if key is not None:
+                    found[(key["n"], key["e"])] = key
+                pending.append(encoded)
+            if visited >= _MAX_DER_NODES:
+                break
+    except ValueError:
+        return _MAX_DER_NODES
+    return visited
+
+
 def der_rsa_public_keys(der: bytes, spki: bool | None = None) -> list[dict[str, int]]:
     attempts = (False, True) if spki is None else (spki,)
     for is_spki in attempts:
+        if is_spki:
+            parsed = _parse_rsa_spki(der)
+            if parsed is not None:
+                return [parsed]
+            continue
         try:
             parsed = _parse_rsa_der_variant(der, is_spki)
         except ValueError:
             continue
         if parsed is not None:
             return [parsed]
-    return []
+    return _nested_rsa_spki_keys(der)
 
 
 def _der_value(data: bytes, offset: int, expected_tag: int) -> tuple[bytes, int]:

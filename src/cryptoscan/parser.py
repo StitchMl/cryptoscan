@@ -5,6 +5,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import math
 import re
 import tarfile
 import zipfile
@@ -410,6 +411,83 @@ def ssh_rsa_public_keys(text: str) -> list[dict[str, int]]:
         except (ValueError, OverflowError):
             continue
     return found
+
+
+def openssh_rsa_private_keys(text: str) -> list[dict[str, int]]:
+    """Extract a single unencrypted RSA key from OpenSSH private-key armor."""
+    pattern = re.compile(
+        r"-----BEGIN OPENSSH PRIVATE KEY-----"
+        r"([A-Za-z0-9+/=\s]{0,1400000})"
+        r"-----END OPENSSH PRIVATE KEY-----"
+    )
+    found: list[dict[str, int]] = []
+    for body in pattern.findall(text):
+        try:
+            encoded = base64.b64decode(re.sub(r"\s+", "", body), validate=True)
+            key = _parse_openssh_rsa_private_blob(encoded)
+        except (OverflowError, ValueError):
+            continue
+        if key is not None:
+            found.append(key)
+    return found
+
+
+def _parse_openssh_rsa_private_blob(encoded: bytes) -> dict[str, int] | None:
+    magic = b"openssh-key-v1\x00"
+    if len(encoded) > 1_000_000 or not encoded.startswith(magic):
+        return None
+    offset = len(magic)
+    cipher, offset = _ssh_string(encoded, offset)
+    kdf, offset = _ssh_string(encoded, offset)
+    options, offset = _ssh_string(encoded, offset)
+    if cipher != b"none" or kdf != b"none" or options:
+        return None
+    key_count, offset = _ssh_uint32(encoded, offset)
+    if key_count != 1:
+        return None
+    public_blob, offset = _ssh_string(encoded, offset)
+    private_blob, offset = _ssh_string(encoded, offset)
+    if offset != len(encoded) or len(private_blob) % 8:
+        return None
+
+    check1, private_offset = _ssh_uint32(private_blob, 0)
+    check2, private_offset = _ssh_uint32(private_blob, private_offset)
+    if check1 != check2:
+        return None
+    algorithm, private_offset = _ssh_string(private_blob, private_offset)
+    if algorithm != b"ssh-rsa":
+        return None
+    modulus_raw, private_offset = _ssh_string(private_blob, private_offset)
+    exponent_raw, private_offset = _ssh_string(private_blob, private_offset)
+    private_exponent_raw, private_offset = _ssh_string(private_blob, private_offset)
+    iqmp_raw, private_offset = _ssh_string(private_blob, private_offset)
+    prime1_raw, private_offset = _ssh_string(private_blob, private_offset)
+    prime2_raw, private_offset = _ssh_string(private_blob, private_offset)
+    _comment, private_offset = _ssh_string(private_blob, private_offset)
+    padding = private_blob[private_offset:]
+    if not 1 <= len(padding) <= 8 or padding != bytes(range(1, len(padding) + 1)):
+        return None
+
+    modulus = _ssh_mpint(modulus_raw)
+    exponent = _ssh_mpint(exponent_raw)
+    private_exponent = _ssh_mpint(private_exponent_raw)
+    iqmp = _ssh_mpint(iqmp_raw)
+    prime1 = _ssh_mpint(prime1_raw)
+    prime2 = _ssh_mpint(prime2_raw)
+    if (prime1 <= 1 or prime2 <= 1 or prime1 == prime2
+            or modulus != prime1 * prime2 or exponent <= 1 or private_exponent <= 1
+            or (exponent * private_exponent) % math.lcm(prime1 - 1, prime2 - 1) != 1
+            or iqmp != pow(prime2, -1, prime1)):
+        return None
+    public_algorithm, public_offset = _ssh_string(public_blob, 0)
+    public_exponent_raw, public_offset = _ssh_string(public_blob, public_offset)
+    public_modulus_raw, public_offset = _ssh_string(public_blob, public_offset)
+    if (public_algorithm != b"ssh-rsa" or public_offset != len(public_blob)
+            or _ssh_mpint(public_exponent_raw) != exponent
+            or _ssh_mpint(public_modulus_raw) != modulus):
+        return None
+    return {"n": modulus, "e": exponent, "d": private_exponent,
+            "p": prime1, "q": prime2}
 
 
 def _ssh_string(data: bytes, offset: int) -> tuple[bytes, int]:

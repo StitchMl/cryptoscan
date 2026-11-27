@@ -1,3 +1,5 @@
+import pytest
+
 from cryptoscan.parser import Document
 from cryptoscan.scanner import scan
 from cryptoscan.transform_pipeline import extract_instance, recover_flag
@@ -40,3 +42,35 @@ def test_ambiguous_unlabeled_tokens_do_not_select_a_solver():
     document = Document("ambiguous.txt", statement, None)
 
     assert extract_instance([document]) is None
+
+
+def test_declared_bigint_stage_recovers_minimal_big_endian_bytes():
+    expected = b"crypto{generic_bigint_fixture}"
+    encoded = str(int.from_bytes(expected, "big"))
+    document = Document(
+        "challenge.txt",
+        f"Pipeline: bigint\nRAW BUFFER\n{encoded}\nEND OF RAW BUFFER\n",
+        None,
+    )
+
+    assert recover_flag([document]) == expected.decode()
+
+
+def test_declared_utf8_stage_validates_and_recovers_text():
+    expected = "crypto{generic_utf8_fixture}"
+    document = Document(
+        "challenge.txt",
+        f"Pipeline: utf-8\nRAW BUFFER\n{expected}\nEND OF RAW BUFFER\n",
+        None,
+    )
+
+    assert recover_flag([document]) == expected
+
+
+def test_bigint_stage_rejects_negative_and_oversized_values():
+    from cryptoscan.transform_pipeline import _decode_stage
+
+    with pytest.raises(ValueError, match="unsigned"):
+        _decode_stage(b"-1", "bigint")
+    with pytest.raises(ValueError):
+        _decode_stage(b"9" * 5000, "bigint")

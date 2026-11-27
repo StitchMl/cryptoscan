@@ -1,6 +1,10 @@
 import base64
 
-from cryptoscan.parser import der_rsa_public_keys, pem_rsa_public_keys
+from cryptoscan.parser import (
+    der_rsa_public_keys,
+    pem_rsa_public_keys,
+    ssh_rsa_public_keys,
+)
 
 
 def _length(size: int) -> bytes:
@@ -73,3 +77,52 @@ def test_der_certificate_scan_reports_the_extracted_modulus(tmp_path):
     assert key_info.evidence["modulus_decimal"] == str(modulus)
     assert key_info.evidence["exponent"] == 65537
     assert key_info.solver["kind"] == "rsa_public_key_metadata"
+
+
+def _ssh_string(value: bytes) -> bytes:
+    return len(value).to_bytes(4, "big") + value
+
+
+def _ssh_mpint(value: int) -> bytes:
+    raw = value.to_bytes((value.bit_length() + 7) // 8, "big")
+    if raw[0] & 0x80:
+        raw = b"\x00" + raw
+    return _ssh_string(raw)
+
+
+def _ssh_rsa_line(modulus: int, exponent: int = 65537) -> str:
+    blob = (_ssh_string(b"ssh-rsa") + _ssh_mpint(exponent) + _ssh_mpint(modulus))
+    return "ssh-rsa " + base64.b64encode(blob).decode() + " challenge-key"
+
+
+def test_openssh_rsa_public_key_parses_mpints_and_comment():
+    modulus = 0xD5BBB96D30086EC484EBA3D7F9CAEB07
+
+    assert ssh_rsa_public_keys("# public key\n" + _ssh_rsa_line(modulus)) == [{
+        "n": modulus,
+        "e": 65537,
+    }]
+
+
+def test_openssh_rsa_rejects_malformed_or_mismatched_blobs():
+    assert ssh_rsa_public_keys("ssh-rsa !!! invalid") == []
+    wrong_algorithm = base64.b64encode(_ssh_string(b"ssh-ed25519") + b"x").decode()
+    assert ssh_rsa_public_keys("ssh-rsa " + wrong_algorithm) == []
+    trailing_data = base64.b64encode(
+        _ssh_string(b"ssh-rsa") + _ssh_mpint(65537) + _ssh_mpint(257) + b"x"
+    ).decode()
+    assert ssh_rsa_public_keys("ssh-rsa " + trailing_data) == []
+
+
+def test_openssh_public_key_scan_reports_decimal_modulus(tmp_path):
+    from cryptoscan.parser import collect_documents
+    from cryptoscan.scanner import scan
+
+    modulus = 0xD5BBB96D30086EC484EBA3D7F9CAEB07
+    public_key = tmp_path / "bruce_rsa.pub"
+    public_key.write_text(_ssh_rsa_line(modulus) + "\n")
+    findings = scan(collect_documents([str(public_key)]))
+    key_info = next(item for item in findings if item.rule == "RSA-PUBLIC-KEY-MATERIAL")
+
+    assert key_info.evidence["modulus_decimal"] == str(modulus)
+    assert key_info.evidence["exponent"] == 65537

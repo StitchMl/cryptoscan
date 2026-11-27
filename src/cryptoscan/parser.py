@@ -326,6 +326,52 @@ def pem_rsa_public_keys(text: str) -> list[dict[str, int]]:
     return found
 
 
+def ssh_rsa_public_keys(text: str) -> list[dict[str, int]]:
+    """Parse OpenSSH ``ssh-rsa`` public-key lines without external packages."""
+    found: list[dict[str, int]] = []
+    for line in text.splitlines():
+        if len(line) > 65536:
+            continue
+        fields = line.split()
+        if len(fields) < 2 or fields[0] != "ssh-rsa":
+            continue
+        try:
+            blob = base64.b64decode(fields[1], validate=True)
+            algorithm, offset = _ssh_string(blob, 0)
+            if algorithm != b"ssh-rsa":
+                continue
+            exponent_raw, offset = _ssh_string(blob, offset)
+            modulus_raw, offset = _ssh_string(blob, offset)
+            if offset != len(blob):
+                continue
+            exponent = _ssh_mpint(exponent_raw)
+            modulus = _ssh_mpint(modulus_raw)
+            if modulus > 3 and exponent > 1:
+                found.append({"n": modulus, "e": exponent})
+        except (ValueError, OverflowError):
+            continue
+    return found
+
+
+def _ssh_string(data: bytes, offset: int) -> tuple[bytes, int]:
+    if offset + 4 > len(data):
+        raise ValueError("truncated SSH string length")
+    length = int.from_bytes(data[offset:offset + 4], "big")
+    start = offset + 4
+    end = start + length
+    if end > len(data):
+        raise ValueError("truncated SSH string")
+    return data[start:end], end
+
+
+def _ssh_mpint(encoded: bytes) -> int:
+    if not encoded or encoded[0] & 0x80:
+        raise ValueError("invalid or negative SSH mpint")
+    if len(encoded) > 1 and encoded[0] == 0 and not encoded[1] & 0x80:
+        raise ValueError("non-canonical SSH mpint")
+    return int.from_bytes(encoded, "big")
+
+
 def _parse_rsa_der_variant(der: bytes, is_spki: bool) -> dict[str, int] | None:
     candidate = der
     if is_spki:

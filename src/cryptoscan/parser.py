@@ -326,6 +326,30 @@ def pem_rsa_public_keys(text: str) -> list[dict[str, int]]:
     return found
 
 
+def pem_rsa_private_keys(text: str) -> list[dict[str, int]]:
+    """Extract parameters from unencrypted PKCS#1 or PKCS#8 RSA PEM keys."""
+    from Crypto.PublicKey import RSA
+
+    found: list[dict[str, int]] = []
+    pattern = re.compile(
+        r"-----BEGIN (RSA PRIVATE KEY|PRIVATE KEY)-----"
+        r"([A-Za-z0-9+/=\s]{0,65536})-----END \1-----"
+    )
+    for _label, body in pattern.findall(text):
+        try:
+            der = base64.b64decode(re.sub(r"\s+", "", body), validate=True)
+            key = RSA.import_key(der)
+        except (IndexError, TypeError, ValueError):
+            continue
+        if not key.has_private():
+            continue
+        found.append({
+            "n": key.n, "e": key.e, "d": key.d,
+            "p": key.p, "q": key.q,
+        })
+    return found
+
+
 def ssh_rsa_public_keys(text: str) -> list[dict[str, int]]:
     """Parse OpenSSH ``ssh-rsa`` public-key lines without external packages."""
     found: list[dict[str, int]] = []

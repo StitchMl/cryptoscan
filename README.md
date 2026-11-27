@@ -1186,7 +1186,7 @@ c = 123456...
 Byte strings may use hexadecimal, `0x`-prefixed hexadecimal, Base64, or JSON byte arrays. Structured nonce-reuse checks understand fields such as `mode`, `key_id`, `nonce` or `iv`, and `ciphertext` or `ct`.
 The parser also accepts Python byte literals and common `key: value` challenge dumps.
 It scans text members inside ZIP, TAR, TAR.GZ, TAR.BZ2, and TAR.XZ archives without extracting them to disk. Per-member and entry-count limits bound archive processing.
-RSA public keys in PKCS#1 or SubjectPublicKeyInfo PEM and DER form, X.509 certificate keys, OpenSSH `ssh-rsa` keys, and unencrypted PKCS#1/PKCS#8 private keys in PEM or raw DER form are extracted as exact integer parameters. Private-key findings expose decimal `d`, `p`, and `q` for static challenge artifacts; encrypted private keys require a passphrase and are not guessed.
+RSA public keys in PKCS#1 or SubjectPublicKeyInfo PEM and DER form, X.509 certificate keys, OpenSSH `ssh-rsa` keys, and unencrypted PKCS#1/PKCS#8 private keys in PEM or raw DER form are extracted as exact integer parameters. Unencrypted single-key OpenSSH RSA private-key files are also parsed and cross-checked against their public-key blob. Private-key findings expose decimal `d`, `p`, and `q` for static challenge artifacts; encrypted private keys require a passphrase and are not guessed.
 
 Static encoding recovery also recognizes byte-ordinal arrays in JSON and
 bracketed HTML/text challenge statements when the values decode to readable

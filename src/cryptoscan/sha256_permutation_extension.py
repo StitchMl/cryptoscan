@@ -68,7 +68,7 @@ def _salt_length(tree: ast.AST) -> int | None:
 
 
 def _input_prompts(source: str) -> dict[str, bytes]:
-    found = re.findall(r"input\(\s*[\x27\x22](\[[^\]+\]\s*)[\x27\x22]\s*\)", source)
+    found = re.findall(r"input\(\s*[\x27\x22](\[[^\]]+\]\s*)[\x27\x22]\s*\)", source)
     return {
         item.strip().strip("[]").strip():
             ("[" + item.strip()[1:-1] + "] ").encode()

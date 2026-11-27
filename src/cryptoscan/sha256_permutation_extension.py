@@ -53,55 +53,73 @@ def _label(source: str, name: str) -> bytes | None:
         return None
     return ("[" + name + "] ").encode("ascii")
 
+def _salt_length(tree: ast.AST) -> int | None:
+    preauth = _function(tree, "preauth")
+    if preauth is None:
+        return None
+    for node in ast.walk(preauth):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr == "urandom" and node.args:
+            value = node.args[0]
+            if isinstance(value, ast.Constant) and isinstance(value.value, int):
+                return value.value
+    return None
+
+
+def _input_prompts(source: str) -> dict[str, bytes]:
+    found = re.findall(r"input\\(\\s*['\\\"](\\[[^\\]]+\\]\\s*)['\\\"]\\s*\\)", source)
+    return {
+        item.strip().strip("[]").strip():
+            ("[" + item.strip()[1:-1] + "] ").encode()
+        for item in found
+    }
+
+
+def _parse_document(source: str) -> SHA256PermutationOracle | None:
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+    markers = (
+        "hashlib.sha256" in source
+        and "payload[x] for x in pbox" in source
+        and "password + salt" in source
+        and _function(tree, "spy") is not None
+        and _function(tree, "auth") is not None
+    )
+    if not markers:
+        return None
+    length_match = re.search(r"assert\\s+len\\(password\\)\\s*==\\s*(\\d+)", source)
+    if length_match is None:
+        return None
+    salt_length = _salt_length(tree)
+    if salt_length is None:
+        return None
+    commands = re.findall(r"command\\s*==\\s*['\\\"]([^'\\\"]+)['\\\"]", source)
+    if len(commands) < 2:
+        return None
+    prompts = _input_prompts(source)
+    required = ("cmd", "pbox", "salt", "hash")
+    if any(name not in prompts for name in required):
+        return None
+    flag_label = _label(source, "flag")
+    if flag_label is None or "base64.b64encode" not in source:
+        return None
+    return SHA256PermutationOracle(
+        int(length_match.group(1)), salt_length, _ALPHABET,
+        prompts["cmd"], prompts["pbox"], prompts["salt"], prompts["hash"],
+        flag_label, commands[0], commands[1],
+    )
+
+
 def extract_instance(documents: Sequence[object]) -> SHA256PermutationOracle | None:
     """Detect a chosen-order SHA-256 hash of password||salt in source."""
     for document in documents:
-        source = getattr(document, "text", "")
-        try:
-            tree = ast.parse(source)
-        except (SyntaxError, ValueError):
-            continue
-        if "hashlib.sha256" not in source or "payload[x] for x in pbox" not in source:
-            continue
-        if "password + salt" not in source or not _function(tree, "spy") or not _function(tree, "auth"):
-            continue
-        length_match = re.search(r"assert\s+len\(password\)\s*==\s*(\d+)", source)
-        if length_match is None:
-            continue
-        password_length = int(length_match.group(1))
-        preauth = _function(tree, "preauth")
-        salt_length = None
-        if preauth is not None:
-            for node in ast.walk(preauth):
-                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                    continue
-                if node.func.attr == "urandom" and node.args and isinstance(node.args[0], ast.Constant):
-                    if isinstance(node.args[0].value, int):
-                        salt_length = node.args[0].value
-                        break
-        if salt_length is None:
-            continue
-        commands = re.findall(r"command\s*==\s*['\"]([^'\"]+)['\"]", source)
-        if len(commands) < 2:
-            continue
-        input_prompts = re.findall(r"input\(\s*['\"](\[[^\]]+\]\s*)['\"]\s*\)", source)
-        prompts = {item.strip().strip("[]").strip(): ("[" + item.strip()[1:-1] + "] ").encode() for item in input_prompts}
-        required = ("cmd", "pbox", "salt", "hash")
-        if any(name not in prompts for name in required):
-            continue
-        flag_label = _label(source, "flag")
-        if flag_label is None:
-            continue
-        alphabet = _ALPHABET
-        if "base64.b64encode" not in source:
-            continue
-        return SHA256PermutationOracle(
-            password_length, salt_length, alphabet,
-            prompts["cmd"], prompts["pbox"], prompts["salt"], prompts["hash"],
-            flag_label, commands[0], commands[1],
-        )
+        model = _parse_document(getattr(document, "text", ""))
+        if model is not None:
+            return model
     return None
-
 
 def _rotate(value: int, shift: int) -> int:
     return ((value >> shift) | (value << (32 - shift))) & _MASK

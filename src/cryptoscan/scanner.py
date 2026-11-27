@@ -64,6 +64,7 @@ from .parser import (
     parse_int,
     pem_rsa_public_keys,
     scalar_records,
+    ssh_rsa_public_keys,
 )
 from .reciprocal_rabin_oracle import _source_profile as reciprocal_rabin_profile
 from .rotated_quadratic_rsa import extract_instance as extract_rotated_rsa
@@ -119,6 +120,8 @@ def _records(documents: list[Document]) -> list[dict[str, Any]]:
             records.append({"location": f"{doc.path}:assignments", "object": assigned, "scope": doc.scope})
         for index, key in enumerate(pem_rsa_public_keys(doc.text)):
             records.append({"location": f"{doc.path}:pem[{index}]", "object": key, "scope": doc.scope})
+        for index, key in enumerate(ssh_rsa_public_keys(doc.text)):
+            records.append({"location": f"{doc.path}:ssh-rsa[{index}]", "object": key, "scope": doc.scope})
     return records
 
 
@@ -1720,7 +1723,8 @@ def _rsa_key_material_findings(rsa) -> list[Finding]:
     for item in rsa:
         location = item["location"]
         source = location.split(":", 1)[0].casefold()
-        if not source.endswith((".der", ".cer")) and ":pem[" not in location.casefold():
+        if (not source.endswith((".der", ".cer")) and ":pem[" not in location.casefold()
+                and ":ssh-rsa[" not in location.casefold()):
             continue
         if item["c"] is not None or item["d"] is not None:
             continue
@@ -1734,7 +1738,7 @@ def _rsa_key_material_findings(rsa) -> list[Finding]:
             location=location,
             evidence={"modulus_decimal": str(modulus), "exponent": exponent,
                       "modulus_bits": modulus.bit_length()},
-            preconditions=["The supplied DER/PEM structure contains a parsed RSA public key."],
+            preconditions=["The supplied DER, PEM, or OpenSSH structure contains a parsed RSA public key."],
             attack="Report the exact public modulus and exponent; this extraction alone does not establish a weakness.",
             solver={"kind": "rsa_public_key_metadata",
                     "modulus_decimal": str(modulus), "exponent": exponent},

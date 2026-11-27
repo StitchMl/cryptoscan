@@ -35,6 +35,19 @@ cryptoscan challenge.txt --plan-attacks
 cryptoscan challenge.txt --solve
 ```
 
+## Explicit modular exponentiation
+
+When a challenge states one unambiguous integer expression in the form
+`a^e mod n` or its LaTeX equivalent `a^{e} \mod n`, CryptoScan computes it locally with Python's
+three-argument `pow`. Repeated copies of the same expression are accepted;
+multiple distinct expressions are left for review. A negative exponent is
+supported only when the base has a modular inverse.
+
+```powershell
+cryptoscan challenge.txt --plan-attacks
+cryptoscan challenge.txt --solve
+```
+
 ## Gaussian-integer RSA over a squared semiprime
 
 CryptoScan recognizes source that multiplies Gaussian integers

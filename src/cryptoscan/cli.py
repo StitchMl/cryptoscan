@@ -28,6 +28,8 @@ from .gaussian_square_rsa import extract_instance as extract_gaussian_square, re
 from .hint_factor_rsa import extract_instance as extract_hint_factor_rsa, recover_flag as recover_hint_factor_rsa_flag
 from .integer_factorization import extract_instance as extract_factorization_task
 from .integer_factorization import recover_answer as recover_factorization_answer
+from .modular_exponentiation import extract_instance as extract_modular_power
+from .modular_exponentiation import recover_answer as recover_modular_power_answer
 from .rsa_reused_digits import (
     extract_instance as extract_reused_digits,
     recover_flag as recover_reused_digits_flag,
@@ -162,6 +164,9 @@ def _attack_strategies(args):
     offline = (
         strategy("Explicit integer factorization", "offline",
                  extract_factorization_task, recover_factorization_answer, 1,
+                 output_label="ANSWER"),
+        strategy("Explicit modular exponentiation", "offline",
+                 extract_modular_power, recover_modular_power_answer, 1,
                  output_label="ANSWER"),
         strategy("Declared layered encoding pipeline", "offline",
                  extract_transform_pipeline,

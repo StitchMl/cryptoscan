@@ -289,6 +289,25 @@ def _decode_utf8(data: bytes) -> bytes:
     return data
 
 
+def decode_typed_encoding(encoding: str, encoded: object) -> bytes:
+    """Decode one explicitly typed challenge value without evaluating source."""
+    stage = _normalize_stage(encoding)
+    if stage is None:
+        raise ValueError("unsupported typed encoding")
+    if stage == "bigint":
+        if type(encoded) is int:
+            raw = str(encoded).encode("ascii")
+        elif isinstance(encoded, str):
+            raw = encoded.encode("ascii")
+        else:
+            raise ValueError("bigint payload must be an integer or decimal string")
+    elif isinstance(encoded, str):
+        raw = encoded.encode("utf-8")
+    else:
+        raise ValueError("text encoding payload must be a string")
+    return _decode_stage(raw, stage)
+
+
 def _require_ascii(data: bytes, message: str) -> None:
     try:
         data.decode("ascii")

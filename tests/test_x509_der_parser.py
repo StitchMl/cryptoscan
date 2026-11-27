@@ -2,6 +2,7 @@ import base64
 
 from cryptoscan.parser import (
     der_rsa_public_keys,
+    openssh_rsa_private_keys,
     pem_rsa_public_keys,
     ssh_rsa_public_keys,
 )

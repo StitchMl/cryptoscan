@@ -19,6 +19,22 @@ The existing offline codecs, source recognizers, and attack planners still
 decide what can be identified or solved. An unsupported construction remains
 unresolved and is not treated as a successful recovery.
 
+## Explicit integer factorization requests
+
+When challenge text explicitly asks to factor one integer, CryptoScan extracts
+the value from the statement and offers an offline strategy for inputs from 16
+through 192 bits. `--plan-attacks` only reports the candidate; `--solve` factors
+it, verifies that all returned factors are prime and multiply back to the input,
+then prints the smallest prime as `ANSWER`. The solver uses python-flint when
+installed and falls back to SymPy. Factoring time depends on the modulus and
+backend; larger inputs are left unclassified rather than sent to a network
+service.
+
+```powershell
+cryptoscan challenge.txt --plan-attacks
+cryptoscan challenge.txt --solve
+```
+
 ## Gaussian-integer RSA over a squared semiprime
 
 CryptoScan recognizes source that multiplies Gaussian integers

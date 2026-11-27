@@ -26,6 +26,8 @@ from .weak_seeded_multiprime_rsa import extract_instance as extract_weak_seeded_
 from .gaussian_rsa import extract_instance as extract_gaussian_rsa, recover_flag as recover_gaussian_rsa_flag
 from .gaussian_square_rsa import extract_instance as extract_gaussian_square, recover_flag as recover_gaussian_square_flag
 from .hint_factor_rsa import extract_instance as extract_hint_factor_rsa, recover_flag as recover_hint_factor_rsa_flag
+from .integer_factorization import extract_instance as extract_factorization_task
+from .integer_factorization import recover_answer as recover_factorization_answer
 from .rsa_reused_digits import (
     extract_instance as extract_reused_digits,
     recover_flag as recover_reused_digits_flag,
@@ -151,11 +153,16 @@ def _attack_strategies(args):
     can replace a recognizer or recovery function without stale references.
     """
     def strategy(name, mode, recognize, recover, rank, *,
-                 capabilities=(), backend="python", preflight=None):
+                 capabilities=(), backend="python", preflight=None,
+                 output_label="FLAG"):
         return Strategy(name, mode, recognize, recover,
-                        tuple(capabilities), rank, backend, preflight)
+                        tuple(capabilities), rank, backend, preflight,
+                        output_label)
 
     offline = (
+        strategy("Explicit integer factorization", "offline",
+                 extract_factorization_task, recover_factorization_answer, 1,
+                 output_label="ANSWER"),
         strategy("Declared layered encoding pipeline", "offline",
                  extract_transform_pipeline,
                  recover_transform_pipeline_flag, 1),
@@ -341,11 +348,15 @@ def _execute_attack_plan(args, documents) -> int | None:
     if not plan.candidates:
         return None
     try:
-        _, plaintext = execute_plan(plan, documents)
+        family, plaintext = execute_plan(plan, documents)
     except RecoveryExhausted as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    print(f"FLAG: {plaintext}")
+    label = next(
+        candidate.strategy.output_label for candidate in plan.candidates
+        if candidate.family == family
+    )
+    print(f"{label}: {plaintext}")
     return 0
 
 

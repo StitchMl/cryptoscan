@@ -74,3 +74,40 @@ def test_bigint_stage_rejects_negative_and_oversized_values():
         _decode_stage(b"-1", "bigint")
     with pytest.raises(ValueError):
         _decode_stage(b"9" * 5000, "bigint")
+
+
+def test_typed_encodings_decode_standard_challenge_values():
+    import base64
+    import codecs
+
+    from cryptoscan.transform_pipeline import decode_typed_encoding
+
+    expected = b"crypto{typed_codec_fixture}"
+    values = (
+        ("base64", base64.b64encode(expected).decode()),
+        ("hex", expected.hex()),
+        ("rot13", codecs.encode(expected.decode(), "rot_13")),
+        ("bigint", int.from_bytes(expected, "big")),
+        ("utf-8", expected.decode()),
+    )
+    for encoding, encoded in values:
+        assert decode_typed_encoding(encoding, encoded) == expected
+
+
+def test_json_typed_encoding_record_recovers_flag():
+    import base64
+    import json
+
+    expected = "crypto{typed_record_fixture}"
+    record = {
+        "type": "base64",
+        "encoded": base64.b64encode(expected.encode()).decode(),
+    }
+    document = Document("transcript.json", json.dumps(record), record)
+
+    finding = next(
+        item for item in scan([document])
+        if item.rule == "ENCODING-TYPED-RECORD"
+    )
+    assert finding.recovery_status == "flag-recovered"
+    assert bytes.fromhex(finding.solver["result_hex"]).decode() == expected

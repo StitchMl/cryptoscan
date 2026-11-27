@@ -33,3 +33,29 @@ def test_json_cli_emits_offline_cyberchef_recipe(tmp_path, capsys):
     assert finding["cyberchef"]["input"] == ciphertext.hex()
     assert [step["op"] for step in finding["cyberchef"]["recipe"]] == ["From Hex", "XOR"]
     assert "http" not in json.dumps(finding["cyberchef"]).casefold()
+
+
+def test_unmatched_binary_input_produces_json_triage(tmp_path, capsys):
+    path = tmp_path / "unknown.bin"
+    path.write_bytes(b"\x00\x01challenge marker\x00\xff")
+    assert main([str(path), "--format", "json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["findings"] == []
+    assert report["triage"]["documents_received"] == 1
+    assert report["triage"]["binary_artifacts"][0]["path"] == "unknown.bin"
+    assert "challenge marker" in report["triage"]["binary_artifacts"][0]["printable_strings"]
+
+
+def test_explicit_url_is_fetched_without_extra_authorization_flag(monkeypatch, capsys):
+    received = {}
+
+    def fake_collect(targets, *, authorized):
+        received["targets"] = targets
+        received["authorized"] = authorized
+        return []
+
+    monkeypatch.setattr("cryptoscan.cli.collect_documents", fake_collect)
+    assert main(["https://ctf.example/challenge", "--no-assist", "--no-color"]) == 0
+    assert received["targets"] == ["https://ctf.example/challenge"]
+    assert received["authorized"] is True
+    capsys.readouterr()

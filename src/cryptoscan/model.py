@@ -6,7 +6,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-FLAG_PATTERN = re.compile(rb"(?:flag|ctf|key)\{[^\r\n]{1,200}\}", re.IGNORECASE)
+FLAG_PATTERN = re.compile(rb"(?:crypto|flag|ctf|key)\{[^\r\n]{1,200}\}", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -96,21 +96,57 @@ class Finding:
         return False
 
     def _verify_cipher_attacks(self) -> bool:
-        if self.rule == "DH-DEGENERATE-GENERATOR":
-            return int(self.evidence["g"]) % int(self.evidence["p"]) in (0, 1, int(self.evidence["p"]) - 1)
-        if self.rule == "DH-SMALL-GROUP":
-            return self.evidence.get("discrete_log_verified") is True
-        if self.rule == "CBC-FIRST-BLOCK-BITFLIP":
-            iv = bytes.fromhex(self.evidence["iv_hex"])
-            known = bytes.fromhex(self.evidence["known_block_hex"])
-            target = bytes.fromhex(self.evidence["target_block_hex"])
-            expected = bytes(left ^ old ^ new for left, old, new in zip(iv, known, target, strict=False))
-            return expected.hex() == self.solver.get("modified_iv_hex")
-        if self.rule in {"XOR-SINGLE-BYTE", "XOR-REPEATING-KEY"}:
-            return self.evidence.get("flag_shape") is True and self.evidence.get("roundtrip_verified") is True
-        if self.rule in {"CTR-NONCE-REUSE", "GCM-NONCE-REUSE"}:
-            return "result_hex" in self.solver and self.evidence.get("known_plaintext_roundtrip_verified") is True
-        return False
+        checks = {
+            "ENCODING-PIPELINE": self._verify_encoding_pipeline,
+            "ENCODING-ASCII-ORDINALS": self._verify_ascii_ordinals,
+            "ENCODING-BIGINT-BYTES": self._verify_bigint_bytes,
+            "DH-DEGENERATE-GENERATOR": self._verify_degenerate_generator,
+            "DH-SMALL-GROUP": lambda: self.evidence.get("discrete_log_verified") is True,
+            "CBC-FIRST-BLOCK-BITFLIP": self._verify_cbc_bitflip,
+            "XOR-SINGLE-BYTE": self._verify_xor_roundtrip,
+            "XOR-REPEATING-KEY": self._verify_xor_roundtrip,
+            "CTR-NONCE-REUSE": self._verify_nonce_reuse,
+            "GCM-NONCE-REUSE": self._verify_nonce_reuse,
+        }
+        check = checks.get(self.rule)
+        return check() if check else False
+
+    def _verify_encoding_pipeline(self) -> bool:
+        from .transform_pipeline import TransformPipeline, decode_pipeline
+        pipeline = TransformPipeline(tuple(self.evidence["stages"]),
+                                     bytes.fromhex(self.evidence["payload_hex"]), self.location)
+        return decode_pipeline(pipeline).hex() == self.solver.get("result_hex")
+
+    def _verify_ascii_ordinals(self) -> bool:
+        values = self.evidence.get("ordinal_values")
+        if not isinstance(values, list) or not all(type(value) is int and 0 <= value <= 255 for value in values):
+            return False
+        return self.solver.get("result_hex") == bytes(values).hex()
+
+    def _verify_bigint_bytes(self) -> bool:
+        try:
+            recovered = bytes.fromhex(self.solver["result_hex"])
+            original = int(self.evidence["integer"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        return int.from_bytes(recovered, "big") == original and FLAG_PATTERN.search(recovered) is not None
+
+    def _verify_degenerate_generator(self) -> bool:
+        prime = int(self.evidence["p"])
+        return int(self.evidence["g"]) % prime in (0, 1, prime - 1)
+
+    def _verify_cbc_bitflip(self) -> bool:
+        iv = bytes.fromhex(self.evidence["iv_hex"])
+        known = bytes.fromhex(self.evidence["known_block_hex"])
+        target = bytes.fromhex(self.evidence["target_block_hex"])
+        expected = bytes(a ^ b ^ c for a, b, c in zip(iv, known, target, strict=False))
+        return expected.hex() == self.solver.get("modified_iv_hex")
+
+    def _verify_xor_roundtrip(self) -> bool:
+        return self.evidence.get("flag_shape") is True and self.evidence.get("roundtrip_verified") is True
+
+    def _verify_nonce_reuse(self) -> bool:
+        return "result_hex" in self.solver and self.evidence.get("known_plaintext_roundtrip_verified") is True
 
     def _verified_solver(self) -> bool:
         """Accept only rule-specific, reproducible proof as an actionable result."""

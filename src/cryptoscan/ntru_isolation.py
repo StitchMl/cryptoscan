@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import signal
 import subprocess
 import sys
@@ -40,6 +41,17 @@ def _terminate_worker(worker: subprocess.Popen) -> None:
         pass
 
 
+def _worker_environment() -> dict[str, str]:
+    """Keep the source checkout importable by child workers and editable installs."""
+    environment = os.environ.copy()
+    source_root = str(Path(__file__).resolve().parent.parent)
+    existing = environment.get("PYTHONPATH")
+    entries = existing.split(os.pathsep) if existing else []
+    if source_root not in entries:
+        environment["PYTHONPATH"] = os.pathsep.join([source_root, *entries])
+    return environment
+
+
 def _run_streamed_worker(
     data: str,
     timeout_seconds: int,
@@ -57,7 +69,8 @@ def _run_streamed_worker(
     )
     worker = subprocess.Popen(
         command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, text=True, bufsize=1, **options,
+        stderr=subprocess.STDOUT, text=True, bufsize=1,
+        env=_worker_environment(), **options,
     )
     output: list[str] = []
     logs: list[str] = []
@@ -138,6 +151,7 @@ def solve_isolated(
                 [sys.executable, "-m", "cryptoscan.ntru_worker"],
                 input=data, capture_output=True, text=True,
                 timeout=timeout_seconds, check=False,
+                env=_worker_environment(),
             )
         )
     except subprocess.TimeoutExpired as exc:

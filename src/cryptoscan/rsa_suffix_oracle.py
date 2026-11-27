@@ -19,91 +19,68 @@ class RSASuffixOracleModel:
     suffix_byte: int = 46
 
 
-def _has_private_decrypt(tree: ast.AST) -> bool:
-    return any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "pow"
-        and len(node.args) == 3
-        and isinstance(node.args[1], ast.Attribute)
-        and node.args[1].attr == "d"
-        and isinstance(node.args[2], ast.Attribute)
-        and node.args[2].attr == "n"
-        for node in ast.walk(tree)
-    )
+def extract_instance(documents: Sequence[object]) -> RSASuffixOracleModel | None:
+    """Recognize RSA decryption whose response tests the final plaintext byte."""
+    for document in documents:
+        model = _extract_document(getattr(document, "text", ""))
+        if model is not None:
+            return model
+    return None
 
 
-def _suffix_oracle_byte(source: str) -> int | None:
-    match = re.search(
-        r"\w+\s*\[\s*-1\s*:\s*\]\s*!=\s*(b[\x27\x22][^\x27\x22]*[\x27\x22])",
-        source,
-    )
+def _extract_document(source: str) -> RSASuffixOracleModel | None:
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+    suffix = _oracle_suffix(source)
+    if suffix is None or not _has_oracle_markers(tree) or not _has_required_strings(tree):
+        return None
+    return RSASuffixOracleModel(exponent=_public_exponent(tree), suffix_byte=suffix)
+
+
+def _oracle_suffix(source: str) -> int | None:
+    match = re.search(r"\w+\s*\[\s*-1\s*:\s*\]\s*!=\s*(b['\"][^'\"]*['\"])", source)
     if match is None:
         return None
     try:
         suffix = ast.literal_eval(match.group(1))
     except (SyntaxError, ValueError):
         return None
-    if not isinstance(suffix, bytes) or len(suffix) != 1:
-        return None
-    return suffix[0]
+    return suffix[0] if isinstance(suffix, bytes) and len(suffix) == 1 else None
 
 
-def _protocol_strings(tree: ast.AST) -> set[str]:
-    return {
-        node.value for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
-    }
+def _has_oracle_markers(tree: ast.AST) -> bool:
+    private_pow = any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "pow" and len(node.args) == 3
+        and isinstance(node.args[1], ast.Attribute) and node.args[1].attr == "d"
+        and isinstance(node.args[2], ast.Attribute) and node.args[2].attr == "n"
+        for node in ast.walk(tree)
+    )
+    return private_pow
 
 
-def _generated_exponent(node: ast.AST) -> int | None:
-    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-        return None
-    if node.func.attr != "generate":
-        return None
-    for keyword in node.keywords:
-        value = keyword.value
-        if keyword.arg != "e" or not isinstance(value, ast.Constant):
-            continue
-        if isinstance(value.value, int):
-            return value.value
-    return None
-
-
-def _rsa_exponent(tree: ast.AST) -> int:
-    for node in ast.walk(tree):
-        exponent = _generated_exponent(node)
-        if exponent is not None:
-            return exponent
-    return 65537
-
-def _parse_document(source: str) -> RSASuffixOracleModel | None:
-    try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError):
-        return None
-    if not _has_private_decrypt(tree):
-        return None
-    suffix_byte = _suffix_oracle_byte(source)
-    if suffix_byte is None:
-        return None
-    strings = _protocol_strings(tree)
-    if not {"pkey", "read", "send", "nice"}.issubset(strings):
-        return None
-    if not any("[shhh]" in value for value in strings):
-        return None
-    return RSASuffixOracleModel(
-        exponent=_rsa_exponent(tree), suffix_byte=suffix_byte,
+def _has_required_strings(tree: ast.AST) -> bool:
+    strings = {node.value for node in ast.walk(tree)
+               if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+    return {"pkey", "read", "send", "nice"}.issubset(strings) and any(
+        "[shhh]" in value for value in strings
     )
 
 
-def extract_instance(documents: Sequence[object]) -> RSASuffixOracleModel | None:
-    """Recognize RSA decryption whose response tests the final plaintext byte."""
-    for document in documents:
-        model = _parse_document(getattr(document, "text", ""))
-        if model is not None:
-            return model
-    return None
+def _public_exponent(tree: ast.AST) -> int:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != "generate":
+            continue
+        for keyword in node.keywords:
+            value = keyword.value
+            if keyword.arg == "e" and isinstance(value, ast.Constant) and isinstance(value.value, int):
+                return value.value
+    return 65537
+
 
 def _read_until(stream, marker: bytes, limit: int = 1 << 20) -> bytes:
     data = bytearray()

@@ -56,19 +56,26 @@ def _protocol_strings(tree: ast.AST) -> set[str]:
     }
 
 
+def _generated_exponent(node: ast.AST) -> int | None:
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return None
+    if node.func.attr != "generate":
+        return None
+    for keyword in node.keywords:
+        value = keyword.value
+        if keyword.arg != "e" or not isinstance(value, ast.Constant):
+            continue
+        if isinstance(value.value, int):
+            return value.value
+    return None
+
+
 def _rsa_exponent(tree: ast.AST) -> int:
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-            continue
-        if node.func.attr != "generate":
-            continue
-        for keyword in node.keywords:
-            value = keyword.value
-            if keyword.arg == "e" and isinstance(value, ast.Constant):
-                if isinstance(value.value, int):
-                    return value.value
+        exponent = _generated_exponent(node)
+        if exponent is not None:
+            return exponent
     return 65537
-
 
 def _parse_document(source: str) -> RSASuffixOracleModel | None:
     try:

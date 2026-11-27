@@ -111,11 +111,11 @@ def _openssh_private_key(p=61, q=53, e=17, *, checkints=(0x12345678, 0x12345678)
     if padding_size == 0:
         padding_size = 8
     private += bytes(range(1, padding_size + 1))
-    encoded = (b"openssh-key-v1\\x00" + _ssh_string(cipher) + _ssh_string(kdf)
+    encoded = (b"openssh-key-v1\x00" + _ssh_string(cipher) + _ssh_string(kdf)
                + _ssh_string(options) + (1).to_bytes(4, "big")
                + _ssh_string(public) + _ssh_string(private))
     body = base64.b64encode(encoded).decode()
-    lines = "\\n".join(body[i:i + 70] for i in range(0, len(body), 70))
+    lines = "\n".join(body[i:i + 70] for i in range(0, len(body), 70))
     return f"-----BEGIN OPENSSH PRIVATE KEY-----\\n{lines}\\n-----END OPENSSH PRIVATE KEY-----\\n"
 
 

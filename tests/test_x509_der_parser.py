@@ -94,6 +94,30 @@ def _ssh_rsa_line(modulus: int, exponent: int = 65537) -> str:
     blob = (_ssh_string(b"ssh-rsa") + _ssh_mpint(exponent) + _ssh_mpint(modulus))
     return "ssh-rsa " + base64.b64encode(blob).decode() + " challenge-key"
 
+def _openssh_private_key(p=61, q=53, e=17, *, checkints=(0x12345678, 0x12345678),
+                         cipher=b"none", kdf=b"none", options=b"") -> str:
+    import math
+
+    n = p * q
+    d = pow(e, -1, math.lcm(p - 1, q - 1))
+    iqmp = pow(q, -1, p)
+    public = _ssh_string(b"ssh-rsa") + _ssh_mpint(e) + _ssh_mpint(n)
+    private = (checkints[0].to_bytes(4, "big") + checkints[1].to_bytes(4, "big")
+               + _ssh_string(b"ssh-rsa") + _ssh_mpint(n) + _ssh_mpint(e)
+               + _ssh_mpint(d) + _ssh_mpint(iqmp) + _ssh_mpint(p) + _ssh_mpint(q)
+               + _ssh_string(b"ctf-fixture"))
+    padding_size = (-len(private)) % 8
+    if padding_size == 0:
+        padding_size = 8
+    private += bytes(range(1, padding_size + 1))
+    encoded = (b"openssh-key-v1\\x00" + _ssh_string(cipher) + _ssh_string(kdf)
+               + _ssh_string(options) + (1).to_bytes(4, "big")
+               + _ssh_string(public) + _ssh_string(private))
+    body = base64.b64encode(encoded).decode()
+    lines = "\\n".join(body[i:i + 70] for i in range(0, len(body), 70))
+    return f"-----BEGIN OPENSSH PRIVATE KEY-----\\n{lines}\\n-----END OPENSSH PRIVATE KEY-----\\n"
+
+
 
 def test_openssh_rsa_public_key_parses_mpints_and_comment():
     modulus = 0xD5BBB96D30086EC484EBA3D7F9CAEB07
@@ -112,6 +136,27 @@ def test_openssh_rsa_rejects_malformed_or_mismatched_blobs():
         _ssh_string(b"ssh-rsa") + _ssh_mpint(65537) + _ssh_mpint(257) + b"x"
     ).decode()
     assert ssh_rsa_public_keys("ssh-rsa " + trailing_data) == []
+def test_openssh_rsa_private_key_extracts_parameters_and_scans(tmp_path):
+    from cryptoscan.parser import collect_documents
+    from cryptoscan.scanner import scan
+
+    private_key = _openssh_private_key()
+    assert openssh_rsa_private_keys(private_key) == [{
+        "n": 61 * 53, "e": 17, "d": 413, "p": 61, "q": 53,
+    }]
+    path = tmp_path / "id_rsa"
+    path.write_text(private_key)
+    finding = next(item for item in scan(collect_documents([str(path)]))
+                   if item.rule == "RSA-PRIVATE-KEY-MATERIAL")
+    assert finding.evidence["private_exponent_decimal"] == "413"
+    assert finding.evidence["prime1_decimal"] == "61"
+
+
+def test_openssh_rsa_private_key_rejects_encrypted_and_bad_checkints():
+    assert openssh_rsa_private_keys(_openssh_private_key(cipher=b"aes256-ctr", kdf=b"bcrypt",
+                                                        options=b"salt/options")) == []
+    assert openssh_rsa_private_keys(_openssh_private_key(checkints=(1, 2))) == []
+
 
 
 def test_openssh_public_key_scan_reports_decimal_modulus(tmp_path):

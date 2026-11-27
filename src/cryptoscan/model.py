@@ -98,6 +98,7 @@ class Finding:
     def _verify_cipher_attacks(self) -> bool:
         checks = {
             "ENCODING-PIPELINE": self._verify_encoding_pipeline,
+            "ENCODING-TYPED-RECORD": self._verify_typed_encoding,
             "ENCODING-ASCII-ORDINALS": self._verify_ascii_ordinals,
             "ENCODING-BIGINT-BYTES": self._verify_bigint_bytes,
             "DH-DEGENERATE-GENERATOR": self._verify_degenerate_generator,
@@ -122,6 +123,18 @@ class Finding:
         if not isinstance(values, list) or not all(type(value) is int and 0 <= value <= 255 for value in values):
             return False
         return self.solver.get("result_hex") == bytes(values).hex()
+
+    def _verify_typed_encoding(self) -> bool:
+        from .transform_pipeline import decode_typed_encoding
+        try:
+            result = decode_typed_encoding(
+                self.evidence["encoding"], self.evidence["encoded_value"],
+            )
+        except (KeyError, TypeError, ValueError, UnicodeError):
+            return False
+        return result.hex() == self.solver.get("result_hex") and (
+            FLAG_PATTERN.search(result) is not None
+        )
 
     def _verify_bigint_bytes(self) -> bool:
         try:

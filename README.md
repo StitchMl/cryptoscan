@@ -1223,6 +1223,7 @@ An explicit `Pipeline:` declaration can contain one or more stages, including
 `utf-8` (validated text bytes), alongside Base64, hex, ROT13, Base32, Base85,
 ASCII85 and URL encoding. Integer recovery cannot restore leading zero bytes
 that were discarded by the integer representation.
+JSON challenge records with a `type` or `encoding` field and an `encoded`, `payload`, `data` or `value` field are also decoded when their declared codec is supported. The scanner reports a record only when the verified plaintext contains a standard flag-shaped value.
 
 By default, recursive corpus collection skips documentation, notebooks, tests, writeups, solvers, and exploit scripts. Files supplied explicitly are always examined, regardless of their filename or extension. Exact duplicate artifacts across release, server, and archive copies are scanned once. Cross-artifact attacks stay inside one inferred challenge boundary, so unrelated challenge directories do not produce shared-prime, common-modulus, nonce-reuse, or broadcast findings.
 

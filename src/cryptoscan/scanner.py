@@ -82,7 +82,7 @@ from .rsa_reused_digits import (
 )
 from .source_units import parse_python
 from .stream_combiner_workflow import recognize_stream_cipher
-from .transform_pipeline import decode_pipeline
+from .transform_pipeline import decode_pipeline, decode_typed_encoding
 from .transform_pipeline import extract_instance as extract_transform_pipeline
 from .weak_seeded_multiprime_rsa import (
     _source_profile as weak_seeded_rsa_profile,
@@ -1656,6 +1656,52 @@ def _scan_transform_pipeline(documents, findings):
     ))
 
 
+def _typed_encoding_finding(document, pointer: str, obj: dict[str, Any]) -> Finding | None:
+    encoding = _pick(obj, "type", "encoding")
+    encoded = _pick(obj, "encoded", "payload", "data", "value")
+    if not isinstance(encoding, str) or encoded is None:
+        return None
+    try:
+        decoded = decode_typed_encoding(encoding, encoded)
+    except (ValueError, UnicodeError):
+        return None
+    flag = FLAG_PATTERN.search(decoded)
+    if flag is None:
+        return None
+    text = decoded.decode("utf-8", errors="replace")
+    return Finding(
+        rule="ENCODING-TYPED-RECORD",
+        title="Flag recovered from an explicitly typed encoding record",
+        severity="info",
+        confidence="high",
+        location=f"{document.path}:{pointer}",
+        evidence={
+            "encoding": encoding,
+            "encoded_value": encoded,
+            "decoded_text": text,
+            "flag_shape": flag.group().decode("utf-8", errors="replace"),
+        },
+        preconditions=[
+            "The record explicitly identifies a supported encoding and carries its encoded value.",
+            "Decoding yields a flag matching the configured standard flag pattern.",
+        ],
+        attack="Apply the declared reversible encoding to the supplied value.",
+        solver={"kind": "typed_encoding", "result_hex": decoded.hex()},
+        patch="No cryptographic weakness: this artifact uses a reversible encoding.",
+        playbook=["Use the record's declared encoding to recover the plaintext."],
+    )
+
+
+def _scan_typed_encoding_records(documents, findings) -> None:
+    for document in documents:
+        if document.data is None:
+            continue
+        for pointer, obj in flatten_objects(document.data)[:512]:
+            finding = _typed_encoding_finding(document, pointer, obj)
+            if finding is not None:
+                findings.append(finding)
+
+
 def _scan_integer_encoded_flags(records, findings):
     """Recover flag-shaped plaintexts serialized as unsigned big-endian integers."""
     seen = set()
@@ -1724,6 +1770,7 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
     _scan_phase_17(documents, findings)
     _scan_ascii_ordinal_arrays(documents, findings)
     _scan_transform_pipeline(documents, findings)
+    _scan_typed_encoding_records(documents, findings)
     _scan_integer_encoded_flags(records, findings)
     findings.extend(_related_key_findings(documents))
     findings.extend(_rotated_rsa_findings(documents))

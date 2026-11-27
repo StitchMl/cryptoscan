@@ -465,7 +465,7 @@ def _parse_openssh_rsa_private_blob(encoded: bytes) -> dict[str, int] | None:
     prime2_raw, private_offset = _ssh_string(private_blob, private_offset)
     _comment, private_offset = _ssh_string(private_blob, private_offset)
     padding = private_blob[private_offset:]
-    if not 1 <= len(padding) <= 8 or padding != bytes(range(1, len(padding) + 1)):
+    if len(padding) > 8 or padding != bytes(range(1, len(padding) + 1)):
         return None
 
     modulus = _ssh_mpint(modulus_raw)

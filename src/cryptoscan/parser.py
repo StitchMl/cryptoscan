@@ -501,6 +501,13 @@ def _ssh_string(data: bytes, offset: int) -> tuple[bytes, int]:
     return data[start:end], end
 
 
+def _ssh_uint32(data: bytes, offset: int) -> tuple[int, int]:
+    end = offset + 4
+    if end > len(data):
+        raise ValueError("truncated SSH uint32")
+    return int.from_bytes(data[offset:end], "big"), end
+
+
 def _ssh_mpint(encoded: bytes) -> int:
     if not encoded or encoded[0] & 0x80:
         raise ValueError("invalid or negative SSH mpint")

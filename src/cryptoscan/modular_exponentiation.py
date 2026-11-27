@@ -8,8 +8,8 @@ from typing import Sequence
 
 _INTEGER = r"[+-]?(?:0[xX][0-9a-fA-F]+|[0-9]+)"
 _MODULAR_POWER = re.compile(
-    rf"(?<![0-9A-Za-z_])({_INTEGER})\s*\^\s*({_INTEGER})"
-    rf"\s+(?:mod|modulo)\s+({_INTEGER})(?![0-9A-Za-z_])",
+    rf"(?<![0-9A-Za-z_])({_INTEGER})\s*\^\s*\{{?({_INTEGER})\}}?"
+    rf"\s*(?:\\?mod(?:ulo)?)\s*({_INTEGER})(?![0-9A-Za-z_])",
     re.IGNORECASE,
 )
 

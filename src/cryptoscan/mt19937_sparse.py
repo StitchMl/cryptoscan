@@ -122,12 +122,12 @@ def _read_line(stream, limit: int = 4096) -> bytes:
 
 def _read_expected_banner(stream) -> None:
     banner = bytearray()
-    while b"number!\\n" not in banner and len(banner) < 16384:
+    while b"number!\n" not in banner and len(banner) < 16384:
         line = _read_line(stream)
         if not line:
             break
         banner.extend(line)
-    if b"number!\\n" not in banner:
+    if b"number!\n" not in banner:
         raise ValueError("service did not expose the expected selectable-number prompt")
 
 
@@ -143,7 +143,7 @@ def _collect_selected_outputs(stream, target_index: int,
             )
         if output_index not in requested:
             continue
-        match = re.search(rb"-?\\d+", line)
+        match = re.search(rb"-?\d+", line)
         if match is None:
             raise ValueError(
                 f"service did not reveal the selected output at index {output_index}"
@@ -177,14 +177,14 @@ def _recover_once(documents: Sequence[object], model: SparseMT19937Model,
     with connect_authorized(host, port, timeout) as sock:
         stream = sock.makefile("rwb", buffering=0)
         _read_expected_banner(stream)
-        stream.write(f"{first_index}\\n{second_index}\\n".encode("ascii"))
+        stream.write(f"{first_index}\n{second_index}\n".encode("ascii"))
         selected = _collect_selected_outputs(
             stream, model.target_index, requested,
         )
         candidates = predict_sparse_candidates(
             model.target_index, selected[first_index], selected[second_index],
         )
-        stream.write(f"{candidates[candidate_index]}\\n".encode("ascii"))
+        stream.write(f"{candidates[candidate_index]}\n".encode("ascii"))
         return _read_service_response(sock)
 
 def recover_flag(documents: Sequence[object], host: str, port: int,

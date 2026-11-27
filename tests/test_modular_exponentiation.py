@@ -67,7 +67,7 @@ def test_cli_prints_answer_for_modular_exponentiation(tmp_path, capsys) -> None:
 def test_accepts_latex_modular_power_notation() -> None:
     document = Document(
         "challenge.html",
-        r"Find the solution to $101^{17} \\mod 22663$.",
+        r"Find the solution to $101^{17} \mod 22663$.",
         None,
     )
 

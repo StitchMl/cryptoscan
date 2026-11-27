@@ -65,6 +65,7 @@ from .parser import (
     pem_rsa_private_keys,
     pem_rsa_public_keys,
     scalar_records,
+    openssh_rsa_private_keys,
     ssh_rsa_public_keys,
 )
 from .reciprocal_rabin_oracle import _source_profile as reciprocal_rabin_profile
@@ -129,6 +130,8 @@ def _parsed_key_records(doc: Document) -> list[dict[str, Any]]:
         records.append({"location": f"{doc.path}:pem[{index}]", "object": key, "scope": doc.scope})
     for index, key in enumerate(pem_rsa_private_keys(doc.text)):
         records.append({"location": f"{doc.path}:pem-private[{index}]", "object": key, "scope": doc.scope})
+    for index, key in enumerate(openssh_rsa_private_keys(doc.text)):
+        records.append({"location": f"{doc.path}:openssh-private[{index}]", "object": key, "scope": doc.scope})
     for index, key in enumerate(doc.rsa_private_keys):
         records.append({"location": f"{doc.path}:der-private[{index}]", "object": key, "scope": doc.scope})
     for index, key in enumerate(ssh_rsa_public_keys(doc.text)):
@@ -1736,11 +1739,13 @@ def _rsa_key_material_findings(rsa) -> list[Finding]:
         source = location.split(":", 1)[0].casefold()
         if (not source.endswith((".der", ".cer")) and ":pem[" not in location.casefold()
                 and ":pem-private[" not in location.casefold()
+                and ":openssh-private[" not in location.casefold()
                 and ":der-private[" not in location.casefold()
                 and ":ssh-rsa[" not in location.casefold()):
             continue
         if item["d"] is not None and any(
-            marker in location.casefold() for marker in (":pem-private[", ":der-private[")
+            marker in location.casefold() for marker in
+            (":pem-private[", ":openssh-private[", ":der-private[")
         ):
             values = {
                 "modulus_decimal": str(item["n"]),
@@ -1756,7 +1761,7 @@ def _rsa_key_material_findings(rsa) -> list[Finding]:
                 confidence="certain",
                 location=location,
                 evidence=values,
-                preconditions=["The supplied unencrypted PKCS#1 or PKCS#8 PEM/DER contains a valid RSA private key."],
+                preconditions=["The supplied unencrypted PKCS#1/PKCS#8 PEM/DER or OpenSSH private-key file contains a valid RSA private key."],
                 attack="Use the extracted private exponent and factors to solve the challenge's RSA operation.",
                 solver={"kind": "rsa_private_key_metadata", **values},
                 patch="No weakness is implied by a private key supplied as a challenge artifact.",

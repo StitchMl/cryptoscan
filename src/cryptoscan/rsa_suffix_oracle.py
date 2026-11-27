@@ -35,7 +35,7 @@ def _has_private_decrypt(tree: ast.AST) -> bool:
 
 def _suffix_oracle_byte(source: str) -> int | None:
     match = re.search(
-        r"\\w+\\s*\\[\\s*-1\\s*:\\s*\\]\\s*!=\\s*(b['\\\"][^'\\\"]*['\\\"])",
+        r"\w+\s*\[\s*-1\s*:\s*\]\s*!=\s*(b['\\"][^'\\"]*['\\"])",
         source,
     )
     if match is None:

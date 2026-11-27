@@ -24,6 +24,7 @@ class Strategy:
     rank: int = 100
     backend: str = "python"
     preflight: Callable[[Any], bool] | None = None
+    output_label: str = "FLAG"
 
 
 @dataclass(frozen=True)

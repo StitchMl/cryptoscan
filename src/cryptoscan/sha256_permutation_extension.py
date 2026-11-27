@@ -68,7 +68,7 @@ def _salt_length(tree: ast.AST) -> int | None:
 
 
 def _input_prompts(source: str) -> dict[str, bytes]:
-    found = re.findall(r"input\(\s*['\\"](\[[^\]]+\]\s*)['\\"]\s*\)", source)
+    found = re.findall(r"input\(\s*[\x27\x22](\[\[^\]]+\]\s*)[\x27\x22]\s*\)", source)
     return {
         item.strip().strip("[]").strip():
             ("[" + item.strip()[1:-1] + "] ").encode()
@@ -96,7 +96,7 @@ def _parse_document(source: str) -> SHA256PermutationOracle | None:
     salt_length = _salt_length(tree)
     if salt_length is None:
         return None
-    commands = re.findall(r"command\s*==\s*['\\"]([^'\\"]+)['\\"]", source)
+    commands = re.findall(r"command\s*==\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]", source)
     if len(commands) < 2:
         return None
     prompts = _input_prompts(source)

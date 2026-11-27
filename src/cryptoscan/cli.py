@@ -24,6 +24,7 @@ from .polynomial_gcd_prefix import extract_instance as extract_polynomial_gcd_pr
 from .polynomial_gcd_prefix import construct_input as construct_polynomial_gcd_input
 from .weak_seeded_multiprime_rsa import extract_instance as extract_weak_seeded_rsa, recover_flag as recover_weak_seeded_rsa_flag
 from .gaussian_rsa import extract_instance as extract_gaussian_rsa, recover_flag as recover_gaussian_rsa_flag
+from .gaussian_square_rsa import extract_instance as extract_gaussian_square, recover_flag as recover_gaussian_square_flag
 from .hint_factor_rsa import extract_instance as extract_hint_factor_rsa, recover_flag as recover_hint_factor_rsa_flag
 from .rsa_reused_digits import (
     extract_instance as extract_reused_digits,
@@ -177,6 +178,8 @@ def _attack_strategies(args):
                  ), 5),
         strategy("RSA reused base digits", "offline",
                  extract_reused_digits, recover_reused_digits_flag, 6),
+        strategy("Gaussian RSA over squared semiprime", "offline",
+                 extract_gaussian_square, recover_gaussian_square_flag, 1),
         strategy("Gaussian-integer RSA decryption", "offline",
                  extract_gaussian_rsa, recover_gaussian_rsa_flag, 7),
         strategy("RSA square-root hint factorization", "offline",

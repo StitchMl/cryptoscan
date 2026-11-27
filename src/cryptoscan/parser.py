@@ -23,6 +23,7 @@ class Document:
     data: Any | None
     scope: str = "."
     digest: str = ""
+    rsa_private_keys: tuple[dict[str, int], ...] = ()
 
 
 IGNORED_DIRS = {".git", ".github", ".idea", ".pytest_cache", ".venv", "__pycache__", "docs", "documentation", "node_modules", "tests"}
@@ -68,7 +69,17 @@ def _documents_in_file(root: Path, path: Path) -> list[Document]:
         )
     if path.suffix.casefold() in {".der", ".cer"}:
         keys = der_rsa_public_keys(raw)
-        return [Document(relative, "", keys, scope, hashlib.sha256(raw).hexdigest())] if keys else []
+        private_keys = tuple(der_rsa_private_keys(raw))
+        return [Document(
+            relative, "", keys, scope, hashlib.sha256(raw).hexdigest(), private_keys,
+        )] if keys or private_keys else []
+    if raw[:1] == b"\x30":
+        private_keys = tuple(der_rsa_private_keys(raw))
+        if private_keys:
+            return [Document(
+                relative, "", None, scope, hashlib.sha256(raw).hexdigest(),
+                private_keys,
+            )]
     if b"\0" in raw[:4096]:
         digest = hashlib.sha256(raw).hexdigest()
         printable = [item.decode("ascii", errors="replace")
@@ -170,7 +181,13 @@ def _document_from_bytes(
         return None
     if Path(name).suffix.casefold() in {".der", ".cer"}:
         keys = der_rsa_public_keys(raw)
-        return Document(name, "", keys, scope, hashlib.sha256(raw).hexdigest()) if keys else None
+        private_keys = tuple(der_rsa_private_keys(raw))
+        return Document(name, "", keys, scope, hashlib.sha256(raw).hexdigest(), private_keys) if keys or private_keys else None
+    private_keys = tuple(der_rsa_private_keys(raw)) if raw[:1] == b"\x30" else ()
+    if private_keys:
+        return Document(
+            name, "", None, scope, hashlib.sha256(raw).hexdigest(), private_keys,
+        )
     digest = hashlib.sha256(raw).hexdigest()
     if b"\0" in raw[:4096]:
         strings = re.findall(rb"[ -~]{4,}", raw)
@@ -348,6 +365,24 @@ def pem_rsa_private_keys(text: str) -> list[dict[str, int]]:
             "p": key.p, "q": key.q,
         })
     return found
+
+
+def der_rsa_private_keys(der: bytes) -> list[dict[str, int]]:
+    """Extract private parameters from raw PKCS#1 or PKCS#8 RSA DER."""
+    if len(der) > 1_000_000 or not der or der[0] != 0x30:
+        return []
+    from Crypto.PublicKey import RSA
+
+    try:
+        key = RSA.import_key(der)
+    except (IndexError, TypeError, ValueError):
+        return []
+    if not key.has_private():
+        return []
+    return [{
+        "n": key.n, "e": key.e, "d": key.d,
+        "p": key.p, "q": key.q,
+    }]
 
 
 def ssh_rsa_public_keys(text: str) -> list[dict[str, int]]:

@@ -1,6 +1,10 @@
 from Crypto.PublicKey import RSA
 
-from cryptoscan.parser import collect_documents, pem_rsa_private_keys
+from cryptoscan.parser import (
+    collect_documents,
+    der_rsa_private_keys,
+    pem_rsa_private_keys,
+)
 from cryptoscan.scanner import scan
 
 
@@ -44,3 +48,21 @@ def test_private_pem_parser_ignores_public_malformed_and_encrypted_keys():
     assert pem_rsa_private_keys(public_pem) == []
     assert pem_rsa_private_keys("-----BEGIN RSA PRIVATE KEY-----\n%%%\n-----END RSA PRIVATE KEY-----") == []
     assert pem_rsa_private_keys(encrypted_pem) == []
+
+
+def test_raw_pkcs1_and_pkcs8_der_private_keys_are_discovered_in_arbitrary_files(tmp_path):
+    key = RSA.generate(1024)
+    pkcs1 = key.export_key(format="DER", pkcs=1)
+    pkcs8 = key.export_key(format="DER", pkcs=8)
+
+    expected = [{"n": key.n, "e": key.e, "d": key.d, "p": key.p, "q": key.q}]
+    assert der_rsa_private_keys(pkcs1) == expected
+    assert der_rsa_private_keys(pkcs8) == expected
+
+    path = tmp_path / "challenge-data.bin"
+    path.write_bytes(pkcs8)
+    finding = next(
+        item for item in scan(collect_documents([str(path)]))
+        if item.rule == "RSA-PRIVATE-KEY-MATERIAL"
+    )
+    assert finding.evidence["private_exponent_decimal"] == str(key.d)

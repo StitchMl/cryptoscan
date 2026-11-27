@@ -119,12 +119,20 @@ def _records(documents: list[Document]) -> list[dict[str, Any]]:
                 records.append({"location": f"{doc.path}:{pointer}", "object": obj, "scope": doc.scope})
         for assigned in scalar_records(doc.text):
             records.append({"location": f"{doc.path}:assignments", "object": assigned, "scope": doc.scope})
-        for index, key in enumerate(pem_rsa_public_keys(doc.text)):
-            records.append({"location": f"{doc.path}:pem[{index}]", "object": key, "scope": doc.scope})
-        for index, key in enumerate(pem_rsa_private_keys(doc.text)):
-            records.append({"location": f"{doc.path}:pem-private[{index}]", "object": key, "scope": doc.scope})
-        for index, key in enumerate(ssh_rsa_public_keys(doc.text)):
-            records.append({"location": f"{doc.path}:ssh-rsa[{index}]", "object": key, "scope": doc.scope})
+        records.extend(_parsed_key_records(doc))
+    return records
+
+
+def _parsed_key_records(doc: Document) -> list[dict[str, Any]]:
+    records = []
+    for index, key in enumerate(pem_rsa_public_keys(doc.text)):
+        records.append({"location": f"{doc.path}:pem[{index}]", "object": key, "scope": doc.scope})
+    for index, key in enumerate(pem_rsa_private_keys(doc.text)):
+        records.append({"location": f"{doc.path}:pem-private[{index}]", "object": key, "scope": doc.scope})
+    for index, key in enumerate(doc.rsa_private_keys):
+        records.append({"location": f"{doc.path}:der-private[{index}]", "object": key, "scope": doc.scope})
+    for index, key in enumerate(ssh_rsa_public_keys(doc.text)):
+        records.append({"location": f"{doc.path}:ssh-rsa[{index}]", "object": key, "scope": doc.scope})
     return records
 
 
@@ -1728,9 +1736,12 @@ def _rsa_key_material_findings(rsa) -> list[Finding]:
         source = location.split(":", 1)[0].casefold()
         if (not source.endswith((".der", ".cer")) and ":pem[" not in location.casefold()
                 and ":pem-private[" not in location.casefold()
+                and ":der-private[" not in location.casefold()
                 and ":ssh-rsa[" not in location.casefold()):
             continue
-        if item["d"] is not None and ":pem-private[" in location.casefold():
+        if item["d"] is not None and any(
+            marker in location.casefold() for marker in (":pem-private[", ":der-private[")
+        ):
             values = {
                 "modulus_decimal": str(item["n"]),
                 "public_exponent": item["e"],
@@ -1740,12 +1751,12 @@ def _rsa_key_material_findings(rsa) -> list[Finding]:
             }
             findings.append(Finding(
                 rule="RSA-PRIVATE-KEY-MATERIAL",
-                title="RSA private-key parameters extracted from PEM",
+                title="RSA private-key parameters extracted from key material",
                 severity="info",
                 confidence="certain",
                 location=location,
                 evidence=values,
-                preconditions=["The supplied unencrypted PKCS#1 or PKCS#8 PEM contains a valid RSA private key."],
+                preconditions=["The supplied unencrypted PKCS#1 or PKCS#8 PEM/DER contains a valid RSA private key."],
                 attack="Use the extracted private exponent and factors to solve the challenge's RSA operation.",
                 solver={"kind": "rsa_private_key_metadata", **values},
                 patch="No weakness is implied by a private key supplied as a challenge artifact.",

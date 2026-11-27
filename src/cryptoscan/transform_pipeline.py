@@ -39,6 +39,12 @@ _STAGE_ALIASES = {
     "url": "url",
     "urlencode": "url",
     "percent": "url",
+    "bigint": "bigint",
+    "big_integer": "bigint",
+    "integer": "bigint",
+    "bytes_to_long": "bigint",
+    "utf8": "utf8",
+    "utf_8": "utf8",
 }
 _ROT13 = bytes.maketrans(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
@@ -59,7 +65,7 @@ def _normalize_stage(name: str) -> str | None:
 def _pipeline(source: str) -> tuple[str, ...] | None:
     match = re.search(
         r"(?i)\bpipeline\s*:\s*"
-        r"([a-z][a-z0-9_-]*(?:\s*->\s*[a-z][a-z0-9_-]*)+)",
+        r"([a-z][a-z0-9_-]*(?:\s*->\s*[a-z][a-z0-9_-]*)*)",
         source,
     )
     if match is None:
@@ -73,9 +79,8 @@ def _pipeline(source: str) -> tuple[str, ...] | None:
 
 def _payload(source: str) -> bytes | None:
     block = re.search(
-        r"(?is)RAW\s+(?:[A-Z0-9_-]+\s+)*BUFFER[^\r\n]*"
-        r"(.*?)"
-        r"(?:END\s+OF\s+RAW\s+BUFFER|\Z)",
+        r"(?ims)^[ \t]*RAW(?:[ \t]+[A-Z][A-Z0-9_-]*)*[ \t]+BUFFER[^\r\n]*"
+        r"\r?\n(.*?)(?:^[ \t]*END OF RAW BUFFER[ \t]*$|\Z)",
         source,
     )
     if block is not None:
@@ -181,6 +186,7 @@ def _decode_stage(data: bytes, stage: str) -> bytes:
         "base64": _decode_base64, "base64url": _decode_base64url,
         "base32": _decode_base32, "base85": _decode_base85,
         "ascii85": _decode_ascii85, "url": _decode_url,
+        "bigint": _decode_bigint, "utf8": _decode_utf8,
     }
     decoder = decoders.get(stage)
     if decoder is None:
@@ -260,6 +266,27 @@ def _decode_url(data: bytes) -> bytes:
         return urllib.parse.unquote_to_bytes(data.decode("ascii"))
     except UnicodeDecodeError as exc:
         raise ValueError("URL-encoded stage input is not ASCII") from exc
+
+
+def _decode_bigint(data: bytes) -> bytes:
+    """Convert a decimal or 0x-prefixed unsigned integer to minimal bytes."""
+    try:
+        text = data.decode("ascii").strip()
+        value = int(text, 0 if text.lower().startswith("0x") else 10)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("bigint stage received malformed input") from exc
+    if value < 0 or value.bit_length() > 32768:
+        raise ValueError("bigint stage accepts unsigned values of at most 32768 bits")
+    return value.to_bytes(max(1, (value.bit_length() + 7) // 8), "big")
+
+
+def _decode_utf8(data: bytes) -> bytes:
+    """Validate a UTF-8 stage while preserving the exact encoded bytes."""
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("utf8 stage received malformed input") from exc
+    return data
 
 
 def _require_ascii(data: bytes, message: str) -> None:

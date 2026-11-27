@@ -1218,6 +1218,11 @@ plaintext. For text payloads it can infer a bounded chain of supported
 reversible encodings from unlabeled hex, or Base64 when the statement signals
 that encoding. A recovery is reported only when the resulting flag is unique;
 ambiguous candidates remain unresolved.
+An explicit `Pipeline:` declaration can contain one or more stages, including
+`bigint` (unsigned decimal or `0x` integer to minimal big-endian bytes) and
+`utf-8` (validated text bytes), alongside Base64, hex, ROT13, Base32, Base85,
+ASCII85 and URL encoding. Integer recovery cannot restore leading zero bytes
+that were discarded by the integer representation.
 
 By default, recursive corpus collection skips documentation, notebooks, tests, writeups, solvers, and exploit scripts. Files supplied explicitly are always examined, regardless of their filename or extension. Exact duplicate artifacts across release, server, and archive copies are scanned once. Cross-artifact attacks stay inside one inferred challenge boundary, so unrelated challenge directories do not produce shared-prime, common-modulus, nonce-reuse, or broadcast findings.
 

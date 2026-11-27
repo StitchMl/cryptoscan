@@ -116,7 +116,7 @@ def _openssh_private_key(p=61, q=53, e=17, *, checkints=(0x12345678, 0x12345678)
                + _ssh_string(public) + _ssh_string(private))
     body = base64.b64encode(encoded).decode()
     lines = "\n".join(body[i:i + 70] for i in range(0, len(body), 70))
-    return f"-----BEGIN OPENSSH PRIVATE KEY-----\\n{lines}\\n-----END OPENSSH PRIVATE KEY-----\\n"
+    return f"-----BEGIN OPENSSH PRIVATE KEY-----\n{lines}\n-----END OPENSSH PRIVATE KEY-----\n"
 
 
 

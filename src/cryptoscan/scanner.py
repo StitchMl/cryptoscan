@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from .source_units import parse_python
-
 import base64
 import math
 import random
@@ -11,6 +9,32 @@ from collections import Counter, defaultdict
 from itertools import combinations, islice, pairwise
 from typing import Any
 
+from .aead_diagnostics import unused_validation_flags
+from .biased_shamir import _source_profile as biased_shamir_profile
+from .cyclotomic_rsa import _source_profile as cyclotomic_rsa_profile
+from .cyclotomic_rsa import extract_instance as extract_cyclotomic_rsa
+from .dghv_workflow import supported_source as supported_dghv_source
+from .ec_twist_oracle import _source_profile as ec_twist_profile
+from .eclcg_detector import detect_ec_lcg
+from .fiat_shamir_batch import extract_instance as extract_batch_fiat_shamir
+from .fischlin_workflow import supported_source as supported_fischlin_source
+from .gaussian_rsa import (
+    extract_instance as extract_gaussian_rsa,
+)
+from .gaussian_rsa import (
+    source_profile as gaussian_rsa_profile,
+)
+from .gcm_hidden_live import supports_wire_profile as supports_gcm_wire_profile
+from .gcm_hidden_state import recognize_gcm_tag_oracle
+from .gcm_overlap_detector import counter_overlap_lines
+from .hamiltonicity_workflow import extract_instance as extract_fiat_shamir_graph
+from .hint_factor_rsa import (
+    _source_profile as hint_factor_profile,
+)
+from .hint_factor_rsa import (
+    extract_instance as extract_hint_factor_rsa,
+)
+from .hyperelliptic_state_leak import _source_profile as hyperelliptic_leak_profile
 from .mathutil import (
     crt,
     discrete_log_bsgs,
@@ -22,44 +46,16 @@ from .mathutil import (
     small_factor,
     wiener_private_exponent,
 )
-from .model import FLAG_PATTERN, Finding
-from .rsa_related_key import extract_instance as extract_related_key, source_profiles as related_key_profiles
-from .rotated_quadratic_rsa import extract_instance as extract_rotated_rsa, source_profiles as rotated_rsa_profiles
-from .eclcg_detector import detect_ec_lcg
-from .fischlin_workflow import supported_source as supported_fischlin_source
-from .dghv_workflow import supported_source as supported_dghv_source
-from .rsa_padding_positives import discover_positive_padding_oracles
-from .modular_linear_hash import recognize_linear_hash, solve_linear_hash
-from .ntru import recognize_ntru, is_polynomial_coefficients, analyze_ntru_vectors, pair_ntru_records
 from .mlwe import recognize_weak_mlwe_ring
-from .gcm_overlap_detector import counter_overlap_lines
-from .gcm_hidden_state import recognize_gcm_tag_oracle
-from .gcm_hidden_live import supports_wire_profile as supports_gcm_wire_profile
-from .hamiltonicity_workflow import extract_instance as extract_fiat_shamir_graph
-from .fiat_shamir_batch import extract_instance as extract_batch_fiat_shamir
-from .aead_diagnostics import unused_validation_flags
-from .stream_combiner_workflow import recognize_stream_cipher
-from .biased_shamir import _source_profile as biased_shamir_profile
-from .cyclotomic_rsa import _source_profile as cyclotomic_rsa_profile, extract_instance as extract_cyclotomic_rsa
-from .modular_noise_mixture import _source_profile as modular_noise_profile, extract_instance as extract_modular_noise
-from .ec_twist_oracle import _source_profile as ec_twist_profile
-from .hyperelliptic_state_leak import _source_profile as hyperelliptic_leak_profile
-from .reciprocal_rabin_oracle import _source_profile as reciprocal_rabin_profile
-from .weak_seeded_multiprime_rsa import (
-    extract_instance as extract_weak_seeded_rsa,
-    _source_profile as weak_seeded_rsa_profile,
-)
-from .gaussian_rsa import (
-    extract_instance as extract_gaussian_rsa,
-    source_profile as gaussian_rsa_profile,
-)
-from .hint_factor_rsa import (
-    extract_instance as extract_hint_factor_rsa,
-    _source_profile as hint_factor_profile,
-)
-from .rsa_reused_digits import (
-    extract_instance as extract_reused_digits,
-    source_profile as reused_digits_profile,
+from .model import FLAG_PATTERN, Finding
+from .modular_linear_hash import recognize_linear_hash, solve_linear_hash
+from .modular_noise_mixture import _source_profile as modular_noise_profile
+from .modular_noise_mixture import extract_instance as extract_modular_noise
+from .ntru import (
+    analyze_ntru_vectors,
+    is_polynomial_coefficients,
+    pair_ntru_records,
+    recognize_ntru,
 )
 from .parser import (
     Document,
@@ -69,7 +65,28 @@ from .parser import (
     pem_rsa_public_keys,
     scalar_records,
 )
-from .transform_pipeline import decode_pipeline, extract_instance as extract_transform_pipeline
+from .reciprocal_rabin_oracle import _source_profile as reciprocal_rabin_profile
+from .rotated_quadratic_rsa import extract_instance as extract_rotated_rsa
+from .rotated_quadratic_rsa import source_profiles as rotated_rsa_profiles
+from .rsa_padding_positives import discover_positive_padding_oracles
+from .rsa_related_key import extract_instance as extract_related_key
+from .rsa_related_key import source_profiles as related_key_profiles
+from .rsa_reused_digits import (
+    extract_instance as extract_reused_digits,
+)
+from .rsa_reused_digits import (
+    source_profile as reused_digits_profile,
+)
+from .source_units import parse_python
+from .stream_combiner_workflow import recognize_stream_cipher
+from .transform_pipeline import decode_pipeline
+from .transform_pipeline import extract_instance as extract_transform_pipeline
+from .weak_seeded_multiprime_rsa import (
+    _source_profile as weak_seeded_rsa_profile,
+)
+from .weak_seeded_multiprime_rsa import (
+    extract_instance as extract_weak_seeded_rsa,
+)
 
 _AUTHORIZED_HOST = "authorized host"
 _ASCII_ORDINAL_ARRAY = re.compile(
@@ -1693,8 +1710,38 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
     _scan_integer_encoded_flags(records, findings)
     findings.extend(_related_key_findings(documents))
     findings.extend(_rotated_rsa_findings(documents))
+    findings.extend(_rsa_key_material_findings(rsa))
     unique = {finding.id: finding for finding in findings}
     return sorted(unique.values(), key=lambda finding: (finding.location.casefold(), finding.rule, finding.id))
+
+
+def _rsa_key_material_findings(rsa) -> list[Finding]:
+    findings = []
+    for item in rsa:
+        location = item["location"]
+        source = location.split(":", 1)[0].casefold()
+        if not source.endswith((".der", ".cer")) and ":pem[" not in location.casefold():
+            continue
+        if item["c"] is not None or item["d"] is not None:
+            continue
+        modulus = item["n"]
+        exponent = item["e"]
+        findings.append(Finding(
+            rule="RSA-PUBLIC-KEY-MATERIAL",
+            title="RSA public-key parameters extracted from key material",
+            severity="info",
+            confidence="certain",
+            location=location,
+            evidence={"modulus_decimal": str(modulus), "exponent": exponent,
+                      "modulus_bits": modulus.bit_length()},
+            preconditions=["The supplied DER/PEM structure contains a parsed RSA public key."],
+            attack="Report the exact public modulus and exponent; this extraction alone does not establish a weakness.",
+            solver={"kind": "rsa_public_key_metadata",
+                    "modulus_decimal": str(modulus), "exponent": exponent},
+            patch="No cryptographic weakness is implied by public-key metadata alone.",
+            playbook=["Use modulus_decimal and exponent as the parsed public-key parameters."],
+        ))
+    return findings
 
 
 _SOURCE_PLAYBOOKS: dict[str, list[str]] = {

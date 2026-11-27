@@ -132,56 +132,93 @@ def extract_instance(documents: Sequence[object]) -> TransformPipeline | None:
             return TransformPipeline(inferred[0], payload, source_path)
     return None
 
-def _decode_stage(data: bytes, stage: str) -> bytes:
-    compact = re.sub(rb"\s+", b"", data)
-    if stage == "rot13":
-        try:
-            compact.decode("ascii")
-        except UnicodeDecodeError as exc:
-            raise ValueError("ROT13 stage input is not ASCII") from exc
-        return compact.translate(_ROT13)
-    if stage == "hex":
-        try:
-            return bytes.fromhex(data.decode("ascii"))
-        except (UnicodeDecodeError, ValueError) as exc:
-            raise ValueError("hex stage received malformed hexadecimal data") from exc
-    if stage == "base64":
-        try:
-            return base64.b64decode(compact, validate=True)
-        except (ValueError, base64.binascii.Error) as exc:
-            raise ValueError("base64 stage received malformed input") from exc
-    if stage == "base64url":
-        padded = compact + b"=" * (-len(compact) % 4)
-        try:
-            return base64.b64decode(padded, altchars=b"-_", validate=True)
-        except (ValueError, base64.binascii.Error) as exc:
-            raise ValueError("base64url stage received malformed input") from exc
-    if stage == "base32":
-        padded = compact.upper() + b"=" * (-len(compact) % 8)
-        try:
-            return base64.b32decode(padded, casefold=True)
-        except (ValueError, base64.binascii.Error) as exc:
-            raise ValueError("base32 stage received malformed input") from exc
-    if stage == "base85":
-        try:
-            return base64.b85decode(compact)
-        except (ValueError, base64.binascii.Error) as exc:
-            raise ValueError("base85 stage received malformed input") from exc
-    if stage == "ascii85":
-        try:
-            return base64.a85decode(data, adobe=True, ignorechars=b" \t\n\r\v")
-        except (ValueError, base64.binascii.Error) as exc:
-            try:
-                return base64.a85decode(data, ignorechars=b" \t\n\r\v")
-            except (ValueError, base64.binascii.Error) as nested:
-                raise ValueError("ascii85 stage received malformed input") from nested
-    if stage == "url":
-        try:
-            return urllib.parse.unquote_to_bytes(data.decode("ascii"))
-        except UnicodeDecodeError as exc:
-            raise ValueError("URL-encoded stage input is not ASCII") from exc
-    raise ValueError(f"unsupported transform stage: {stage}")
+def _compact(data: bytes) -> bytes:
+    return re.sub(rb"\s+", b"", data)
 
+
+def _decode_rot13(data: bytes) -> bytes:
+    compact = _compact(data)
+    try:
+        compact.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ValueError("ROT13 stage input is not ASCII") from exc
+    return compact.translate(_ROT13)
+
+
+def _decode_hex(data: bytes) -> bytes:
+    try:
+        return bytes.fromhex(data.decode("ascii"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("hex stage received malformed hexadecimal data") from exc
+
+
+def _decode_base64(data: bytes) -> bytes:
+    try:
+        return base64.b64decode(_compact(data), validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise ValueError("base64 stage received malformed input") from exc
+
+
+def _decode_base64url(data: bytes) -> bytes:
+    compact = _compact(data)
+    padded = compact + b"=" * (-len(compact) % 4)
+    try:
+        return base64.b64decode(padded, altchars=b"-_", validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise ValueError("base64url stage received malformed input") from exc
+
+
+def _decode_base32(data: bytes) -> bytes:
+    compact = _compact(data)
+    padded = compact.upper() + b"=" * (-len(compact) % 8)
+    try:
+        return base64.b32decode(padded, casefold=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise ValueError("base32 stage received malformed input") from exc
+
+
+def _decode_base85(data: bytes) -> bytes:
+    try:
+        return base64.b85decode(_compact(data))
+    except (ValueError, base64.binascii.Error) as exc:
+        raise ValueError("base85 stage received malformed input") from exc
+
+
+def _decode_ascii85(data: bytes) -> bytes:
+    ignore = b" \t\n\r\v"
+    try:
+        return base64.a85decode(data, adobe=True, ignorechars=ignore)
+    except (ValueError, base64.binascii.Error):
+        try:
+            return base64.a85decode(data, ignorechars=ignore)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise ValueError("ascii85 stage received malformed input") from exc
+
+
+def _decode_url(data: bytes) -> bytes:
+    try:
+        return urllib.parse.unquote_to_bytes(data.decode("ascii"))
+    except UnicodeDecodeError as exc:
+        raise ValueError("URL-encoded stage input is not ASCII") from exc
+
+
+_STAGE_DECODERS = {
+    "rot13": _decode_rot13,
+    "hex": _decode_hex,
+    "base64": _decode_base64,
+    "base64url": _decode_base64url,
+    "base32": _decode_base32,
+    "base85": _decode_base85,
+    "ascii85": _decode_ascii85,
+    "url": _decode_url,
+}
+
+
+def _decode_stage(data: bytes, stage: str) -> bytes:
+    decoder = _STAGE_DECODERS.get(stage)
+    if decoder is None:
+        raise ValueError(f"unsupported transform stage: {stage}")
+    return decoder(data)
 
 
 def _infer_pipeline(payload: bytes, max_stages: int = 4) -> tuple[tuple[str, ...], bytes] | None:

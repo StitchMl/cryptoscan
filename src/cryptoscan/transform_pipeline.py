@@ -133,7 +133,7 @@ def extract_instance(documents: Sequence[object]) -> TransformPipeline | None:
     return None
 
 def _compact(data: bytes) -> bytes:
-    return re.sub(rb"\\s+", b"", data)
+    return re.sub(rb"\s+", b"", data)
 
 
 def _decode_rot13(data: bytes) -> bytes:
@@ -185,7 +185,7 @@ def _decode_base85(data: bytes) -> bytes:
 
 
 def _decode_ascii85(data: bytes) -> bytes:
-    ignore = b" \\t\\n\\r\\v"
+    ignore = b" \t\n\r\v"
     try:
         return base64.a85decode(data, adobe=True, ignorechars=ignore)
     except (ValueError, base64.binascii.Error):

@@ -19,6 +19,29 @@ The existing offline codecs, source recognizers, and attack planners still
 decide what can be identified or solved. An unsupported construction remains
 unresolved and is not treated as a successful recovery.
 
+## Gaussian-integer RSA over a squared semiprime
+
+CryptoScan recognizes source that multiplies Gaussian integers
+`(a + bi)(c + di)` modulo `n = p²q²`, exponentiates them, and serializes
+the two components as fixed-width bytes. The offline transcript must
+disclose the two distinct prime factors, modulus and ciphertext. The
+source also establishes the padding width and byte order.
+
+For an odd prime `r`, the unit-group size modulo `r²` depends on `r mod 4`:
+`r²(r-1)²` when `r ≡ 1` (split), and `r²(r²-1)` when `r ≡ 3` (inert).
+The solver inverts the public exponent modulo the least common multiple
+of those orders, computes a Gaussian modular power, and verifies
+re-encryption. It then applies the source's fixed-width packing and
+zero delimiter, requiring a flag-shaped suffix.
+
+```powershell
+cryptoscan source.py output.txt --plan-attacks
+cryptoscan source.py output.txt --solve
+```
+
+This family requires the factor transcript and a matching source profile.
+It is not a general factorization method or a universal CTF solver.
+
 ## Public-residue multiplicative exchange
 
 Some key-exchange-like CTF ciphers publish a private value modulo a

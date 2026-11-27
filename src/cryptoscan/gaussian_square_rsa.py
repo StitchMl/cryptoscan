@@ -222,57 +222,72 @@ def _encryption_profiles(method: ast.FunctionDef, power: str,
     return found
 
 
-def source_profiles(document: Document) -> list[Profile]:
+def _source_tree(document: Document) -> ast.Module | None:
     if not document.path.lower().endswith(".py") or len(document.text) > MAX_SOURCE:
-        return []
+        return None
     try:
         tree = ast.parse(document.text)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return []
+        return None
     if not _has_squared_modulus(tree):
-        return []
-    if not any(_literal(node, b"\x00") for node in ast.walk(tree)):
-        return []
-    methods = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
-    constants = {
+        return None
+    if not any(_literal(node, b"\\x00") for node in ast.walk(tree)):
+        return None
+    return tree
+
+
+def _top_level_constants(tree: ast.Module) -> dict[str, int]:
+    return {
         stmt.targets[0].id: stmt.value.value for stmt in tree.body
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
         and isinstance(stmt.targets[0], ast.Name)
         and isinstance(stmt.value, ast.Constant)
         and type(stmt.value.value) is int
     }
+
+
+def _profiles_from_methods(methods: list[ast.FunctionDef],
+                           constants: dict[str, int]) -> list[Profile]:
     found = []
     for multiplier in methods:
         fields = _gaussian_fields(multiplier)
         if fields is None:
             continue
         for powering in methods:
-            if _is_power_function(powering, multiplier.name):
-                for method in methods:
-                    found.extend(_encryption_profiles(
-                        method, powering.name, fields, constants,
-                    ))
+            if not _is_power_function(powering, multiplier.name):
+                continue
+            for method in methods:
+                found.extend(_encryption_profiles(
+                    method, powering.name, fields, constants,
+                ))
     return list(dict.fromkeys(found))
 
 
-def _transcript(document: Document) -> tuple[int, int, int, bytes] | None:
-    if len(document.text) > MAX_OUTPUT:
-        return None
-    try:
-        tree = ast.parse(document.text)
-    except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return None
+def source_profiles(document: Document) -> list[Profile]:
+    tree = _source_tree(document)
+    if tree is None:
+        return []
+    methods = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
+    return _profiles_from_methods(methods, _top_level_constants(tree))
+
+
+def _literal_assignments(tree: ast.Module) -> dict[str, object] | None:
     values = {}
+    accepted = {"private_key", "factors", "public_key", "modulus", "ciphertext", "c"}
     for node in tree.body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target = node.targets[0]
-            if isinstance(target, ast.Name) and target.id in {
-                    "private_key", "factors", "public_key", "modulus",
-                    "ciphertext", "c"}:
-                try:
-                    values[target.id] = ast.literal_eval(node.value)
-                except (ValueError, SyntaxError, RecursionError, MemoryError):
-                    return None
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name) or target.id not in accepted:
+            continue
+        try:
+            values[target.id] = ast.literal_eval(node.value)
+        except (ValueError, SyntaxError, RecursionError, MemoryError):
+            return None
+    return values
+
+
+def _validated_transcript(values: dict[str, object]) -> tuple[int, int, int, bytes] | None:
     factors = values.get("private_key", values.get("factors"))
     modulus = values.get("public_key", values.get("modulus"))
     ciphertext = values.get("ciphertext", values.get("c"))
@@ -291,17 +306,38 @@ def _transcript(document: Document) -> tuple[int, int, int, bytes] | None:
     return p, q, modulus, ciphertext
 
 
+def _transcript(document: Document) -> tuple[int, int, int, bytes] | None:
+    if len(document.text) > MAX_OUTPUT:
+        return None
+    try:
+        tree = ast.parse(document.text)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    values = _literal_assignments(tree)
+    return None if values is None else _validated_transcript(values)
+
+
+def _instances_for_source(source: Document,
+                          documents: Sequence[Document]) -> list[Instance]:
+    profiles = source_profiles(source)
+    if not profiles:
+        return []
+    instances = []
+    for output in documents:
+        if output.path == source.path or output.scope != source.scope:
+            continue
+        transcript = _transcript(output)
+        if transcript is None:
+            continue
+        instances.extend(Instance(*transcript, profile, source.path,
+                                  output.path, source.scope)
+                         for profile in profiles)
+    return instances
+
+
 def extract_instance(documents: Sequence[Document]) -> Instance | None:
-    found = set()
-    for source in documents:
-        for profile in source_profiles(source):
-            for output in documents:
-                if output.path == source.path or output.scope != source.scope:
-                    continue
-                transcript = _transcript(output)
-                if transcript is not None:
-                    found.add(Instance(*transcript, profile, source.path,
-                                       output.path, source.scope))
+    found = {instance for source in documents
+             for instance in _instances_for_source(source, documents)}
     return next(iter(found)) if len(found) == 1 else None
 
 

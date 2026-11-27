@@ -120,7 +120,27 @@ def _read_line(stream, limit: int = 4096) -> bytes:
     return bytes(data)
 
 
-def _read_expected_banner(stream) -> None:
+def _recover_once(documents: Sequence[object], model: SparseMT19937Model,
+                  host: str, port: int, timeout: float,
+                  candidate_index: int) -> bytes:
+    """Collect the selectable sparse outputs and submit one MSB candidate."""
+    first_index = model.target_index - 624 + 1
+    second_index = model.target_index - 624 + 397
+    requested = {first_index, second_index}
+    with connect_authorized(host, port, timeout) as sock:
+        stream = sock.makefile("rwb", buffering=0)
+        _select_prompt(stream)
+        stream.write(f"{first_index}\n{second_index}\n".encode("ascii"))
+        selected = _read_selected(stream, model.target_index, requested)
+        candidates = predict_sparse_candidates(
+            model.target_index, selected[first_index], selected[second_index],
+        )
+        guess = candidates[candidate_index]
+        stream.write(f"{guess}\n".encode("ascii"))
+        return _read_submission(sock)
+
+
+def _select_prompt(stream) -> None:
     banner = bytearray()
     while b"number!\n" not in banner and len(banner) < 16384:
         line = _read_line(stream)
@@ -131,61 +151,42 @@ def _read_expected_banner(stream) -> None:
         raise ValueError("service did not expose the expected selectable-number prompt")
 
 
-def _collect_selected_outputs(stream, target_index: int,
-                              requested: set[int]) -> dict[int, int]:
-    selected: dict[int, int] = {}
+def _read_selected(stream, target_index: int, requested: set[int]) -> dict[int, int]:
+    selected = {}
     for output_index in range(target_index):
         line = _read_line(stream)
         if not line:
-            raise ValueError(
-                f"service stopped after {output_index} of "
-                f"{target_index} indexed outputs"
-            )
-        if output_index not in requested:
-            continue
-        match = re.search(rb"-?\d+", line)
-        if match is None:
-            raise ValueError(
-                f"service did not reveal the selected output at index {output_index}"
-            )
-        selected[output_index] = int(match.group())
+            raise ValueError(f"service stopped after {output_index} of {target_index} indexed outputs")
+        if output_index in requested:
+            _save_selected_output(selected, output_index, line)
     if set(selected) != requested:
         raise ValueError("service did not return both selected MT19937 outputs")
     return selected
 
 
-def _read_service_response(sock) -> bytes:
+def _save_selected_output(selected: dict[int, int], index: int, line: bytes) -> None:
+    match = re.search(rb"-?\d+", line)
+    if match is None:
+        raise ValueError(f"service did not reveal the selected output at index {index}")
+    selected[index] = int(match.group())
+
+
+def _read_submission(sock) -> bytes:
     response = bytearray()
     while len(response) < 65536:
         chunk = sock.recv(4096)
         if not chunk:
             break
         response.extend(chunk)
-        lower = response.lower()
-        if b"}" in response or b"nope" in lower or b"wrong" in lower:
+        if b"}" in response or _submission_rejected(response):
             break
     return bytes(response)
 
 
-def _recover_once(documents: Sequence[object], model: SparseMT19937Model,
-                  host: str, port: int, timeout: float,
-                  candidate_index: int) -> bytes:
-    """Collect the selectable sparse outputs and submit one MSB candidate."""
-    first_index = model.target_index - 624 + 1
-    second_index = model.target_index - 624 + 397
-    requested = {first_index, second_index}
-    with connect_authorized(host, port, timeout) as sock:
-        stream = sock.makefile("rwb", buffering=0)
-        _read_expected_banner(stream)
-        stream.write(f"{first_index}\n{second_index}\n".encode("ascii"))
-        selected = _collect_selected_outputs(
-            stream, model.target_index, requested,
-        )
-        candidates = predict_sparse_candidates(
-            model.target_index, selected[first_index], selected[second_index],
-        )
-        stream.write(f"{candidates[candidate_index]}\n".encode("ascii"))
-        return _read_service_response(sock)
+def _submission_rejected(response: bytearray) -> bool:
+    lowered = response.lower()
+    return b"nope" in lowered or b"wrong" in lowered
+
 
 def recover_flag(documents: Sequence[object], host: str, port: int,
                  timeout: float = 30.0) -> str:

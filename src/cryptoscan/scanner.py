@@ -22,7 +22,7 @@ from .mathutil import (
     small_factor,
     wiener_private_exponent,
 )
-from .model import Finding
+from .model import FLAG_PATTERN, Finding
 from .rsa_related_key import extract_instance as extract_related_key, source_profiles as related_key_profiles
 from .rotated_quadratic_rsa import extract_instance as extract_rotated_rsa, source_profiles as rotated_rsa_profiles
 from .eclcg_detector import detect_ec_lcg
@@ -69,8 +69,12 @@ from .parser import (
     pem_rsa_public_keys,
     scalar_records,
 )
+from .transform_pipeline import decode_pipeline, extract_instance as extract_transform_pipeline
 
 _AUTHORIZED_HOST = "authorized host"
+_ASCII_ORDINAL_ARRAY = re.compile(
+    r"\[(\s*\d{1,3}\s*,){4,}\s*\d{1,3}\s*\]"
+)
 
 
 def _pick(obj: dict[str, Any], *names: str) -> Any | None:
@@ -1479,6 +1483,187 @@ def _scan_phase_17(documents, findings):
 
 
 
+def _ordinal_arrays(data):
+    pending = [(data, "$", "")]
+    visited = 0
+    while pending and visited < 20_000:
+        current, pointer, hint = pending.pop()
+        visited += 1
+        candidate, children = _ordinal_node(current, pointer, hint)
+        if candidate is not None:
+            yield candidate
+        pending.extend(children)
+
+
+def _ordinal_node(current, pointer: str, hint: str):
+    if isinstance(current, dict):
+        children = []
+        for key, value in reversed(list(current.items())):
+            key_text = str(key)
+            next_hint = key_text if _ordinal_hint(key_text) else hint
+            children.append((value, f"{pointer}.{key_text}", next_hint))
+        return None, children
+    if not isinstance(current, list):
+        return None, []
+    candidate = (current, pointer, hint) if _is_byte_ordinal_array(current) else None
+    children = [(value, f"{pointer}[{index}]", hint)
+                for index, value in reversed(list(enumerate(current)))
+                if isinstance(value, (dict, list))]
+    return candidate, children
+
+
+def _ordinal_hint(value: str) -> bool:
+    return re.search(r"ascii|ordinal|character|code.?point|flag|message|plaintext",
+                     value, re.IGNORECASE) is not None
+
+
+def _is_byte_ordinal_array(values: list) -> bool:
+    return 5 <= len(values) <= 4096 and all(
+        type(value) is int and 0 <= value <= 255 for value in values
+    )
+
+
+def _ascii_ordinal_finding(document, values, pointer, hint):
+    if not all(type(value) is int and 0 <= value <= 255 for value in values):
+        return None
+    decoded = bytes(values)
+    if any(value not in (9, 10, 13) and not 32 <= value <= 126 for value in decoded):
+        return None
+    flag = FLAG_PATTERN.search(decoded)
+    described = re.search(
+        r"ascii|ordinal|character|code.?point|chr\s*\(",
+        hint + "\n" + document.text, re.IGNORECASE,
+    ) is not None
+    if flag is None and not described:
+        return None
+    return Finding(
+        rule="ENCODING-ASCII-ORDINALS",
+        title="ASCII bytes represented as integer ordinals",
+        severity="info",
+        confidence="high",
+        location=f"{document.path}:{pointer}",
+        evidence={
+            "ordinal_count": len(values),
+            "ordinal_values": values,
+            "decoded_text": decoded.decode("ascii"),
+            "flag_shape": flag.group().decode("ascii") if flag else None,
+        },
+        preconditions=["The supplied values are byte ordinals in the range 0-255."],
+        attack="Convert each integer to its corresponding ASCII byte; no cryptographic key is involved.",
+        solver={"kind": "ascii_ordinal_array", "result_hex": decoded.hex()},
+        patch="No cryptographic weakness: this artifact uses a reversible text encoding.",
+        playbook=["Convert each value with the ASCII character mapping."],
+    )
+
+
+def _scan_ascii_ordinal_arrays(documents, findings):
+    for document in documents:
+        for candidate in _ordinal_document_candidates(document):
+            _append_ordinal_finding(document, candidate, findings)
+
+
+def _ordinal_document_candidates(document):
+    if document.data is not None:
+        return _ordinal_arrays(document.data)
+    return _text_ordinal_arrays(document.text)
+
+
+def _text_ordinal_arrays(text: str):
+    for index, match in enumerate(_ASCII_ORDINAL_ARRAY.finditer(text)):
+        if index >= 32:
+            return
+        values = [int(value) for value in re.findall(r"\d{1,3}", match.group())]
+        yield values, f"text-array[{index}]", ""
+
+
+def _append_ordinal_finding(document, candidate, findings) -> None:
+    values, pointer, hint = candidate
+    finding = _ascii_ordinal_finding(document, values, pointer, hint)
+    if finding is not None:
+        findings.append(finding)
+
+
+def _scan_transform_pipeline(documents, findings):
+    pipeline = extract_transform_pipeline(documents)
+    if pipeline is None:
+        return
+    decoded = decode_pipeline(pipeline)
+    if not decoded:
+        return
+    readable = sum(
+        value in (9, 10, 13) or 32 <= value <= 126 for value in decoded
+    ) / len(decoded)
+    if readable < 0.85:
+        return
+    findings.append(Finding(
+        rule="ENCODING-PIPELINE",
+        title="Recoverable layered encoding pipeline",
+        severity="info",
+        confidence="high",
+        location=pipeline.source_path,
+        evidence={
+            "stages": list(pipeline.stages),
+            "payload_hex": pipeline.payload.hex(),
+            "decoded_text": decoded.decode("ascii", errors="replace"),
+            "flag_shape": (match.group().decode("ascii")
+                           if (match := FLAG_PATTERN.search(decoded)) else None),
+        },
+        preconditions=[
+            "The supplied payload uniquely decodes through the recognized reversible stages.",
+            "The recovered bytes are predominantly printable ASCII.",
+        ],
+        attack="Reverse the declared or uniquely inferred reversible encoding stages.",
+        solver={"kind": "verified_transform_pipeline", "result_hex": decoded.hex()},
+        patch="No cryptographic weakness: this artifact uses reversible encodings.",
+        playbook=[
+            "Decode the payload in reverse stage order.",
+            "Check the recovered text and flag syntax against the challenge statement.",
+        ],
+    ))
+
+
+def _scan_integer_encoded_flags(records, findings):
+    """Recover flag-shaped plaintexts serialized as unsigned big-endian integers."""
+    seen = set()
+    for record in records:
+        obj = record["object"]
+        if not isinstance(obj, dict):
+            continue
+        for key, value in obj.items():
+            if type(value) is not int or value <= 0 or value.bit_length() > 32768:
+                continue
+            raw = int_to_bytes(value)
+            match = FLAG_PATTERN.search(raw)
+            if match is None:
+                continue
+            location = f"{record['location']}.{key}"
+            identity = (location, value)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            findings.append(Finding(
+                rule="ENCODING-BIGINT-BYTES",
+                title="Flag plaintext serialized as a big-endian integer",
+                severity="info",
+                confidence="high",
+                location=location,
+                evidence={
+                    "integer": str(value),
+                    "integer_bits": value.bit_length(),
+                    "flag_shape": match.group().decode("ascii", errors="replace"),
+                    "byte_order": "big",
+                    "padding": "leading zero bytes cannot be inferred from an integer",
+                },
+                preconditions=[
+                    "The integer is the unsigned big-endian representation of the plaintext bytes."
+                ],
+                attack="Convert the integer to its minimal unsigned big-endian byte representation.",
+                solver={"kind": "integer_to_bytes", "result_hex": raw.hex()},
+                patch="No cryptographic weakness: this artifact uses an integer serialization.",
+                playbook=["Convert the integer to bytes in big-endian order."],
+            ))
+
+
 def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding]:
     records = _records(documents)
     ntru_contexts = recognize_ntru(documents)
@@ -1503,6 +1688,9 @@ def scan(documents: list[Document], fermat_steps: int = 100_000) -> list[Finding
     _scan_phase_15(records, ntru_contexts, findings)
     _scan_phase_16(documents, findings)
     _scan_phase_17(documents, findings)
+    _scan_ascii_ordinal_arrays(documents, findings)
+    _scan_transform_pipeline(documents, findings)
+    _scan_integer_encoded_flags(records, findings)
     findings.extend(_related_key_findings(documents))
     findings.extend(_rotated_rsa_findings(documents))
     unique = {finding.id: finding for finding in findings}

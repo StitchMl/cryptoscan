@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from urllib.parse import urlsplit
 
 from . import __version__
 from .attack_planner import (
@@ -34,8 +35,7 @@ from .hyperelliptic_state_leak import extract_instance as extract_hyperelliptic_
 from .reciprocal_rabin_oracle import (extract_instance as extract_reciprocal_rabin,
     recover_flag as recover_reciprocal_rabin_flag)
 from .hyperelliptic_live import (investigate as investigate_hyperelliptic,
-    recover_flag as recover_hyperelliptic_flag,
-    source_input_prompt as hyperelliptic_input_prompt)
+    recover_flag as recover_hyperelliptic_flag)
 from .ec_twist_oracle import extract_instance as extract_ec_twist, recover_flag as recover_ec_twist_flag
 from .ec_twist_oracle import feasible_twist as feasible_ec_twist
 from .biased_shamir import extract_instance as extract_biased_shamir, recover_flag as recover_biased_shamir_flag
@@ -45,7 +45,6 @@ from .diagnostics import diagnose_runtime
 from .dghv_workflow import recover_flag as recover_dghv_flag, supported_source as supported_dghv_source
 from .eclcg_workflow import extract_instance as extract_eclcg_instance, recover_flag as recover_eclcg_flag
 from .fischlin_workflow import recover_flag as recover_fischlin_flag, supported_source as supported_fischlin_source
-from .gcm_hidden_state import recognize_gcm_tag_oracle
 from .gcm_hidden_live import (
     recover_flag as recover_gcm_hidden_flag,
     supports_wire_profile as supports_gcm_wire_profile,
@@ -83,7 +82,9 @@ RESET = "\033[0m"
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cryptoscan", description="Deterministic offline CTF cryptography scanner")
-    parser.add_argument("targets", nargs="+", help="files or directories to scan; use cryptoscan cookie --help for cookie tools")
+    parser.add_argument("targets", nargs="+", help="files, directories, or authorized HTTP(S) challenge URLs")
+    parser.add_argument("--authorized", action="store_true",
+                        help="legacy explicit confirmation; a supplied URL is already the selected target")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     colors = parser.add_mutually_exclusive_group()
     colors.add_argument("--no-color", action="store_true", help="disable ANSI colors")
@@ -373,10 +374,33 @@ def _validate_numeric_arguments(args) -> None:
 
 def _validate_arguments(args) -> None:
     _validate_numeric_arguments(args)
+    _validate_target_urls(args)
+    _validate_assist_options(args)
+    _validate_solve_options(args)
+    _validate_network_options(args)
+
+
+def _validate_target_urls(args) -> None:
+    try:
+        for target in args.targets:
+            urlsplit(target)
+    except ValueError:
+        _parser().error("invalid challenge URL")
+
+
+def _validate_assist_options(args) -> None:
     if args.assist and args.no_assist:
         _parser().error("--assist and --no-assist cannot be combined")
+
+
+def _validate_solve_options(args) -> None:
     if args.solve and (args.format == "json" or args.assist or args.no_assist):
         _parser().error("--solve cannot be combined with --format json, --assist, or --no-assist")
+    if args.assist and args.format == "json":
+        _parser().error("--assist cannot be combined with --format json")
+
+
+def _validate_network_options(args) -> None:
     if (args.solve or args.plan_attacks or args.investigate) and bool(args.host) != bool(args.port):
         _parser().error("--host and --port must be supplied together")
     if sum(bool(option) for option in (args.solve, args.plan_attacks,
@@ -384,15 +408,20 @@ def _validate_arguments(args) -> None:
         _parser().error("--solve, --plan-attacks and --investigate are mutually exclusive")
     if args.investigate and not (args.host and args.port):
         _parser().error("--investigate requires an authorized --host and --port")
-    if args.assist and args.format == "json":
-        _parser().error("--assist cannot be combined with --format json")
 
 
-def _print_report(args, findings) -> None:
+def _print_report(args, findings, documents) -> None:
     if args.format == "json":
-        print(json.dumps({"schema_version": 1, "findings": [item.to_dict() for item in findings]}, sort_keys=True, indent=2, ensure_ascii=False))
+        report = {"schema_version": 1, "findings": [item.to_dict() for item in findings]}
+        if not findings:
+            report["triage"] = _triage_summary(documents)
+        print(json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False))
     else:
-        color = not args.no_color and os.environ.get("NO_COLOR") is None and (args.color or sys.stdout.isatty())
+        color = (
+            not args.no_color
+            and os.environ.get("NO_COLOR") is None
+            and (args.color or sys.stdout.isatty())
+        )
         print(_text(findings, color, verbose=args.verbose))
 
 
@@ -591,6 +620,26 @@ def _print_hypotheses(documents) -> None:
             print(f"  - {hypothesis.family}: {hypothesis.next_checks[0]}.")
 
 
+def _triage_summary(documents) -> dict[str, object]:
+    binary = [doc for doc in documents if isinstance(doc.data, dict) and doc.data.get("binary") is True]
+    return {
+        "documents_received": len(documents),
+        "binary_documents": len(binary),
+        "binary_artifacts": [
+            {"path": doc.path, "size": doc.data["size"],
+             "sha256": doc.data["sha256"],
+             "printable_strings": doc.data["printable_strings"][:40]}
+            for doc in binary
+        ],
+        "status": "no supported attack pattern confirmed; input was ingested and statically inspected",
+        "next_checks": [
+            "Check whether the artifact uses a custom encoding, compression, or encryption layer.",
+            "For source or challenge text, identify the transform pipeline and constants, then add or select a matching general attack hypothesis.",
+            "For binary artifacts, inspect printable strings and file format metadata; the current result does not claim the challenge is unsolvable.",
+        ],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     command = _special_command(arguments)
@@ -598,27 +647,52 @@ def main(argv: list[str] | None = None) -> int:
         return command
     args = _parser().parse_args(command)
     _validate_arguments(args)
-    documents = collect_documents(args.targets)
+    # A URL supplied as the explicit target is the user's scan instruction.
+    # Keep --authorized for compatibility and callers using the intake API.
+    has_url = any(urlsplit(target).scheme.casefold() in {"http", "https"} for target in args.targets)
+    documents = collect_documents(args.targets, authorized=args.authorized or has_url)
     findings = scan(documents, args.fermat_steps)
+    return _run_scan_command(args, documents, findings)
+
+
+def _run_scan_command(args, documents, findings) -> int:
     if args.investigate:
         return _run_investigation(args, documents)
     if args.plan_attacks and args.format == "json":
-        plan = _candidate_plan(args, documents)
-        print(json.dumps({
-            "schema_version": 1,
-            "findings": [item.to_dict() for item in findings],
-            "attack_plan": plan.describe(),
-        }, sort_keys=True, indent=2, ensure_ascii=False))
-        return 0
-    _print_report(args, findings)
+        return _print_plan_json(args, documents, findings)
+    _print_report(args, findings, documents)
     _report_supported_protocols(args, documents)
     if args.plan_attacks:
         _print_attack_plan(args, _candidate_plan(args, documents))
         return 0
     if args.format == "text" and not findings:
+        summary = _triage_summary(documents)
+        print("No supported attack pattern was confirmed.")
+        print(f"Static inputs inspected: {summary['documents_received']}; binary artifacts: {summary['binary_documents']}.")
+        for artifact in summary["binary_artifacts"]:
+            print(f"  binary {artifact['path']} ({artifact['size']} bytes, sha256 {artifact['sha256']})")
+            for value in artifact["printable_strings"]:
+                print(f"    string: {value}")
+        for check in summary["next_checks"]:
+            print(f"  next check: {check}")
         _print_hypotheses(documents)
     if args.solve:
         return _solve_documents(args, documents)
+    return _finish_scan(args, documents, findings)
+
+
+def _print_plan_json(args, documents, findings) -> int:
+    plan = _candidate_plan(args, documents)
+    print(json.dumps({
+        "schema_version": 1,
+        "findings": [item.to_dict() for item in findings],
+        **({"triage": _triage_summary(documents)} if not findings else {}),
+        "attack_plan": plan.describe(),
+    }, sort_keys=True, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _finish_scan(args, documents, findings) -> int:
     if _should_assist(args, findings):
         assistant_session(findings, documents=documents)
     return 1 if args.fail_on_findings and findings else 0

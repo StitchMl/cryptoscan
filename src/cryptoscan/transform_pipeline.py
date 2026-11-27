@@ -12,6 +12,8 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Sequence
 
+from .model import FLAG_PATTERN
+
 
 @dataclass(frozen=True)
 class TransformPipeline:
@@ -41,6 +43,12 @@ _STAGE_ALIASES = {
 _ROT13 = bytes.maketrans(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
     b"NOPQRSTUVWXYZABCDEFGHIJKLMnopqrstuvwxyzabcdefghijklm",
+)
+_UNLABELED_HEX = re.compile(
+    r"(?<![A-Za-z0-9])(?:[0-9a-fA-F]{2}){8,}(?![A-Za-z0-9])"
+)
+_UNLABELED_BASE64 = re.compile(
+    r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{16,}(?![A-Za-z0-9+/=_-])"
 )
 
 
@@ -113,24 +121,72 @@ def extract_instance(documents: Sequence[object]) -> TransformPipeline | None:
             declarations.setdefault(stages, path)
         if payload:
             payloads.setdefault(payload, path)
+    return _pair_declared(declarations, payloads) or _infer_single_payload(declarations, payloads) or _infer_unlabeled(documents, declarations, payloads)
 
-    # Challenge instructions and their attached telemetry dump are often
-    # separate files. Pair only when the scope has one unambiguous pipeline
-    # and one unambiguous payload; never mix multiple candidate artifacts.
-    if len(declarations) == 1 and len(payloads) == 1:
-        stages, source_path = next(iter(declarations.items()))
-        payload, _ = next(iter(payloads.items()))
-        return TransformPipeline(stages, payload, source_path)
 
-    # Some challenge bundles contain only the encoded buffer. In that case,
-    # infer a short chain from the supported reversible codecs and require a
-    # flag-shaped plaintext before accepting the result.
-    if not declarations and len(payloads) == 1:
-        payload, source_path = next(iter(payloads.items()))
-        inferred = _infer_pipeline(payload)
-        if inferred is not None:
-            return TransformPipeline(inferred[0], payload, source_path)
-    return None
+def _pair_declared(declarations: dict, payloads: dict) -> TransformPipeline | None:
+    if len(declarations) != 1 or len(payloads) != 1:
+        return None
+    stages, path = next(iter(declarations.items()))
+    payload = next(iter(payloads))
+    return TransformPipeline(stages, payload, path)
+
+
+def _infer_single_payload(declarations: dict, payloads: dict) -> TransformPipeline | None:
+    if declarations or len(payloads) != 1:
+        return None
+    payload, path = next(iter(payloads.items()))
+    inferred = _infer_pipeline(payload)
+    return TransformPipeline(inferred[0], payload, path) if inferred else None
+
+
+def _infer_unlabeled(documents: Sequence[object], declarations: dict,
+                     payloads: dict) -> TransformPipeline | None:
+    if declarations or payloads:
+        return None
+    found = _unlabeled_flag_candidates(documents)
+    return next(iter(found.values())) if len(found) == 1 else None
+
+
+def _unlabeled_flag_candidates(documents: Sequence[object]) -> dict[bytes, TransformPipeline]:
+    found: dict[bytes, TransformPipeline] = {}
+    budget = 32
+    for document in documents:
+        if budget <= 0:
+            break
+        source = getattr(document, "text", "")
+        path = getattr(document, "path", "<document>")
+        for match in _unlabeled_candidates(source)[:budget]:
+            budget -= 1
+            _record_inferred_candidate(found, match.group().encode("ascii"), path)
+    return found
+
+
+def _unlabeled_candidates(source: str):
+    candidates = list(_UNLABELED_HEX.finditer(source))
+    if re.search(r"\bbase64(?:url)?\b", source, re.IGNORECASE):
+        candidates.extend(_UNLABELED_BASE64.finditer(source))
+    return candidates
+
+
+def _record_inferred_candidate(found: dict, payload: bytes, path: str) -> None:
+    inferred = _infer_pipeline(payload)
+    if inferred is not None:
+        stages, flag = inferred
+        found.setdefault(flag, TransformPipeline(stages, payload, path))
+
+def _decode_stage(data: bytes, stage: str) -> bytes:
+    decoders = {
+        "rot13": _decode_rot13, "hex": _decode_hex,
+        "base64": _decode_base64, "base64url": _decode_base64url,
+        "base32": _decode_base32, "base85": _decode_base85,
+        "ascii85": _decode_ascii85, "url": _decode_url,
+    }
+    decoder = decoders.get(stage)
+    if decoder is None:
+        raise ValueError(f"unsupported transform stage: {stage}")
+    return decoder(data)
+
 
 def _compact(data: bytes) -> bytes:
     return re.sub(rb"\s+", b"", data)
@@ -138,10 +194,7 @@ def _compact(data: bytes) -> bytes:
 
 def _decode_rot13(data: bytes) -> bytes:
     compact = _compact(data)
-    try:
-        compact.decode("ascii")
-    except UnicodeDecodeError as exc:
-        raise ValueError("ROT13 stage input is not ASCII") from exc
+    _require_ascii(compact, "ROT13 stage input is not ASCII")
     return compact.translate(_ROT13)
 
 
@@ -153,24 +206,28 @@ def _decode_hex(data: bytes) -> bytes:
 
 
 def _decode_base64(data: bytes) -> bytes:
+    return _decode_base64_payload(_compact(data), "base64")
+
+
+def _decode_base64_payload(data: bytes, label: str, altchars: bytes | None = None) -> bytes:
     try:
-        return base64.b64decode(_compact(data), validate=True)
+        return base64.b64decode(data, altchars=altchars, validate=True)
     except (ValueError, base64.binascii.Error) as exc:
-        raise ValueError("base64 stage received malformed input") from exc
+        raise ValueError(f"{label} stage received malformed input") from exc
 
 
 def _decode_base64url(data: bytes) -> bytes:
     compact = _compact(data)
     padded = compact + b"=" * (-len(compact) % 4)
     try:
-        return base64.b64decode(padded, altchars=b"-_", validate=True)
+        return _decode_base64_payload(padded, "base64url", altchars=b"-_")
     except (ValueError, base64.binascii.Error) as exc:
         raise ValueError("base64url stage received malformed input") from exc
 
 
 def _decode_base32(data: bytes) -> bytes:
-    compact = _compact(data)
-    padded = compact.upper() + b"=" * (-len(compact) % 8)
+    compact = _compact(data).upper()
+    padded = compact + b"=" * (-len(compact) % 8)
     try:
         return base64.b32decode(padded, casefold=True)
     except (ValueError, base64.binascii.Error) as exc:
@@ -185,14 +242,17 @@ def _decode_base85(data: bytes) -> bytes:
 
 
 def _decode_ascii85(data: bytes) -> bytes:
-    ignore = b" \t\n\r\v"
     try:
-        return base64.a85decode(data, adobe=True, ignorechars=ignore)
+        return base64.a85decode(data, adobe=True, ignorechars=b" \t\n\r\v")
     except (ValueError, base64.binascii.Error):
-        try:
-            return base64.a85decode(data, ignorechars=ignore)
-        except (ValueError, base64.binascii.Error) as exc:
-            raise ValueError("ascii85 stage received malformed input") from exc
+        return _decode_ascii85_plain(data)
+
+
+def _decode_ascii85_plain(data: bytes) -> bytes:
+    try:
+        return base64.a85decode(data, ignorechars=b" \t\n\r\v")
+    except (ValueError, base64.binascii.Error) as exc:
+        raise ValueError("ascii85 stage received malformed input") from exc
 
 
 def _decode_url(data: bytes) -> bytes:
@@ -202,23 +262,12 @@ def _decode_url(data: bytes) -> bytes:
         raise ValueError("URL-encoded stage input is not ASCII") from exc
 
 
-_STAGE_DECODERS = {
-    "rot13": _decode_rot13,
-    "hex": _decode_hex,
-    "base64": _decode_base64,
-    "base64url": _decode_base64url,
-    "base32": _decode_base32,
-    "base85": _decode_base85,
-    "ascii85": _decode_ascii85,
-    "url": _decode_url,
-}
+def _require_ascii(data: bytes, message: str) -> None:
+    try:
+        data.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ValueError(message) from exc
 
-
-def _decode_stage(data: bytes, stage: str) -> bytes:
-    decoder = _STAGE_DECODERS.get(stage)
-    if decoder is None:
-        raise ValueError(f"unsupported transform stage: {stage}")
-    return decoder(data)
 
 
 def _infer_pipeline(payload: bytes, max_stages: int = 4) -> tuple[tuple[str, ...], bytes] | None:
@@ -243,6 +292,12 @@ def _infer_pipeline(payload: bytes, max_stages: int = 4) -> tuple[tuple[str, ...
                 flag_bytes = flag.group()
                 encoding_order = tuple(reversed(decode_order))
                 found.setdefault(flag_bytes, []).append(encoding_order)
+    recognized_flags = {
+        flag: chains for flag, chains in found.items()
+        if FLAG_PATTERN.search(flag) is not None
+    }
+    if recognized_flags:
+        found = recognized_flags
     if len(found) != 1:
         return None
     flag, chains = next(iter(found.items()))

@@ -1,5 +1,24 @@
 # cryptoscan
 
+## Scan challenge files or a challenge URL
+
+CryptoScan accepts local files, directories, archives, and an HTTP(S) challenge
+URL. Passing a URL selects it as the scan target; no extra authorization flag is
+needed. For a page, it reads the page and follows a
+bounded set of same-origin links that look like downloadable challenge
+artifacts; it does not submit probes or follow redirects. The URL fetch uses
+the same destination validation as online CTF connections, and local lab
+addresses require `CRYPTOSCAN_ALLOW_PRIVATE_NETWORK=1`.
+
+```powershell
+cryptoscan .\challenge.zip --plan-attacks
+cryptoscan https://ctf.example/challenge/ --plan-attacks
+```
+
+The existing offline codecs, source recognizers, and attack planners still
+decide what can be identified or solved. An unsupported construction remains
+unresolved and is not treated as a successful recovery.
+
 ## Public-residue multiplicative exchange
 
 Some key-exchange-like CTF ciphers publish a private value modulo a
@@ -1156,7 +1175,7 @@ Text output uses color only on a terminal. Set `NO_COLOR=1` or pass `--no-color`
 
 ## Accepted artifacts
 
-The scanner walks files in sorted order. It parses JSON objects recursively and simple Python-style assignments such as:
+The scanner walks files in sorted order. It parses JSON objects and arrays recursively and simple Python-style assignments such as:
 
 ```python
 n = 0xc34f...
@@ -1168,6 +1187,14 @@ Byte strings may use hexadecimal, `0x`-prefixed hexadecimal, Base64, or JSON byt
 The parser also accepts Python byte literals and common `key: value` challenge dumps.
 It scans text members inside ZIP, TAR, TAR.GZ, TAR.BZ2, and TAR.XZ archives without extracting them to disk. Per-member and entry-count limits bound archive processing.
 RSA public keys in PKCS#1 or SubjectPublicKeyInfo PEM and DER form are parsed with a bounded built-in DER reader.
+
+Static encoding recovery also recognizes byte-ordinal arrays in JSON and
+bracketed HTML/text challenge statements when the values decode to readable
+ASCII and the source supplies an encoding hint or a standard flag-shaped
+plaintext. For text payloads it can infer a bounded chain of supported
+reversible encodings from unlabeled hex, or Base64 when the statement signals
+that encoding. A recovery is reported only when the resulting flag is unique;
+ambiguous candidates remain unresolved.
 
 By default, recursive corpus collection skips documentation, notebooks, tests, writeups, solvers, and exploit scripts. Files supplied explicitly are always examined, regardless of their filename or extension. Exact duplicate artifacts across release, server, and archive copies are scanned once. Cross-artifact attacks stay inside one inferred challenge boundary, so unrelated challenge directories do not produce shared-prime, common-modulus, nonce-reuse, or broadcast findings.
 
@@ -1268,7 +1295,7 @@ Finding IDs derive from rule, relative location, and evidence. Reports omit time
 
 ## Limits
 
-`cryptoscan` performs bounded static and corpus analysis. It does not execute challenge code, connect to services, guess arbitrary encodings, disassemble binaries, or prove that a matched source line is reachable. Findings marked `certain` include a mathematical verification, such as exact roots, recovered factors, signature-equation checks, or ciphertext re-encryption. Heuristic source and language findings use lower confidence. Confirm them against challenge behavior and the stated preconditions.
+`cryptoscan` performs bounded static and corpus analysis. It does not execute challenge code, disassemble binaries, or prove that a matched source line is reachable. Automatic encoding inference is limited to supported reversible codecs and only reports a unique verified result; it does not infer arbitrary custom transformations. Findings marked `certain` include a mathematical verification, such as exact roots, recovered factors, signature-equation checks, or ciphertext re-encryption. Heuristic source and language findings use lower confidence. Confirm them against challenge behavior and the stated preconditions.
 
 ## Development
 

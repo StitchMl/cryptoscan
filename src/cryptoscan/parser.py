@@ -11,6 +11,9 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlsplit
+
+from .url_intake import fetch_challenge_inputs
 
 
 @dataclass(frozen=True)
@@ -67,7 +70,14 @@ def _documents_in_file(root: Path, path: Path) -> list[Document]:
         keys = der_rsa_public_keys(raw)
         return [Document(relative, "", keys, scope, hashlib.sha256(raw).hexdigest())] if keys else []
     if b"\0" in raw[:4096]:
-        return []
+        digest = hashlib.sha256(raw).hexdigest()
+        printable = [item.decode("ascii", errors="replace")
+                     for item in re.findall(rb"[ -~]{4,}", raw)[:256]]
+        return [Document(
+            relative, "\n".join(printable),
+            {"binary": True, "size": len(raw), "sha256": digest,
+             "printable_strings": printable}, scope, digest,
+        )]
     text = raw.decode("utf-8", errors="replace")
     data = None
     if path.suffix.casefold() == ".json" or text.lstrip().startswith(("{", "[")):
@@ -95,9 +105,32 @@ def _pipeline_markdown(path: Path, relative_name: str) -> bool:
     return re.search(r"(?im)\bPIPELINE\s*:\s*[A-Za-z][A-Za-z0-9_-]*(?:\s*->\s*[A-Za-z][A-Za-z0-9_-]*)+", text) is not None
 
 
-def collect_documents(targets: Iterable[str]) -> list[Document]:
+def _url_documents(target: str) -> list[Document]:
+    parsed = urlsplit(target)
+    scope = parsed.netloc.casefold()
+    documents = []
+    for index, (source_url, raw) in enumerate(fetch_challenge_inputs(target)):
+        source = urlsplit(source_url)
+        name = f"{scope}{source.path or '/'}"
+        # A directly supplied challenge page is explicit evidence, even when
+        # its URL happens to end in a normally ignored documentation suffix.
+        document = _document_from_bytes(name, raw, scope, allow_ignored=index == 0)
+        if document is not None:
+            documents.append(document)
+    return documents
+
+
+def collect_documents(targets: Iterable[str], *, authorized: bool = False) -> list[Document]:
+    """Collect local inputs, or fetch explicitly authorized challenge URLs."""
     files: list[tuple[Path, Path]] = []
+    documents: list[Document] = []
     for raw in targets:
+        parsed = urlsplit(raw)
+        if parsed.scheme.casefold() in {"http", "https"}:
+            if not authorized:
+                raise ValueError("HTTP(S) challenge inputs require --authorized")
+            documents.extend(_url_documents(raw))
+            continue
         target = Path(raw).resolve()
         if target.is_dir():
             files.extend(
@@ -114,13 +147,13 @@ def collect_documents(targets: Iterable[str]) -> list[Document]:
             # Explicitly selected evidence always wins over filename-based
             # directory-scan exclusions (e.g. source named solve.py).
             files.append((target.parent, target))
-    documents = [
+    documents.extend(
         document
         for root, path in sorted(
             files, key=lambda pair: pair[1].as_posix().casefold(),
         )
         for document in _documents_in_file(root, path)
-    ]
+    )
     # Do not discard identically named templates from independent challenges.
     unique: dict[tuple[str, str], Document] = {}
     for document in sorted(
@@ -130,20 +163,32 @@ def collect_documents(targets: Iterable[str]) -> list[Document]:
     return list(unique.values())
 
 
-def _document_from_bytes(name: str, raw: bytes, scope: str) -> Document | None:
-    if _ignored(name.split("!/", 1)[-1]) or len(raw) > 8 * 1024 * 1024:
+def _document_from_bytes(
+    name: str, raw: bytes, scope: str, *, allow_ignored: bool = False,
+) -> Document | None:
+    if (not allow_ignored and _ignored(name.split("!/", 1)[-1])) or len(raw) > 8 * 1024 * 1024:
         return None
     if Path(name).suffix.casefold() in {".der", ".cer"}:
         keys = der_rsa_public_keys(raw)
         return Document(name, "", keys, scope, hashlib.sha256(raw).hexdigest()) if keys else None
+    digest = hashlib.sha256(raw).hexdigest()
     if b"\0" in raw[:4096]:
-        return None
+        strings = re.findall(rb"[ -~]{4,}", raw)
+        printable = [item.decode("ascii", errors="replace") for item in strings[:256]]
+        return Document(
+            name,
+            "\n".join(printable),
+            {"binary": True, "size": len(raw), "sha256": digest,
+             "printable_strings": printable},
+            scope,
+            digest,
+        )
     text = raw.decode("utf-8", errors="replace")
     data = None
     if name.casefold().endswith(".json") or text.lstrip().startswith(("{", "[")):
         with contextlib.suppress(json.JSONDecodeError):
             data = json.loads(text)
-    return Document(name, text, data, scope, hashlib.sha256(raw).hexdigest())
+    return Document(name, text, data, scope, digest)
 
 
 def _zip_documents(raw: bytes, archive_name: str, scope: str) -> list[Document]:

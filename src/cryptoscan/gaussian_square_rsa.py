@@ -231,7 +231,7 @@ def _source_tree(document: Document) -> ast.Module | None:
         return None
     if not _has_squared_modulus(tree):
         return None
-    if not any(_literal(node, b"\\x00") for node in ast.walk(tree)):
+    if not any(_literal(node, b"\x00") for node in ast.walk(tree)):
         return None
     return tree
 
